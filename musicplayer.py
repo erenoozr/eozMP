@@ -24,13 +24,13 @@ import html
 import json
 import os
 import re
-import struct
 import subprocess
 import sys
 import threading
 import time
 import uuid
 import random
+import filecmp
 import shutil
 import zipfile
 from collections import deque
@@ -155,6 +155,20 @@ DEFAULT_CFG = {
 
 
 # ---------------------------------------------------------------- config
+def write_json_atomic(path, data, **kw):
+    """Save to a temp file first, then swap it in, so a crash mid-save can't leave a half-written file."""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(data, **kw), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def load_config():
     cfg = dict(DEFAULT_CFG)
     try:
@@ -166,7 +180,7 @@ def load_config():
 
 def save_config(cfg):
     try:
-        CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        write_json_atomic(CONFIG_FILE, cfg, indent=2)
     except Exception:
         pass
 
@@ -185,7 +199,7 @@ def load_playlists():
 
 def save_playlists(playlists):
     try:
-        PLAYLIST_FILE.write_text(json.dumps(playlists, indent=1), encoding="utf-8")
+        write_json_atomic(PLAYLIST_FILE, playlists, indent=1)
     except Exception:
         pass
 
@@ -275,7 +289,7 @@ def load_cache():
 
 def save_cache(tracks):
     try:
-        CACHE_FILE.write_text(json.dumps(tracks), encoding="utf-8")
+        write_json_atomic(CACHE_FILE, tracks)
     except Exception:
         pass
 
@@ -1482,15 +1496,37 @@ class ThumbLoader(QThread):
 BAD_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 LEFTOVER_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".nfo", ".m3u", ".m3u8", ".sfv",
                  ".log", ".cue", ".txt", ".url", ".ini", ".db", ".md5"}
+# names Windows keeps for devices: a folder called "NUL" (or "CON", "AUX"... on Windows 10) can't be made
+WINDOWS_RESERVED_NAMES = ({"CON", "PRN", "AUX", "NUL"}
+                          | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)})
+ORGANIZE_LOCK = threading.Lock()   # only one organize at a time, or two would move the same files
 
 
 def safe_name(text, fallback):
     cleaned = BAD_NAME_CHARS.sub("", str(text)).strip().rstrip(". ")
+    stem, dot, rest = cleaned.partition(".")
+    if stem.strip().upper() in WINDOWS_RESERVED_NAMES:
+        cleaned = f"{stem}_{dot}{rest}"
     return (cleaned or fallback)[:120]
 
 
+def same_file(a, b):
+    """True only if both files have exactly the same bytes (same size alone isn't enough)."""
+    return os.path.getsize(a) == os.path.getsize(b) and filecmp.cmp(a, b, shallow=False)
+
+
 def organize_downloads(src_root, dest_root, group_featured=True):
-    """Move finished downloads to dest_root/Artist/Album/NN - Title.ext (runs in a background thread)."""
+    """Move finished downloads to dest_root/Artist/Album/NN - Title.ext (runs in a background thread).
+    If another organize is still running, does nothing and returns 0."""
+    if not ORGANIZE_LOCK.acquire(blocking=False):
+        return 0
+    try:
+        return _organize_downloads(src_root, dest_root, group_featured)
+    finally:
+        ORGANIZE_LOCK.release()
+
+
+def _organize_downloads(src_root, dest_root, group_featured):
     moved = 0
     if not src_root or not os.path.isdir(src_root) or not dest_root:
         return 0
@@ -1517,7 +1553,7 @@ def organize_downloads(src_root, dest_root, group_featured=True):
                     continue   # already in place
                 os.makedirs(folder, exist_ok=True)
                 if os.path.exists(target):
-                    if os.path.getsize(target) == os.path.getsize(src):
+                    if same_file(target, src):
                         os.remove(src)          # exact duplicate of a song you already have
                         emptied.add(root)
                         continue
@@ -2029,7 +2065,7 @@ def load_stats():
 def save_stats(stats):
     try:
         stats["events"] = stats["events"][-50000:]
-        STATS_FILE.write_text(json.dumps(stats), encoding="utf-8")
+        write_json_atomic(STATS_FILE, stats)
     except Exception:
         pass
 
@@ -6002,6 +6038,12 @@ class Player(QMainWindow):
                 self.cover_batch.wait(2000)
             self.thumbs.stop()
             self.thumbs.wait(2000)
+            # let background jobs finish (a library scan, or organize halfway through moving a song)
+            deadline = time.time() + 10
+            for w in list(self.workers):
+                if hasattr(w, "stop"):
+                    w.stop()
+                w.wait(max(0, int((deadline - time.time()) * 1000)))
             if self.fs is not None:
                 self.fs.hide()
         except Exception:
