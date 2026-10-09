@@ -1,0 +1,5 @@
+PyQt6>=6.5
+mutagen
+numpy
+# optional: lets eozMP use VLC (needed for the equalizer); VLC itself must be installed
+python-vlc

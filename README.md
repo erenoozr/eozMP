@@ -1,0 +1,56 @@
+<p align="center">
+  <img src="eozMP_logo.png" width="128" alt="eozMP logo">
+</p>
+
+<h1 align="center">eozMP</h1>
+<p align="center"><i>eren's definitely (not) sketchy music player — customize and enjoy your music.</i></p>
+
+eozMP is a desktop music player for Windows. It organizes your music by artist and album, shows covers and
+synced lyrics, and can find and download music through Soulseek.
+
+## Features
+
+- **Your library, tidy:** Artist → Album, with covers, numbers and years; collaborations filed under the first artist
+- **Lyrics:** synced lyrics that follow the song (from `.lrc` files, the song's tags or lrclib.net), or add your own
+- **Fullscreen player:** big cover and controls on the left, lyrics on the right, over a moving blurred background
+- **Mini player:** small always-on-top window with the lyric line, seek bar and volume
+- **Playlists, queue panel, favorites, shuffle and repeat** (previous always goes back to the song you heard)
+- **Browse** by genre and decade, **search** artists / albums / songs, **listening stats**
+- **Soulseek** (through slskd): search, download albums or whole discographies, auto-organize downloads
+- **Make it yours:** themes, accent colors (even from the album cover), fonts, lyric styles, visualizer, equalizer (VLC)
+- Media keys, system tray, drag and drop, backup and restore
+
+## Download
+
+Get `eozMP.exe` from the [latest release](../../releases/latest) and double-click it.
+Windows may show a blue *"Windows protected your PC"* box because the app is new and unsigned:
+click **More info → Run anyway**.
+
+## Build it yourself
+
+1. Install [Python](https://www.python.org/downloads/) and tick **Add Python to PATH** in the installer.
+2. Download this repository (green **Code** button → **Download ZIP**) and extract it.
+3. Double-click **`build_exe.bat`**. It installs everything and puts `eozMP.exe` on your Desktop.
+
+Or run it straight from the source:
+
+```
+pip install -r requirements.txt
+python musicplayer.py
+```
+
+## How to use it
+
+Everything — first start, the queue, lyrics, fullscreen, **logging in to Soulseek with slskd**, settings and
+troubleshooting — is in the **[User Manual](MANUAL.md)**.
+
+## License
+
+eozMP is free software, released under the **GNU General Public License v3.0** (see [LICENSE](LICENSE)).
+You can use, change and share it; if you share a changed version, it must stay under the same license with its
+source code available. It uses other open-source projects, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Disclaimer
+
+eozMP is not affiliated with Soulseek, slskd, VLC, Apple, MusicBrainz or lrclib. Soulseek is a file-sharing
+network: only download music you have the right to download. The software comes with no warranty.

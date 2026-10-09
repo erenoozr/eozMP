@@ -1,0 +1,9 @@
+# build output
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+# never upload personal settings or keys
+slskd.yml
+.simple_music_player*
