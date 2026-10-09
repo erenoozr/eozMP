@@ -3,7 +3,7 @@
 </p>
 
 <h1 align="center">eozMP</h1>
-<p align="center"><i>eren's definitely (not) sketchy music player — customize and enjoy your music.</i></p>
+<p align="center"><i>eren's music player — customize and enjoy your music.</i></p>
 
 eozMP is a desktop music player for Windows. It organizes your music by artist and album, shows covers and
 synced lyrics, and can find and download music through Soulseek.
