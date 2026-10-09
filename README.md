@@ -50,6 +50,15 @@ eozMP is free software, released under the **GNU General Public License v3.0** (
 You can use, change and share it; if you share a changed version, it must stay under the same license with its
 source code available. It uses other open-source projects, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
+<img width="1075" height="889" alt="homepage" src="https://github.com/user-attachments/assets/0d0d5050-0438-4dd2-9207-d529d66931b9" />
+<img width="1062" height="877" alt="appmain" src="https://github.com/user-attachments/assets/aecd3b5f-5e5a-4067-84e3-a015d527d243" />
+<img width="1918" height="1198" alt="fullscreen" src="https://github.com/user-attachments/assets/bc772921-a652-45c8-b138-87b9246d7294" />
+<img width="1072" height="886" alt="lyrics" src="https://github.com/user-attachments/assets/d4350764-ed26-418a-a082-f33348372c0e" />
+<img width="543" height="210" alt="miniplayer" src="https://github.com/user-attachments/assets/cbb69bc0-6f03-4cc5-be0e-f46e4df8fbc4" />
+<img width="1070" height="887" alt="search" src="https://github.com/user-attachments/assets/fa97ecab-344b-452f-af4a-f684c0c0be16" />
+<img width="1067" height="959" alt="searchsoulseek" src="https://github.com/user-attachments/assets/fb0b1c7f-486f-47d2-8c85-baa722deb36e" />
+
+
 ## Disclaimer
 
 eozMP is not affiliated with Soulseek, slskd, VLC, Apple, MusicBrainz or lrclib. Soulseek is a file-sharing
