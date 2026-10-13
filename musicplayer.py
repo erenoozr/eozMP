@@ -19,6 +19,7 @@ Requires: pip install PyQt6 mutagen numpy   (optional: python-vlc + VLC for the 
 """
 import bisect
 import colorsys
+import copy
 import hashlib
 import html
 import json
@@ -169,12 +170,56 @@ def write_json_atomic(path, data, **kw):
         raise
 
 
+LOAD_PROBLEMS = []   # files that couldn't be read at start-up (a copy was kept aside), shown to the user
+
+
+def read_json(path, kind, quarantine=True):
+    """Read a JSON file of the given kind (dict or list). Returns None if it's missing.
+    If it exists but can't be read, a copy is kept as <name>.corrupt-<time> so nothing is lost
+    when the app later saves fresh data over it."""
+    for attempt in range(4):
+        try:
+            text = path.read_text(encoding="utf-8-sig")   # -sig: some editors add a BOM
+            break
+        except FileNotFoundError:
+            return None
+        except OSError as e:   # locked for a moment (antivirus, backup tool): try again
+            problem = str(e)
+            time.sleep(0.25)
+    else:
+        text = None
+    if text is not None:
+        try:
+            data = json.loads(text)
+            if isinstance(data, kind):
+                return data
+            problem = f"expected a {kind.__name__}, found a {type(data).__name__}"
+        except ValueError as e:
+            problem = str(e)
+    if quarantine:
+        backup = path.with_name(f"{path.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}")
+        try:
+            shutil.copy2(path, backup)
+            LOAD_PROBLEMS.append(f"{path.name}: {problem}\nA copy was kept as {backup.name}")
+        except OSError:
+            LOAD_PROBLEMS.append(f"{path.name}: {problem}")
+    return None
+
+
+def same_kind(default, value):
+    """Is a loaded setting the same type as its default? (ints and floats count as one kind)"""
+    if isinstance(default, bool) or isinstance(value, bool):
+        return isinstance(default, bool) and isinstance(value, bool)
+    if isinstance(default, (int, float)):
+        return isinstance(value, (int, float))
+    return isinstance(value, type(default))
+
+
 def load_config():
-    cfg = dict(DEFAULT_CFG)
-    try:
-        cfg.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
-    except Exception:
-        pass
+    cfg = copy.deepcopy(DEFAULT_CFG)
+    for key, value in (read_json(CONFIG_FILE, dict) or {}).items():
+        if key not in DEFAULT_CFG or same_kind(DEFAULT_CFG[key], value):
+            cfg[key] = value
     return cfg
 
 
@@ -190,11 +235,8 @@ PLAYLIST_FILE = Path.home() / ".simple_music_player_playlists.json"
 
 def load_playlists():
     """{playlist name: [song file paths]}"""
-    try:
-        data = json.loads(PLAYLIST_FILE.read_text(encoding="utf-8"))
-        return {str(k): [str(p) for p in v] for k, v in data.items() if isinstance(v, list)}
-    except Exception:
-        return {}
+    data = read_json(PLAYLIST_FILE, dict) or {}
+    return {str(k): [str(p) for p in v] for k, v in data.items() if isinstance(v, list)}
 
 
 def save_playlists(playlists):
@@ -249,6 +291,7 @@ def to_int(text, default=9999):
 def read_track(path):
     title = artist = album = genre = ""
     num, disc, year, length = 9999, 1, 0, 0
+    failed = False
     try:
         audio = MutagenFile(path, easy=True)
         if audio is not None:
@@ -263,8 +306,11 @@ def read_track(path):
                 num = to_int(first(t, "tracknumber"))
                 disc = to_int(first(t, "discnumber"), 1)
                 year = to_int(first(t, "date")[:4], 0)
-    except Exception:
-        pass
+    except Exception as e:
+        # a file that's locked right now (a tagger, antivirus...) must be read again next scan,
+        # not remembered as untagged (mutagen wraps the OSError in its own error)
+        if isinstance(e, OSError) or isinstance(e.__cause__, OSError):
+            failed = True
     return {
         "path": path,
         "title": title or Path(path).stem,
@@ -276,15 +322,12 @@ def read_track(path):
         "disc": disc,
         "year": year,
         "length": length,
+        **({"read_failed": True} if failed else {}),
     }
 
 
 def load_cache():
-    try:
-        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
+    return read_json(CACHE_FILE, list, quarantine=False) or []   # only a cache: rebuilt by the next scan
 
 
 def save_cache(tracks):
@@ -294,21 +337,47 @@ def save_cache(tracks):
         pass
 
 
+def norm_path(path):
+    """One spelling per file: 'D:/Music' and 'd:\\music' are the same place on Windows."""
+    return os.path.normcase(os.path.abspath(path))
+
+
+def is_inside(path, folder):
+    """Both normalized with norm_path."""
+    return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
+
+
+def distinct_roots(folders):
+    """[(folder, normalized)] without duplicates and without folders that sit inside another one."""
+    roots = []
+    for folder in folders:
+        n = norm_path(folder)
+        if any(is_inside(n, r) for _, r in roots):
+            continue
+        roots = [(f, r) for f, r in roots if not is_inside(r, n)]
+        roots.append((folder, n))
+    return roots
+
+
 def scan_folders(folders, cache=None):
     """Walk the folders. Files that haven't changed since the last scan are
     taken from the cache instead of being re-read (this is what makes
     start-up fast)."""
     old = {t["path"]: t for t in (cache or []) if "path" in t}
-    tracks, seen = [], set()
-    for folder in folders:
-        for root, _, files in os.walk(folder):
+    tracks, seen, unreachable = [], set(), []
+    for folder, nroot in distinct_roots(folders):
+        if not os.path.isdir(folder):
+            unreachable.append(nroot)    # unplugged drive / NAS that's offline right now
+            continue
+        for root, _, files in os.walk(folder, onerror=lambda e: unreachable.append(norm_path(e.filename))):
             for name in files:
                 if Path(name).suffix.lower() not in AUDIO_EXTS:
                     continue
                 path = os.path.join(root, name)
-                if path in seen:
+                key = norm_path(path)
+                if key in seen:
                     continue
-                seen.add(path)
+                seen.add(key)
                 try:
                     st = os.stat(path)
                 except OSError:
@@ -319,9 +388,16 @@ def scan_folders(folders, cache=None):
                     tracks.append(prev)
                 else:
                     t = read_track(path)
-                    t["mtime"], t["size"] = st.st_mtime, st.st_size
+                    if not t.pop("read_failed", False):   # no mtime/size = read it again next time
+                        t["mtime"], t["size"] = st.st_mtime, st.st_size
                     t["added"] = max(st.st_mtime, st.st_ctime)
                     tracks.append(t)
+    # keep the songs of folders we couldn't reach, so an unplugged drive doesn't empty the library
+    for path, t in old.items():
+        key = norm_path(path)
+        if key not in seen and any(is_inside(key, u) for u in unreachable):
+            seen.add(key)
+            tracks.append(t)
     return tracks
 
 
@@ -1494,8 +1570,6 @@ class ThumbLoader(QThread):
 
 
 BAD_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-LEFTOVER_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".nfo", ".m3u", ".m3u8", ".sfv",
-                 ".log", ".cue", ".txt", ".url", ".ini", ".db", ".md5"}
 # names Windows keeps for devices: a folder called "NUL" (or "CON", "AUX"... on Windows 10) can't be made
 WINDOWS_RESERVED_NAMES = ({"CON", "PRN", "AUX", "NUL"}
                           | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)})
@@ -1515,22 +1589,22 @@ def same_file(a, b):
     return os.path.getsize(a) == os.path.getsize(b) and filecmp.cmp(a, b, shallow=False)
 
 
-def organize_downloads(src_root, dest_root, group_featured=True):
+def organize_downloads(src_root, dest_root, group_featured=True, split_collabs=True, keep=()):
     """Move finished downloads to dest_root/Artist/Album/NN - Title.ext (runs in a background thread).
     If another organize is still running, does nothing and returns 0."""
     if not ORGANIZE_LOCK.acquire(blocking=False):
         return 0
     try:
-        return _organize_downloads(src_root, dest_root, group_featured)
+        return _organize_downloads(src_root, dest_root, group_featured, split_collabs, keep)
     finally:
         ORGANIZE_LOCK.release()
 
 
-def _organize_downloads(src_root, dest_root, group_featured):
+def _organize_downloads(src_root, dest_root, group_featured, split_collabs, keep):
     moved = 0
     if not src_root or not os.path.isdir(src_root) or not dest_root:
         return 0
-    emptied = set()
+    went_to = {}   # download folder -> album folders its songs went to
     for root, _dirs, files in os.walk(src_root):
         for name in files:
             ext = Path(name).suffix.lower()
@@ -1540,7 +1614,8 @@ def _organize_downloads(src_root, dest_root, group_featured):
             try:
                 t = read_track(src)
                 raw = t.get("artist_raw") or ""
-                artist = main_artist(raw) if group_featured else (raw.strip() or "Unknown Artist")
+                artist = (main_artist(raw, split_collabs, keep) if group_featured
+                          else (raw.strip() or "Unknown Artist"))
                 folder = os.path.join(dest_root, safe_name(artist, "Unknown Artist"),
                                       safe_name(t["album"], "Unknown Album"))
                 base = safe_name(t["title"], Path(name).stem)
@@ -1549,13 +1624,15 @@ def _organize_downloads(src_root, dest_root, group_featured):
                     if t["disc"] > 1:
                         base = f"{t['disc']}-{base}"
                 target = os.path.join(folder, base + ext)
-                if os.path.normcase(os.path.abspath(target)) == os.path.normcase(os.path.abspath(src)):
+                if norm_path(target) == norm_path(src):
                     continue   # already in place
+                if os.path.exists(target) and os.path.samefile(src, target):
+                    continue   # the same file seen through another path (junction, mapped drive, NAS)
                 os.makedirs(folder, exist_ok=True)
                 if os.path.exists(target):
                     if same_file(target, src):
                         os.remove(src)          # exact duplicate of a song you already have
-                        emptied.add(root)
+                        went_to.setdefault(root, set()).add(folder)
                         continue
                     n = 2
                     while os.path.exists(os.path.join(folder, f"{base} ({n}){ext}")):
@@ -1563,7 +1640,7 @@ def _organize_downloads(src_root, dest_root, group_featured):
                     target = os.path.join(folder, f"{base} ({n}){ext}")
                 shutil.move(src, target)
                 moved += 1
-                emptied.add(root)
+                went_to.setdefault(root, set()).add(folder)
                 stem_src = os.path.splitext(src)[0]
                 stem_dst = os.path.splitext(target)[0]
                 for side in (".lrc", ".txt"):           # lyrics files travel with their song
@@ -1576,19 +1653,49 @@ def _organize_downloads(src_root, dest_root, group_featured):
                             shutil.copy2(os.path.join(root, img), dst_img)
             except Exception:
                 continue   # file still busy or unreadable: try again next time
-    # tidy up download folders that now only hold leftovers (covers, .nfo, playlists...)
-    for folder in sorted(emptied, key=len, reverse=True):
+    # A download folder that held exactly one album: its extras (.cue, .log, scans...) follow
+    # the album. Nothing is ever deleted here except folders that end up empty.
+    for root in sorted(went_to, key=len, reverse=True):
         try:
-            if os.path.normcase(folder) == os.path.normcase(src_root) or not os.path.isdir(folder):
+            if norm_path(root) == norm_path(src_root) or not os.path.isdir(root):
                 continue
-            left = []
-            for r, _d, fs in os.walk(folder):
-                left += fs
-            if all(Path(f).suffix.lower() in LEFTOVER_EXTS for f in left):
-                shutil.rmtree(folder, ignore_errors=True)
+            if len(went_to[root]) == 1 and not contains_audio(root):
+                album = next(iter(went_to[root]))
+                if not (is_inside(norm_path(album), norm_path(root))
+                        or is_inside(norm_path(root), norm_path(album))):
+                    move_extras(root, album, skip={norm_path(r) for r in went_to})
+            remove_empty_dirs(root)
         except Exception:
             pass
     return moved
+
+
+def contains_audio(folder):
+    return any(Path(f).suffix.lower() in AUDIO_EXTS for _r, _d, fs in os.walk(folder) for f in fs)
+
+
+def move_extras(src_dir, album_dir, skip=()):
+    """Move what's left in src_dir into album_dir. A file that's already there with the same
+    bytes (e.g. the cover copied earlier) is dropped; anything else that would clash stays put."""
+    for entry in os.listdir(src_dir):
+        src = os.path.join(src_dir, entry)
+        dst = os.path.join(album_dir, entry)
+        if os.path.isdir(src) and (norm_path(src) in skip or contains_audio(src)):
+            continue   # another download folder of its own
+        if os.path.exists(dst):
+            if os.path.isfile(src) and os.path.isfile(dst) and same_file(src, dst):
+                os.remove(src)
+            continue
+        shutil.move(src, dst)
+
+
+def remove_empty_dirs(folder):
+    """Remove folder and its subfolders, but only the ones that are completely empty."""
+    for r, _d, _f in os.walk(folder, topdown=False):
+        try:
+            os.rmdir(r)
+        except OSError:
+            pass   # not empty: keep it
 
 
 def lyrics_page_qss(apple, immersive):
@@ -2049,12 +2156,7 @@ SMART_PLAYLISTS = (SMART_FAV, SMART_MOST, SMART_ADDED, SMART_RECENT)
 
 
 def load_stats():
-    try:
-        data = json.loads(STATS_FILE.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            data = {}
-    except Exception:
-        data = {}
+    data = read_json(STATS_FILE, dict) or {}
     data.setdefault("favorites", [])      # song paths, oldest first
     data.setdefault("plays", {})          # path -> {"count", "last", "seconds"}
     data.setdefault("events", [])         # [timestamp, path, seconds listened]
@@ -4238,8 +4340,17 @@ class Player(QMainWindow):
         self.setup_tray()
         if self.cfg["media_keys"]:
             self.register_media_keys()
+        if LOAD_PROBLEMS:
+            QTimer.singleShot(0, self.show_load_problems)
 
     # ----- helpers
+    def show_load_problems(self):
+        QMessageBox.warning(
+            self, "Some files couldn't be read",
+            "eozMP couldn't read these files and started with defaults for them. "
+            "Nothing was lost: the old files were kept next to them.\n\n" + "\n\n".join(LOAD_PROBLEMS))
+        LOAD_PROBLEMS.clear()
+
     def keep(self, worker):
         self.workers.add(worker)
         worker.finished.connect(lambda: self.workers.discard(worker))
@@ -6431,7 +6542,9 @@ class Player(QMainWindow):
                 self.statusBar().showMessage("Set your slskd downloads folder first (Preferences > Soulseek).")
             return
         group = bool(self.cfg["group_featured"])
-        w = Worker(lambda: organize_downloads(src, dest, group))
+        split = bool(self.cfg["split_collabs"])
+        keep = {k.strip().lower() for k in self.cfg["keep_together"] if k.strip()}
+        w = Worker(lambda: organize_downloads(src, dest, group, split, keep))
 
         def done(n):
             if n or not quiet:

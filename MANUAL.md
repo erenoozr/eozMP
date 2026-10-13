@@ -237,6 +237,8 @@ web:
 - **Tidy library:** finished downloads are moved into your first music folder as `Artist / Album / 01 - Title` and
   show up in your library by themselves. You can turn this off or pick another folder in Preferences → Soulseek;
   **Library → Organize downloads now** tidies files you already have.
+  Files that came with an album (`.cue`, `.log`, scans) move along with it. Organizing never deletes
+  anything except folders it left empty.
 
 Soulseek is a file-sharing network. Only download music you're allowed to have.
 
