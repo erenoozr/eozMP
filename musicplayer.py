@@ -79,6 +79,7 @@ AUDIO_EXTS = {
 }
 COVER_NAMES = ("cover", "folder", "front", "album", "albumart")
 COVER_EXTS = (".jpg", ".jpeg", ".png")
+APP_VERSION = "1.1"
 CONFIG_FILE = Path.home() / ".simple_music_player.json"
 CACHE_FILE = Path.home() / ".simple_music_player_cache.json"
 LOSSLESS_EXTS = {"flac", "wav", "aiff", "aif", "ape", "wv"}
@@ -438,7 +439,7 @@ def embedded_lyrics(path):
 
 def http_json(url):
     req = urllib.request.Request(
-        url, headers={"User-Agent": "eozMP/1.0 (personal music player)"}
+        url, headers={"User-Agent": f"eozMP/{APP_VERSION} (personal music player)"}
     )
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8", "replace"))
@@ -2146,7 +2147,7 @@ def accent_from_pixmap(pix):
 
 
 def http_bytes(url, timeout=15):
-    req = urllib.request.Request(url, headers={"User-Agent": "eozMP/1.0 (personal music player)"})
+    req = urllib.request.Request(url, headers={"User-Agent": f"eozMP/{APP_VERSION} (personal music player)"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
 
@@ -5468,7 +5469,7 @@ class Player(QMainWindow):
         elif self.player.source().isEmpty():
             if self.up_next:
                 self.next_track()
-            elif self.current_album is not None:
+            elif self.current_album is not None and self.albums[self.current_album]["tracks"]:
                 first_track = self.albums[self.current_album]["tracks"][0]
                 self.play_from_library(self.qindex[first_track["path"]])
             else:
@@ -5507,6 +5508,10 @@ class Player(QMainWindow):
             current = self.current_path()
             if current:
                 self.shuffle_played.add(current)
+            if auto and self.cfg["repeat_mode"] != "all" and all(p in self.shuffle_played for p in self.ctx_paths):
+                self.shuffle_played.clear()
+                self.player.stop()
+                return
             self.ctx_pos = pick_shuffle(self.ctx_paths, self.shuffle_played, avoid=current)
             self.shuffle_played.add(self.ctx_paths[self.ctx_pos])
         elif self.ctx_pos + 1 >= n:
@@ -5682,7 +5687,12 @@ class Player(QMainWindow):
     def set_volume(self, value):
         self.audio.setVolume(value / 100)
         self.cfg["volume"] = value
-        save_config(self.cfg)
+        # dragging the slider fires many times a second; write once it settles
+        if not hasattr(self, "_vol_save_timer"):
+            self._vol_save_timer = QTimer(self)
+            self._vol_save_timer.setSingleShot(True)
+            self._vol_save_timer.timeout.connect(lambda: save_config(self.cfg))
+        self._vol_save_timer.start(500)
         if value and self.audio.isMuted():
             self.audio.setMuted(False)
         self.update_mute_icon()
