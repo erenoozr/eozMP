@@ -176,6 +176,19 @@ class MpvPlayerTest(PlayerTest):
         self.player.switch_engine("mpv")          # a new engine gets the same settings
         self.assertEqual(self.player.player.mp.replaygain, "track")
 
+    def test_equalizer_works_with_mpv(self):
+        self.make_player(["One"])
+        dlg = mp.EqualizerDialog(self.player)
+        self.assertTrue(hasattr(dlg, "preset"))           # the real equalizer, not the "needs VLC" note
+        dlg.preset.setCurrentText("Rock")
+        self.assertEqual(self.player.cfg["eq_preset"], "Rock")
+        self.assertTrue(self.player.cfg["eq_enabled"])
+        pre, bands = self.player.player._eq
+        self.assertEqual((pre, bands), (5.0, [8.0, 4.8, -5.6, -8.0, -3.2, 4.0, 8.8, 11.2, 11.2, 11.2]))
+        dlg.deleteLater()
+        self.player.switch_engine("mpv")                  # a new engine starts with the same setting
+        self.assertEqual(self.player.player._eq[0], 5.0)
+
     def test_settings_window_lists_output_devices(self):
         self.make_player(["One"])
         dlg = mp.PreferencesDialog(self.player.cfg, self.player)

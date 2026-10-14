@@ -15,7 +15,7 @@ See the GNU General Public License for more details.
 You should have received a copy of the GNU General Public License along with this program.
 If not, see <https://www.gnu.org/licenses/>.
 
-Requires: pip install PyQt6 mutagen numpy   (optional: python-vlc + VLC for the equalizer)
+Requires: pip install PyQt6 mutagen numpy   (optional: python-mpv + libmpv-2.dll, or python-vlc + VLC)
 """
 import bisect
 import colorsys
@@ -1952,8 +1952,8 @@ class PreferencesDialog(QDialog):
         info = QLabel(
             f"Now playing through: {names.get(using, 'the built-in Qt engine')}.\n"
             f"mpv: {MPV_STATUS}.  VLC: {VLC_STATUS}." + (f"\nLast problem: {problem}" if problem else "") + "\n"
-            "mpv gives the cleanest sound. VLC powers the equalizer. If neither is there, eozMP "
-            "uses the built-in engine."
+            "mpv gives the cleanest sound; the equalizer works with mpv and VLC. If neither is there, "
+            "eozMP uses the built-in engine."
         )
         info.setWordWrap(True)
         info.setObjectName("sub")
@@ -2893,6 +2893,7 @@ class MpvEngine(QObject):
         # [finished, current, ...] until the new song starts and the finished one is removed
         self._next = None
         self._advancing = False
+        self._eq = None             # (preamp, bands) the running equalizer filters are set to
         self._from_mpv.connect(self._on_mpv)
         for name in ("start-file", "file-loaded", "end-file"):
             self.mp.event_callback(name)(lambda ev, n=name: self._from_mpv.emit(n, ev.as_dict()))
@@ -2961,6 +2962,33 @@ class MpvEngine(QObject):
         self.timer.stop()
         self._set_state(QMediaPlayer.PlaybackState.StoppedState)
         self.positionChanged.emit(0)
+
+    def set_equalizer(self, enabled, preamp, bands):
+        """ffmpeg's equalizer filters, one per band (same bands and preamp scale as VLC). Moving a
+        slider changes the running filter instead of rebuilding the chain, so the sound doesn't drop."""
+        bands = ([float(b) for b in bands] + [0.0] * len(EQ_FREQS))[:len(EQ_FREQS)]
+        preamp = float(preamp)
+        if not enabled:
+            if self._eq is not None:
+                self.mp.command("af", "remove", "@eq")
+                self._eq = None
+            return
+        if self._eq is not None:
+            old_pre, old_bands = self._eq
+            try:
+                if preamp != old_pre:
+                    self.mp.command("af-command", "eq", "volume", f"{preamp - EQ_UNITY_PREAMP}dB", "volume@pre")
+                for i, (g, old) in enumerate(zip(bands, old_bands)):
+                    if g != old:
+                        self.mp.command("af-command", "eq", "g", f"{g}", f"equalizer@b{i}")
+                self._eq = (preamp, bands)
+                return
+            except Exception:
+                self.mp.command("af", "remove", "@eq")   # build it again below
+        parts = [f"volume@pre=volume={preamp - EQ_UNITY_PREAMP}dB:precision=float"]
+        parts += [f"equalizer@b{i}=f={f}:t=o:w=1:g={g}" for i, (f, g) in enumerate(zip(EQ_FREQS, bands))]
+        self.mp.command("af", "add", f"@eq:lavfi=[{','.join(parts)}]")
+        self._eq = (preamp, bands)
 
     def output_devices(self):
         """[(mpv device name, description)], "auto" (the Windows default) first."""
@@ -3072,6 +3100,32 @@ class MpvEngine(QObject):
 
 ENGINE_CHOICES = ["Automatic (mpv, then VLC)", "mpv", "VLC", "Qt (built-in)"]
 
+# The equalizer's bands and presets: VLC 3's, so a setting sounds the same with mpv and VLC and the
+# presets are there without VLC. The preamp is VLC's too: 12 dB means "no change" (VLC lowers its
+# input by 12 dB first), which is why every preset has a preamp around 12.
+EQ_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+EQ_UNITY_PREAMP = 12.0
+EQ_PRESETS = [
+    ("Flat", 12.0, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+    ("Classical", 12.0, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -7.2, -7.2, -7.2, -9.6]),
+    ("Club", 6.0, [0.0, 0.0, 8.0, 5.6, 5.6, 5.6, 3.2, 0.0, 0.0, 0.0]),
+    ("Dance", 5.0, [9.6, 7.2, 2.4, 0.0, 0.0, -5.6, -7.2, -7.2, 0.0, 0.0]),
+    ("Full bass", 5.0, [-8.0, 9.6, 9.6, 5.6, 1.6, -4.0, -8.0, -10.4, -11.2, -11.2]),
+    ("Full bass and treble", 4.0, [7.2, 5.6, 0.0, -7.2, -4.8, 1.6, 8.0, 11.2, 12.0, 12.0]),
+    ("Full treble", 3.0, [-9.6, -9.6, -9.6, -4.0, 2.4, 11.2, 16.0, 16.0, 16.0, 16.8]),
+    ("Headphones", 4.0, [4.8, 11.2, 5.6, -3.2, -2.4, 1.6, 4.8, 9.6, 12.8, 14.4]),
+    ("Large Hall", 5.0, [10.4, 10.4, 5.6, 5.6, 0.0, -4.8, -4.8, -4.8, 0.0, 0.0]),
+    ("Live", 7.0, [-4.8, 0.0, 4.0, 5.6, 5.6, 5.6, 4.0, 2.4, 2.4, 2.4]),
+    ("Party", 6.0, [7.2, 7.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 7.2, 7.2]),
+    ("Pop", 6.0, [-1.6, 4.8, 7.2, 8.0, 5.6, 0.0, -2.4, -2.4, -1.6, -1.6]),
+    ("Reggae", 8.0, [0.0, 0.0, 0.0, -5.6, 0.0, 6.4, 6.4, 0.0, 0.0, 0.0]),
+    ("Rock", 5.0, [8.0, 4.8, -5.6, -8.0, -3.2, 4.0, 8.8, 11.2, 11.2, 11.2]),
+    ("Ska", 6.0, [-2.4, -4.8, -4.0, 0.0, 4.0, 5.6, 8.8, 9.6, 11.2, 9.6]),
+    ("Soft", 5.0, [4.8, 1.6, 0.0, -2.4, 0.0, 4.0, 8.0, 9.6, 11.2, 12.0]),
+    ("Soft rock", 7.0, [4.0, 4.0, 2.4, 0.0, -4.0, -5.6, -3.2, 0.0, 2.4, 8.8]),
+    ("Techno", 5.0, [8.0, 5.6, 0.0, -5.6, -4.8, 0.0, 8.0, 9.6, 9.6, 8.8]),
+]
+
 
 def engine_order(choice):
     """Engines to try, best first. The built-in Qt engine is always the last resort."""
@@ -3081,26 +3135,6 @@ def engine_order(choice):
     if choice in ("mpv", "VLC"):
         return [choice, "Qt"]
     return ["mpv", "VLC", "Qt"]   # "Automatic", including the old "Automatic (VLC if installed)"
-
-
-def vlc_eq_info():
-    """(band frequencies, [(preset name, preamp, [band amps])])"""
-    n = vlc.libvlc_audio_equalizer_get_band_count()
-    freqs = [vlc.libvlc_audio_equalizer_get_band_frequency(i) for i in range(n)]
-    presets = []
-    for i in range(vlc.libvlc_audio_equalizer_get_preset_count()):
-        name = vlc.libvlc_audio_equalizer_get_preset_name(i)
-        if isinstance(name, bytes):
-            name = name.decode("utf-8", "replace")
-        eq = vlc.libvlc_audio_equalizer_new_from_preset(i)
-        try:
-            pre = eq.get_preamp()
-            amps = [eq.get_amp_at_index(b) for b in range(n)]
-        except AttributeError:
-            pre = vlc.libvlc_audio_equalizer_get_preamp(eq)
-            amps = [vlc.libvlc_audio_equalizer_get_amp_at_index(eq, b) for b in range(n)]
-        presets.append((name, pre, amps))
-    return freqs, presets
 
 
 def create_engine(choice, mpv_dir=""):
@@ -3139,19 +3173,19 @@ class EqualizerDialog(QDialog):
         self._loading = False
         self.setWindowTitle("Equalizer")
         lay = QVBoxLayout(self)
-        if main.engine_name != "VLC" or vlc is None:
-            reason = main.vlc_error or ENGINE_ERROR or VLC_STATUS
+        if not hasattr(main.player, "set_equalizer"):
+            reason = main.vlc_error or ENGINE_ERROR or f"mpv: {MPV_STATUS}. VLC: {VLC_STATUS}"
             note = QLabel(
-                "The equalizer needs the VLC audio engine.\n\n"
+                "The equalizer needs the mpv or VLC audio engine.\n\n"
                 f"Status: {reason}\n\n"
-                "To set it up: install VLC (free) from videolan.org, then in a command window run\n"
-                "pip install python-vlc  and restart eozMP (rebuild the exe if you use it).")
+                "To set it up: put libmpv-2.dll next to eozMP (or pick its folder in Settings > Audio),\n"
+                "or install VLC from videolan.org and run  pip install python-vlc,  then restart eozMP.")
             note.setWordWrap(True)
             lay.addWidget(note)
             row = QHBoxLayout()
             row.addStretch(1)
-            if vlc is not None:
-                use = QPushButton("Use VLC now")
+            if mpv is not None or vlc is not None:
+                use = QPushButton("Use " + ("mpv" if mpv is not None else "VLC") + " now")
                 use.setObjectName("primary")
                 use.clicked.connect(self.use_vlc)
                 row.addWidget(use)
@@ -3160,7 +3194,7 @@ class EqualizerDialog(QDialog):
             row.addWidget(ok)
             lay.addLayout(row)
             return
-        self.freqs, self.presets = vlc_eq_info()
+        self.freqs, self.presets = EQ_FREQS, EQ_PRESETS
         cfg = main.cfg
         bands = [float(x) for x in cfg["eq_bands"]] + [0.0] * len(self.freqs)
         top = QHBoxLayout()
@@ -3191,11 +3225,11 @@ class EqualizerDialog(QDialog):
         reset.clicked.connect(self.reset)
 
     def use_vlc(self):
-        self.main.cfg["audio_engine"] = "Automatic (VLC if installed)"
+        self.main.cfg["audio_engine"] = ENGINE_CHOICES[0]   # Automatic: mpv, then VLC
         save_config(self.main.cfg)
         self.main.switch_engine(self.main.cfg["audio_engine"])
         self.accept()
-        if self.main.engine_name == "VLC":
+        if hasattr(self.main.player, "set_equalizer"):
             QTimer.singleShot(150, self.main.open_equalizer)
 
     @staticmethod
@@ -7802,7 +7836,7 @@ class Player(QMainWindow):
         self.vlc_error = why
         self.switch_engine(
             "Qt (built-in)",
-            notice=f"VLC couldn't play ({why}). Switched to the built-in engine - the equalizer needs VLC.",
+            notice=f"VLC couldn't play ({why}). Switched to the built-in engine - the equalizer needs mpv or VLC.",
             force_play=True)
 
     def switch_engine(self, choice, notice="", force_play=False):
@@ -7840,7 +7874,7 @@ class Player(QMainWindow):
         self.refresh_icons()
         if not notice:
             if self.engine_name == "mpv":
-                notice = "Now playing through mpv."
+                notice = "Now playing through mpv - the equalizer is available."
             elif self.engine_name == "VLC":
                 notice = "Now playing through VLC - the equalizer is available."
             else:
@@ -8329,7 +8363,7 @@ class Player(QMainWindow):
 
     # ----- equalizer
     def apply_equalizer(self):
-        if self.engine_name != "VLC":
+        if not hasattr(self.player, "set_equalizer"):
             return
         try:
             self.player.set_equalizer(

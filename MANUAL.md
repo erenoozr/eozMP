@@ -9,7 +9,7 @@ step by step.
 [Lyrics, mini player and fullscreen](#lyrics-mini-player-and-fullscreen) ·
 [Playlists, Browse, Search, Home and Stats](#playlists-browse-search-home-and-stats) ·
 [Soulseek](#soulseek-logging-in-and-downloading) · [Preferences](#making-it-yours-preferences) ·
-[Optional extras](#optional-extras-vlc-equalizer-and-visualizer) · [Backups and updates](#backups-updates-and-your-data) ·
+[Optional extras](#optional-extras-mpv-vlc-equalizer-and-visualizer) · [Backups and updates](#backups-updates-and-your-data) ·
 [Troubleshooting](#troubleshooting) · [Shortcuts](#keyboard-and-mouse-shortcuts)
 
 ## What you need
@@ -22,7 +22,8 @@ step by step.
 | An internet connection | For lyrics and covers | |
 | Python 3 | Only to build eozMP yourself | [python.org/downloads](https://www.python.org/downloads/) |
 | slskd (a small Soulseek program) | Only for Soulseek | [github.com/slskd/slskd](https://github.com/slskd/slskd/releases) |
-| VLC | Only for the equalizer | [videolan.org](https://www.videolan.org/) |
+| mpv (libmpv-2.dll) | For gapless playback, ReplayGain, the equalizer | [mpv.io/installation](https://mpv.io/installation/) |
+| VLC | Only if you don't use mpv and want the equalizer | [videolan.org](https://www.videolan.org/) |
 
 A Soulseek account is free. slskd creates it for you the first time it connects (see the Soulseek section).
 
@@ -252,17 +253,26 @@ Click **Preferences** in the top menu (or press Ctrl+,). **Apply** shows a chang
 | Appearance | Theme (System, Dark, Light), accent color (presets, colors from each album cover, or any custom color by hex code or color picker), corners, spacing, album cover size, how albums look in the left list, fade between pages, app font (Times New Roman, the system font or any font) and text size, mini player opacity |
 | Library | Music folders, group featured artists, put collaborations under the first artist, names that should never be split (such as Simon & Garfunkel), ignore "The" when sorting, find missing covers online, save found covers into album folders |
 | Lyrics | Style (Album art or Classic), alignment, font, weight, size, brightness of the other lines, fade at the edges, smooth line changes, soft shadow, online lookup, save found lyrics next to songs |
-| Audio | Audio engine (built-in or VLC), visualizer (Off, Bars, Wave), moving fullscreen background, open the equalizer |
+| Audio | Audio engine (Automatic, mpv, VLC or built-in), mpv folder, ReplayGain (Off, Track, Album), output device, exclusive mode, visualizer (Off, Bars, Wave), moving fullscreen background, open the equalizer |
 | Soulseek | slskd address, API key and downloads folder, Test connection, default results view and quality filter, free slots only, organizing finished downloads |
 
-## Optional extras: VLC, equalizer and visualizer
+## Optional extras: mpv, VLC, equalizer and visualizer
 
 These are optional; eozMP works fully without them.
 
-- **VLC engine and equalizer:** install VLC from [videolan.org](https://www.videolan.org/) (the normal 64-bit
-  version). Then open **Preferences → Audio**, set the engine to **Automatic (VLC if installed)** and click OK.
-  Press **EQ** (or Ctrl+E) for a 10-band equalizer with presets. If VLC can't play on your PC, eozMP switches back
-  to the built-in engine by itself and tells you why.
+- **mpv engine (recommended):** with mpv, songs follow each other without a gap (live albums, DJ mixes), and you
+  get ReplayGain, a choice of output device, exclusive mode and the equalizer. eozMP needs mpv's
+  `libmpv-2.dll`: put it next to `eozMP.exe`, or pick the folder that has it in **Preferences → Audio → mpv folder**.
+  With the engine on **Automatic (mpv, then VLC)**, eozMP uses mpv when it finds it.
+  - **ReplayGain:** evens out loudness between songs that have ReplayGain tags. **Album** keeps the loud and quiet
+    songs of one album as they were mastered; **Track** makes every song about equally loud.
+  - **Exclusive mode:** eozMP alone uses the sound device and the sound goes out untouched; other apps are silent
+    while eozMP plays.
+- **VLC engine:** install VLC from [videolan.org](https://www.videolan.org/) (the normal 64-bit version) and set
+  the engine to **VLC**. If VLC can't play on your PC, eozMP switches back to the built-in engine by itself and
+  tells you why.
+- **Equalizer:** press **EQ** (or Ctrl+E) for a 10-band equalizer with presets. It works with mpv and VLC, and a
+  setting sounds the same with both.
 - **Visualizer:** in **Preferences → Audio**, choose **Bars** or **Wave**. It shows at the bottom of the lyrics page
   and the fullscreen player. It works with the built-in engine (not VLC).
 

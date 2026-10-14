@@ -23,14 +23,24 @@ State = QMediaPlayer.PlaybackState
 Status = QMediaPlayer.MediaStatus
 
 
-def tone(path, seconds, rate=44100):
+def tone(path, seconds, rate=44100, freq=440):
     w = wave.open(str(path), "wb")
     w.setnchannels(1)
     w.setsampwidth(2)
     w.setframerate(rate)
-    w.writeframes(b"".join(struct.pack("<h", int(8000 * math.sin(2 * math.pi * 440 * i / rate)))
+    w.writeframes(b"".join(struct.pack("<h", int(4000 * math.sin(2 * math.pi * freq * i / rate)))
                            for i in range(int(seconds * rate))))
     w.close()
+
+
+def read_wav(path):
+    """Samples as floats (-1..1); mpv's pcm output writes float or 16-bit."""
+    w = wave.open(str(path), "rb")
+    width, data = w.getsampwidth(), w.readframes(w.getnframes())
+    w.close()
+    if width == 4:
+        return struct.unpack(f"<{len(data) // 4}f", data)
+    return [v / 32768 for v in struct.unpack(f"<{len(data) // 2}h", data)]
 
 
 def wait_for(cond, timeout=5.0):
@@ -213,6 +223,81 @@ class MpvEngineTest(TempDirTest):
         self.assertTrue(audio.isMuted())
         self.assertAlmostEqual(self.engine.mp.volume, 40)
         self.assertTrue(self.engine.mp.mute)
+
+
+@unittest.skipUnless(mp.load_mpv(), "libmpv-2.dll not found (see the note at the top)")
+class MpvEqualizerTest(TempDirTest):
+    """Plays into a WAV file (mpv's "pcm" output) and measures what the equalizer did."""
+
+    def render(self, freq, setup, during=None, seconds=2.0):
+        src = self.tmp / f"in-{freq}.wav"
+        tone(src, seconds, freq=freq)
+        out = self.tmp / f"out-{len(list(self.tmp.iterdir()))}.wav"
+        engine = mp.MpvEngine(ao="pcm", ao_pcm_file=str(out), ao_pcm_waveheader=True, audio_format="s16")
+        setup(engine)
+        ended = []
+        engine.mediaStatusChanged.connect(lambda s: s == Status.EndOfMedia and ended.append(s))
+        engine.setSource(QUrl.fromLocalFile(str(src)))
+        engine.play()
+        if during:
+            self.assertTrue(wait_for(lambda: engine.position() > seconds * 500))
+            during(engine)
+        self.assertTrue(wait_for(lambda: ended, 10))
+        engine.shutdown()
+        return read_wav(out)
+
+    @staticmethod
+    def db(samples, a=0.1, b=0.9):
+        part = samples[int(len(samples) * a):int(len(samples) * b)]
+        return 20 * math.log10(math.sqrt(sum(v * v for v in part) / len(part)))
+
+    def test_flat_preset_keeps_the_level(self):
+        plain = self.db(self.render(1000, lambda e: None))
+        flat = self.db(self.render(1000, lambda e: e.set_equalizer(True, 12.0, [0.0] * 10)))
+        self.assertAlmostEqual(flat, plain, delta=0.3)
+
+    def test_a_band_boosts_its_own_frequency(self):
+        plain = self.db(self.render(1000, lambda e: None))
+        bands = [0.0] * 10
+        bands[5] = 12.0                      # the 1 kHz band
+        boosted = self.db(self.render(1000, lambda e: e.set_equalizer(True, 12.0, bands)))
+        self.assertAlmostEqual(boosted - plain, 12.0, delta=1.0)
+        low = self.db(self.render(125, lambda e: e.set_equalizer(True, 12.0, bands)))
+        low_plain = self.db(self.render(125, lambda e: None))
+        self.assertLess(abs(low - low_plain), 1.0)   # 125 Hz is left alone
+
+    def test_moving_a_slider_while_playing_takes_effect(self):
+        # pcm output runs faster than real time, so this one plays in real time (null output)
+        # and reads the level from an ffmpeg meter placed after the equalizer
+        src = self.tmp / "long.wav"
+        tone(src, 6, freq=1000)
+        engine = mp.MpvEngine(ao="null")
+        self.addCleanup(engine.shutdown)
+        engine.set_equalizer(True, 12.0, [0.0] * 10)
+        engine.mp.command("af", "add", "@meter:lavfi=[astats=metadata=1:reset=5]")
+        engine.setSource(QUrl.fromLocalFile(str(src)))
+        engine.play()
+
+        def level():
+            meta = engine.mp._get_property("af-metadata/meter")
+            return float(meta["lavfi.astats.Overall.RMS_level"])
+        self.assertTrue(wait_for(lambda: engine.position() > 1200))
+        before = level()
+        bands = [0.0] * 10
+        bands[5] = 12.0
+        from unittest import mock
+        with mock.patch.object(engine.mp, "command", wraps=engine.mp.command) as cmd:
+            engine.set_equalizer(True, 12.0, bands)
+        self.assertEqual([c.args[0] for c in cmd.call_args_list], ["af-command"])   # not rebuilt
+        self.assertTrue(wait_for(lambda: engine.position() > 2500))
+        self.assertAlmostEqual(level() - before, 12.0, delta=1.0)
+
+    def test_turning_it_off_restores_the_sound(self):
+        bands = [12.0] * 10
+        plain = self.db(self.render(1000, lambda e: None))
+        off = self.db(self.render(1000, lambda e: (e.set_equalizer(True, 12.0, bands),
+                                                   e.set_equalizer(False, 12.0, bands))))
+        self.assertAlmostEqual(off, plain, delta=0.3)
 
 
 class EngineChoiceTest(unittest.TestCase):

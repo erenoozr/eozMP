@@ -17,7 +17,8 @@ synced lyrics, and can find and download music through Soulseek.
 - **Playlists, queue panel, favorites, shuffle and repeat** (previous always goes back to the song you heard)
 - **Browse** by genre and decade, **search** artists / albums / songs, **listening stats**
 - **Soulseek** (through slskd): search, download albums or whole discographies, auto-organize downloads
-- **Make it yours:** themes, accent colors (even from the album cover), fonts, lyric styles, visualizer, equalizer (VLC)
+- **Make it yours:** themes, accent colors (even from the album cover), fonts, lyric styles, visualizer, equalizer
+- **Sound (with mpv):** gapless playback, ReplayGain, output device and exclusive mode
 - Media keys, system tray, drag and drop, backup and restore
 
 ## Download
