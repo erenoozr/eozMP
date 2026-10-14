@@ -126,6 +126,22 @@ class PlayerTest(PlayerHarness):
         calls = self.seeks_during(lambda: QTest.mouseClick(bar, Qt.MouseButton.LeftButton, pos=QPoint(4, 10)))
         self.assertEqual(calls, [])
 
+    def test_next_after_previous_goes_back_where_you_were(self):
+        self.make_player(["One", "Two", "Three"], seconds=4)
+        self.start("One")
+        self.player.next_track()
+        self.player.next_track()
+        self.assertEqual(self.title(), "Three")
+        self.player.prev_track()
+        self.player.prev_track()
+        self.assertEqual(self.title(), "One")
+        self.player.next_track()
+        self.assertEqual(self.title(), "Two")
+        self.assertEqual(self.player.fwd, [str(self.songs[2])])
+        self.player.next_track()
+        self.assertEqual(self.title(), "Three")
+        self.assertEqual(self.player.fwd, [])
+
     def test_a_missing_song_is_skipped(self):
         self.make_player(["One", "Two", "Three"])
         self.delete(self.songs[1])
@@ -150,6 +166,50 @@ class MpvPlayerTest(PlayerTest):
     def test_engine_is_mpv(self):
         self.make_player(["One"])
         self.assertEqual(self.player.engine_name, "mpv")
+
+    def count_loads(self):
+        loads = []
+        real = self.player.player.setSource
+        patcher = mock.patch.object(self.player.player, "setSource",
+                                    side_effect=lambda url: (loads.append(Path(url.toLocalFile()).stem), real(url)))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return loads
+
+    def test_songs_follow_each_other_without_reloading(self):
+        self.make_player(["One", "Two", "Three"])
+        loads = self.count_loads()
+        self.start("One")
+        self.assertTrue(wait_for(lambda: self.title() == "Three", 8))
+        self.assertEqual(self.played, ["One", "Two", "Three"])
+        self.assertEqual(loads, ["01 - One"])      # Two and Three were lined up, not loaded
+        self.assertEqual(self.player.history[-3:], [str(s) for s in self.songs])
+
+    def test_queueing_a_song_changes_what_follows(self):
+        self.make_player(["One", "Two", "Three"], seconds=1.5)
+        loads = self.count_loads()
+        self.start("One")
+        self.assertTrue(wait_for(lambda: self.player.player.position() > 200))
+        self.player.queue_add([str(self.songs[2])], play_next=True)
+        self.assertTrue(wait_for(lambda: self.title() == "Three", 8))
+        self.assertEqual(self.played[:2], ["One", "Three"])
+        self.assertEqual(loads, ["01 - One"])
+
+    def test_shuffle_plays_the_song_it_lined_up(self):
+        self.make_player(["One", "Two", "Three", "Four"], shuffle_on=True)
+        loads = self.count_loads()
+        self.start("One")
+        self.assertTrue(wait_for(lambda: len(self.played) >= 4, 10))
+        self.assertEqual(len(loads), 1)
+        self.assertEqual(sorted(self.played[:4]), ["Four", "One", "Three", "Two"])
+
+    def test_repeat_one_keeps_playing_the_same_song(self):
+        self.make_player(["One", "Two"], repeat_mode="one")
+        self.start("One")
+        wait_for(lambda: False, 2.5)
+        self.assertEqual(self.title(), "One")
+        self.assertEqual(self.played, ["One"])
+        self.assertEqual(self.player.player.playbackState(), QMediaPlayer.PlaybackState.PlayingState)
 
 
 @unittest.skipUnless(mp.vlc is not None, "python-vlc / VLC not installed")

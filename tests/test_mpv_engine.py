@@ -125,6 +125,66 @@ class MpvEngineTest(TempDirTest):
         self.assertEqual(self.engine.playbackState(), State.StoppedState)
         self.assertEqual(self.engine.position(), 0)
 
+    def two_songs(self):
+        second = self.tmp / "second.wav"
+        tone(second, 1.0)
+        advanced = []
+        self.engine.advanced.connect(lambda: advanced.append(self.engine.source().toLocalFile()))
+        return second, advanced
+
+    def test_next_song_follows_without_stopping(self):
+        second, advanced = self.two_songs()
+        self.load()
+        self.engine.setNext(QUrl.fromLocalFile(str(second)))
+        self.engine.play()
+        self.assertTrue(wait_for(lambda: advanced))
+        self.assertEqual(os.path.normcase(advanced[0]), os.path.normcase(str(second)))
+        self.assertNotIn(("status", Status.EndOfMedia), self.events)
+        self.assertNotIn(("state", State.StoppedState), self.events)
+        self.assertEqual(self.engine.playbackState(), State.PlayingState)
+        self.assertTrue(wait_for(lambda: self.durations and abs(self.durations[-1] - 1000) < 50))
+        # the second song ends normally when nothing is queued after it
+        self.assertTrue(wait_for(lambda: ("status", Status.EndOfMedia) in self.events))
+        self.assertEqual(len(advanced), 1)
+
+    def test_next_song_can_be_taken_back(self):
+        second, advanced = self.two_songs()
+        self.load()
+        self.engine.setNext(QUrl.fromLocalFile(str(second)))
+        self.engine.setNext(None)
+        self.engine.play()
+        self.assertTrue(wait_for(lambda: ("status", Status.EndOfMedia) in self.events))
+        self.assertEqual(advanced, [])
+
+    def test_next_song_can_be_changed(self):
+        second, advanced = self.two_songs()
+        third = self.tmp / "third.wav"
+        tone(third, 0.5)
+        self.load()
+        self.engine.setNext(QUrl.fromLocalFile(str(second)))
+        self.engine.setNext(QUrl.fromLocalFile(str(third)))
+        self.engine.play()
+        self.assertTrue(wait_for(lambda: ("status", Status.EndOfMedia) in self.events, 6))
+        self.assertEqual([os.path.normcase(a) for a in advanced], [os.path.normcase(str(third))])
+
+    def test_a_new_song_drops_the_one_lined_up(self):
+        second, advanced = self.two_songs()
+        self.load()
+        self.engine.setNext(QUrl.fromLocalFile(str(second)))
+        self.load(second)
+        self.engine.play()
+        self.assertTrue(wait_for(lambda: ("status", Status.EndOfMedia) in self.events))
+        self.assertEqual(advanced, [])
+
+    def test_a_broken_next_song_is_an_error(self):
+        _second, advanced = self.two_songs()
+        self.load()
+        self.engine.setNext(QUrl.fromLocalFile(str(self.tmp / "gone.flac")))
+        self.engine.play()
+        self.assertTrue(wait_for(lambda: any(e[0] == "error" for e in self.events)))
+        self.assertEqual(len(advanced), 1)
+        self.assertNotIn(("status", Status.EndOfMedia), self.events)
+
     def test_volume_and_mute_look_like_qaudiooutput(self):
         audio = self.engine.audio
         audio.setVolume(0.4)

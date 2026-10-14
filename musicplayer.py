@@ -2836,12 +2836,14 @@ class MpvEngine(QObject):
     playbackStateChanged = pyqtSignal(object)
     errorOccurred = pyqtSignal(object, str)
     failed = pyqtSignal(str)                 # same interface as VlcEngine (mpv reports per-file errors)
+    advanced = pyqtSignal()                  # moved on to the song given to setNext(), without a gap
     _from_mpv = pyqtSignal(str, object)      # mpv's event thread -> the GUI thread
 
     def __init__(self, **options):
         super().__init__()
         opts = dict(load_scripts=False, config=False, video=False, vo="null", ytdl=False, idle=True,
-                    audio_display=False, keep_open=False, input_default_bindings=False)
+                    audio_display=False, keep_open=False, input_default_bindings=False,
+                    prefetch_playlist=True)   # open the next song early so it follows without a gap
         opts.update(options)
         self.mp = mpv.MPV(**opts)
         self.audio = MpvAudio(self)
@@ -2854,6 +2856,10 @@ class MpvEngine(QObject):
         self._at_start = True       # stopped: position() is 0
         self._play_when_loaded = False
         self._loads = self._starts = 0   # match mpv's events to the file we asked for last
+        # mpv's playlist is [current] or [current, next]; right after a gapless move it is briefly
+        # [finished, current, ...] until the new song starts and the finished one is removed
+        self._next = None
+        self._advancing = False
         self._from_mpv.connect(self._on_mpv)
         for name in ("start-file", "file-loaded", "end-file"):
             self.mp.event_callback(name)(lambda ev, n=name: self._from_mpv.emit(n, ev.as_dict()))
@@ -2878,7 +2884,19 @@ class MpvEngine(QObject):
     def _load(self):
         self._loads += 1
         self._loaded, self._ended, self._at_start = False, False, True
-        self.mp.loadfile(os.path.normpath(self._source.toLocalFile()))
+        self._next, self._advancing = None, False
+        self.mp.loadfile(os.path.normpath(self._source.toLocalFile()))   # also empties mpv's playlist
+
+    def setNext(self, url):
+        """Line up the song that should follow this one with no gap (None: nothing, stop at the end)."""
+        path = os.path.normpath(url.toLocalFile()) if url is not None and not url.isEmpty() else None
+        if path == self._next:
+            return
+        if self._next is not None:
+            self.mp.command("playlist-remove", 1 + self._advancing)
+        self._next = path
+        if path is not None:
+            self.mp.loadfile(path, "append")
 
     def play(self):
         if self._source.isEmpty():
@@ -2946,6 +2964,9 @@ class MpvEngine(QObject):
     def _on_mpv(self, name, data):
         if name == "start-file":
             self._starts += 1
+            if self._advancing and self._starts == self._loads:
+                self._advancing = False
+                self.mp.command("playlist-remove", 0)   # the song that just finished
             return
         if self._starts != self._loads:
             return   # about a file we already replaced
@@ -2962,6 +2983,14 @@ class MpvEngine(QObject):
             reason = data.get("reason")
             if reason not in (b"eof", b"error", "eof", "error"):
                 return   # stopped or replaced on purpose
+            if reason in (b"eof", "eof") and self._next is not None:
+                # mpv carries straight on with the song we lined up
+                self._source = QUrl.fromLocalFile(self._next)
+                self._next, self._advancing = None, True
+                self._loads += 1                     # its start-file is the one we wait for now
+                self._loaded, self._pending, self._duration, self._at_start = False, None, 0, False
+                self.advanced.emit()
+                return
             self._loaded, self._ended, self._pending = False, True, None
             self.timer.stop()
             self._set_state(QMediaPlayer.PlaybackState.StoppedState)
@@ -4568,6 +4597,8 @@ class Player(QMainWindow):
         self.listen_ms = 0
         self.last_pos = None
         self.fail_streak = 0      # songs in a row that couldn't be played
+        self.shuffle_pick = None  # shuffle's next song, picked early so it can be lined up
+        self._planning_off = False
         self.listen_path = None
         self.album_accent = None
         self.accent_cache = {}
@@ -5881,7 +5912,7 @@ class Player(QMainWindow):
             self.play_from_library(idx)
 
     # ----- playback
-    def play_index(self, idx, autoplay=True, start_pos=0, record=True):
+    def play_index(self, idx, autoplay=True, start_pos=0, record=True, loaded=None):
         if not self.queue:
             return
         self.finalize_listen()
@@ -5894,9 +5925,10 @@ class Player(QMainWindow):
             self.fwd.clear()
         self.listen_path = track["path"]
         self.pending_seek = start_pos
-        self.player.setSource(QUrl.fromLocalFile(track["path"]))
-        if autoplay:
-            self.player.play()
+        if not (loaded and os.path.normcase(os.path.normpath(loaded)) == os.path.normcase(os.path.normpath(track["path"]))):
+            self.player.setSource(QUrl.fromLocalFile(track["path"]))
+            if autoplay:
+                self.player.play()
         self.set_now_playing(track)
         self.set_cover(self.np_cover, key, 56, self.radius(8))
         if self.current_album == key:
@@ -5912,6 +5944,7 @@ class Player(QMainWindow):
         self.update_drawer()
         self.update_fullscreen()
         self.update_tray()
+        self.line_up_next()
 
     def toggle_play(self):
         state = self.player.playbackState()
@@ -5928,47 +5961,96 @@ class Player(QMainWindow):
         else:
             self.player.play()
 
-    def next_track(self, auto=False):
+    def next_track(self, auto=False, loaded=None):
+        """loaded: the song the engine already moved on to by itself (gapless), so don't load it again."""
         if not self.queue:
             return
+        self.apply_next(self.plan_next(auto), loaded)
+
+    def plan_next(self, auto=False):
+        """What "next" would do, without changing anything: a dict for apply_next(), or None.
+        Shuffle's random pick is remembered so the song lined up in advance is the one that plays."""
+        plan = {"fwd_keep": 0, "drop": len(self.up_next)}
         # 0) after going back, "next" walks forward through what you already heard
-        while self.fwd:
-            path = self.fwd.pop()
-            idx = self.qindex.get(path)
-            if idx is not None:
-                self.history.append(path)
-                if path in self.ctx_paths:
-                    self.ctx_pos = self.ctx_paths.index(path)
-                self.play_index(idx, record=False)
-                return
+        for i in range(len(self.fwd) - 1, -1, -1):
+            if self.fwd[i] in self.qindex:
+                return dict(plan, kind="fwd", path=self.fwd[i], fwd_keep=i, drop=0)
         # 1) songs you queued always go first
-        while self.up_next:
-            path = self.up_next.pop(0)
-            idx = self.qindex.get(path)
-            if idx is not None:
-                self.refresh_queue_view()
-                self.play_index(idx)
-                return
-        self.refresh_queue_view()
+        for j, path in enumerate(self.up_next):
+            if path in self.qindex:
+                return dict(plan, kind="queue", path=path, drop=j + 1)
         # 2) then the library / playlist you were playing from
         self.ensure_context()
         n = len(self.ctx_paths)
         if n == 0:
-            return
+            return dict(plan, kind="none")
         if self.shuffle.isChecked():
             current = self.current_path()
+            played = set(self.shuffle_played)
             if current:
-                self.shuffle_played.add(current)
-            self.ctx_pos = pick_shuffle(self.ctx_paths, self.shuffle_played, avoid=current)
-            self.shuffle_played.add(self.ctx_paths[self.ctx_pos])
+                played.add(current)
+            pick = self.shuffle_pick
+            if pick in self.ctx_paths and pick != current and pick in self.qindex:
+                pos = self.ctx_paths.index(pick)
+            else:
+                pos = pick_shuffle(self.ctx_paths, played, avoid=current)
+            self.shuffle_pick = self.ctx_paths[pos]
+            played.add(self.ctx_paths[pos])
+            plan["played"] = played
         elif self.ctx_pos + 1 >= n:
             if auto and self.cfg["repeat_mode"] != "all":
-                self.player.stop()
-                return
-            self.ctx_pos = 0
+                return dict(plan, kind="stop")
+            pos = 0
         else:
-            self.ctx_pos += 1
-        self.play_ctx()
+            pos = self.ctx_pos + 1
+        for _ in range(n):   # skip songs that left the library
+            if self.ctx_paths[pos] in self.qindex:
+                return dict(plan, kind="ctx", pos=pos, path=self.ctx_paths[pos])
+            pos = (pos + 1) % n
+        return dict(plan, kind="none")
+
+    def apply_next(self, plan, loaded=None):
+        del self.fwd[plan["fwd_keep"]:]
+        del self.up_next[:plan["drop"]]
+        self._planning_off = True        # no lining up of a next song halfway through the move
+        try:
+            if plan["drop"] or plan["kind"] != "fwd":
+                self.refresh_queue_view()
+        finally:
+            self._planning_off = False
+        kind = plan["kind"]
+        if kind == "fwd":
+            path = plan["path"]
+            self.history.append(path)
+            if path in self.ctx_paths:
+                self.ctx_pos = self.ctx_paths.index(path)
+            self.play_index(self.qindex[path], record=False, loaded=loaded)
+        elif kind == "queue":
+            self.play_index(self.qindex[plan["path"]], loaded=loaded)
+        elif kind == "ctx":
+            if "played" in plan:
+                self.shuffle_played = plan["played"]
+            self.shuffle_pick = None
+            self.ctx_pos = plan["pos"]
+            self.play_index(self.qindex[plan["path"]], loaded=loaded)
+        elif kind == "stop":
+            self.player.stop()
+
+    def line_up_next(self):
+        """Tell the engine which song comes next so it can follow on without a gap (mpv only)."""
+        p = getattr(self, "player", None)
+        if p is None or not hasattr(p, "setNext") or getattr(self, "_planning_off", False):
+            return
+        path = None
+        if self.queue and self.cfg["autoplay_next"] and self.cfg["repeat_mode"] != "one" and not p.source().isEmpty():
+            plan = self.plan_next(auto=True)
+            if plan["kind"] in ("fwd", "queue", "ctx"):
+                path = plan["path"]
+        p.setNext(QUrl.fromLocalFile(path) if path else None)
+
+    def on_engine_advanced(self):
+        """The engine moved on to the song we lined up; catch the rest of the app up with it."""
+        self.next_track(auto=True, loaded=self.player.source().toLocalFile())
 
     def prev_track(self):
         """Never random: go back to the song you actually heard before."""
@@ -6016,6 +6098,7 @@ class Player(QMainWindow):
         self.ctx_kind = ""
         self.ctx_pos = max(0, min(idx, len(self.ctx_paths) - 1)) if self.ctx_paths else 0
         self.shuffle_played = set()
+        self.shuffle_pick = None
 
     def play_from_library(self, idx):
         if not self.queue:
@@ -6261,6 +6344,7 @@ class Player(QMainWindow):
         if (not old["lyrics_online"] and self.cfg["lyrics_online"]
                 and 0 <= self.index < len(self.queue) and not self.lyric_lines):
             self.load_lyrics(self.queue[self.index][0])
+        self.line_up_next()   # "play the next song" may have changed
 
     def radius(self, r):
         return int(round(r * self.corner))
@@ -7630,6 +7714,8 @@ class Player(QMainWindow):
         p.errorOccurred.connect(self.on_player_error)
         if hasattr(p, "failed"):
             p.failed.connect(self.on_engine_failed)
+        if hasattr(p, "advanced"):
+            p.advanced.connect(self.on_engine_advanced)
         self.buf_out = None
         self.setup_visualizer()
 
@@ -7686,6 +7772,7 @@ class Player(QMainWindow):
             self.player.setSource(src)
             if playing or force_play:
                 self.player.play()
+            self.line_up_next()
         self.refresh_icons()
         if not notice:
             if self.engine_name == "mpv":
@@ -7968,6 +8055,8 @@ class Player(QMainWindow):
         self.update_mini_next()
 
     def update_mini_next(self):
+        """Called whenever what plays next may have changed (queue, shuffle, repeat...)."""
+        self.line_up_next()                  # first: it makes shuffle's pick, shown below
         if self.mini is not None:
             self.mini.set_next(self.peek_next())
 
@@ -7979,6 +8068,8 @@ class Player(QMainWindow):
             path = self.fwd[-1]
         elif self.up_next:
             path = self.up_next[0]
+        elif self.shuffle.isChecked() and self.shuffle_pick:
+            path = self.shuffle_pick
         elif self.shuffle.isChecked():
             return "Next: a random song (shuffle is on)"
         else:
