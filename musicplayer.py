@@ -81,7 +81,7 @@ AUDIO_EXTS = {
 }
 COVER_NAMES = ("cover", "folder", "front", "album", "albumart")
 COVER_EXTS = (".jpg", ".jpeg", ".png")
-APP_VERSION = "1.2-beta.1"   # raise it with every release; the release tag is "v" + this (see MANUAL)
+APP_VERSION = "1.2"   # raise it with every release; the release tag is "v" + this (see MANUAL)
 CONFIG_FILE = Path.home() / ".simple_music_player.json"
 CACHE_FILE = Path.home() / ".simple_music_player_cache.json"
 LOSSLESS_EXTS = {"flac", "wav", "aiff", "aif", "ape", "wv"}
