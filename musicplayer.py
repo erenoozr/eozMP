@@ -35,7 +35,7 @@ import random
 import filecmp
 import shutil
 import zipfile
-from collections import deque
+from collections import OrderedDict, deque
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,12 +44,12 @@ from pathlib import Path
 
 from mutagen import File as MutagenFile
 from PyQt6.QtCore import (
-    QAbstractNativeEventFilter, QByteArray, QEasingCurve, QEvent, QMimeData, QPoint, QPointF, QRect, QRectF,
+    QAbstractNativeEventFilter, QBuffer, QByteArray, QEasingCurve, QEvent, QIODevice, QMimeData, QPoint, QPointF, QRect, QRectF,
     QVariantAnimation, QFileSystemWatcher, QItemSelectionModel, QObject, QPropertyAnimation, QSize, Qt, QThread,
     QTimer, QUrl, pyqtSignal,
 )
 from PyQt6.QtGui import (
-    QAction, QBrush, QColor, QCursor, QGradient, QImage, QKeySequence, QShortcut, QDesktopServices, QFont, QFontDatabase, QFontMetrics, QIcon, QLinearGradient, QPainter,
+    QAction, QBrush, QColor, QCursor, QGradient, QImage, QImageReader, QKeySequence, QShortcut, QDesktopServices, QFont, QFontDatabase, QFontMetrics, QIcon, QLinearGradient, QPainter,
     QPainterPath, QPalette, QPen, QPixmap,
 )
 from PyQt6.QtMultimedia import QAudioFormat, QAudioOutput, QMediaPlayer
@@ -344,6 +344,12 @@ def save_cache(tracks):
         pass
 
 
+def same_tracks(new, old):
+    """True when a scan found exactly the songs it was given (it hands back the very same dicts
+    for files that didn't change), so the library and its cache needn't be rebuilt."""
+    return len(new) == len(old) and all(a is b for a, b in zip(new, old))
+
+
 def norm_path(path):
     """One spelling per file: 'D:/Music' and 'd:\\music' are the same place on Windows."""
     return os.path.normcase(os.path.abspath(path))
@@ -366,6 +372,37 @@ def distinct_roots(folders):
     return roots
 
 
+def audio_entries(top, unreachable):
+    """The audio files under top as os.DirEntry, in os.walk's order and spelling. On Windows an
+    entry already carries size and dates, so unchanged files cost no extra stat each (18k stats
+    were most of a start-up scan). Folders that can't be listed go to unreachable."""
+    stack = [top]
+    while stack:
+        folder = stack.pop()
+        dirs, files = [], []
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    try:
+                        is_dir = entry.is_dir()
+                    except OSError:
+                        is_dir = False
+                    (dirs if is_dir else files).append(entry)
+        except OSError as e:
+            unreachable.append(norm_path(e.filename or folder))
+            continue
+        for entry in files:
+            if os.path.splitext(entry.name)[1].lower() in AUDIO_EXTS:
+                yield entry
+        for entry in reversed(dirs):
+            try:
+                if entry.is_symlink():      # os.walk doesn't follow folder links either
+                    continue
+            except OSError:
+                pass
+            stack.append(entry.path)
+
+
 def scan_folders(folders, cache=None):
     """Walk the folders. Files that haven't changed since the last scan are
     taken from the cache instead of being re-read (this is what makes
@@ -376,29 +413,26 @@ def scan_folders(folders, cache=None):
         if not os.path.isdir(folder):
             unreachable.append(nroot)    # unplugged drive / NAS that's offline right now
             continue
-        for root, _, files in os.walk(folder, onerror=lambda e: unreachable.append(norm_path(e.filename))):
-            for name in files:
-                if Path(name).suffix.lower() not in AUDIO_EXTS:
-                    continue
-                path = os.path.join(root, name)
-                key = norm_path(path)
-                if key in seen:
-                    continue
-                seen.add(key)
-                try:
-                    st = os.stat(path)
-                except OSError:
-                    continue
-                prev = old.get(path)
-                if (prev and prev.get("mtime") == st.st_mtime and prev.get("size") == st.st_size
-                        and "artist_raw" in prev and "genre" in prev):
-                    tracks.append(prev)
-                else:
-                    t = read_track(path)
-                    if not t.pop("read_failed", False):   # no mtime/size = read it again next time
-                        t["mtime"], t["size"] = st.st_mtime, st.st_size
-                    t["added"] = max(st.st_mtime, st.st_ctime)
-                    tracks.append(t)
+        for entry in audio_entries(folder, unreachable):
+            path = entry.path
+            key = norm_path(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                st = entry.stat()
+            except OSError:
+                continue
+            prev = old.get(path)
+            if (prev and prev.get("mtime") == st.st_mtime and prev.get("size") == st.st_size
+                    and "artist_raw" in prev and "genre" in prev):
+                tracks.append(prev)
+            else:
+                t = read_track(path)
+                if not t.pop("read_failed", False):   # no mtime/size = read it again next time
+                    t["mtime"], t["size"] = st.st_mtime, st.st_size
+                t["added"] = max(st.st_mtime, st.st_ctime)
+                tracks.append(t)
     # keep the songs of folders we couldn't reach, so an unplugged drive doesn't empty the library
     for path, t in old.items():
         key = norm_path(path)
@@ -1022,15 +1056,57 @@ def build_qss(sc):
     return qss
 
 
-def apply_look(app, theme, accent_name, system_dark, tokens=None):
+def look_scheme(theme, accent_name, system_dark, tokens=None):
     dark = theme == "Dark" or (theme == "System" and system_dark)
     accent = accent_name if str(accent_name).startswith("#") else ACCENTS.get(accent_name, ACCENTS["Blue"])
     sc = make_scheme(dark, accent)
     sc.update(tokens or {})
     sc.update(chevron_tokens(sc["sub"]))
+    return sc
+
+
+def apply_look(app, theme, accent_name, system_dark, tokens=None):
+    sc = look_scheme(theme, accent_name, system_dark, tokens)
     app.setPalette(palette_from_scheme(sc))
     app.setStyleSheet(build_qss(sc))
     return sc
+
+
+ACCENT_TOKENS = ("@accent@", "@accent_hover@", "@on_accent@")
+ACCENT_MARK = "/* accent */ "
+
+
+def _accent_rules():
+    """The accent-coloured declarations of QSS_TEMPLATE as (selector, declarations), and the
+    (widget class, object name) pairs those rules can colour."""
+    rules, targets = [], set()
+    for line in QSS_TEMPLATE.splitlines():
+        if "{" not in line or not any(t in line for t in ACCENT_TOKENS):
+            continue
+        sel, body = line.split("{", 1)
+        decls = [d.strip() for d in body.rsplit("}", 1)[0].split(";") if any(t in d for t in ACCENT_TOKENS)]
+        rules.append((sel.strip(), "; ".join(decls)))
+        for part in sel.split(","):
+            m = re.match(r"\s*(\w+)(?:#(\w+))?", part)   # the first widget in the selector carries the sheet
+            targets.add((m.group(1), m.group(2)))
+    return rules, frozenset(targets)
+
+
+ACCENT_RULES, ACCENT_TARGETS = _accent_rules()
+
+
+def accent_qss(sc):
+    """Only the accent colours, for the few widgets that show them. A widget's own sheet beats the
+    app's, so they follow the album-art accent without restyling every widget in the app."""
+    qss = ACCENT_MARK + " ".join(f"{sel} {{ {decls}; }}" for sel, decls in ACCENT_RULES)
+    for key in ("accent_hover", "on_accent", "accent"):
+        qss = qss.replace(f"@{key}@", sc[key])
+    return qss
+
+
+def is_accent_target(w):
+    name = w.objectName()
+    return any(w.inherits(cls) and (obj is None or obj == name) for cls, obj in ACCENT_TARGETS)
 
 
 def rounded_pixmap(pix, size, radius):
@@ -1608,9 +1684,97 @@ class BackdropWidget(QWidget):
         painter.end()
 
 
+THUMB_PX = 160   # library covers are kept this big; lists and tiles shrink them further
+
+
+def thumb_image(data, size=THUMB_PX):
+    """Square, centre-cropped cover as a QImage (unlike QPixmap, fine to make off the GUI thread).
+    The reader shrinks while decoding, so a 3000 px cover is never unpacked at full size."""
+    buf = QBuffer()
+    buf.setData(QByteArray(data))
+    buf.open(QIODevice.OpenModeFlag.ReadOnly)
+    reader = QImageReader(buf)
+    src = reader.size()
+    short = min(src.width(), src.height()) if src.isValid() else 0
+    if short > 2 * size:   # decode at ~2x, then a smooth scale like before
+        f = 2 * size / short
+        reader.setScaledSize(QSize(max(1, round(src.width() * f)), max(1, round(src.height() * f))))
+    img = reader.read()
+    if img.isNull():
+        return None
+    img = img.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                     Qt.TransformationMode.SmoothTransformation)
+    return img.copy((img.width() - size) // 2, (img.height() - size) // 2, size, size)
+
+
+def load_thumb(paths, artist, album):
+    """The library cover for an album: embedded art, a cover file in the folder, or a downloaded one."""
+    data = None
+    for path in paths[:3]:
+        data = embedded_cover(path)
+        if data:
+            break
+    if not data and paths:
+        data = folder_cover(paths[0])
+    if not data:
+        data = read_cached_cover(artist, album)
+    return thumb_image(data) if data else None
+
+
+THUMB_CACHE_SIZE = 256   # ~100 KB each, so ~25 MB (every cover of a big library was 80 MB+)
+
+
+class ThumbCache:
+    """Library covers by album key, keeping only the most recently used ones. "No cover" is
+    remembered for every album (it costs nothing), and so is which albums have one, even after
+    their picture was dropped: a dropped cover is simply read again when it's needed."""
+
+    def __init__(self, limit=THUMB_CACHE_SIZE):
+        self.limit = limit
+        self.pix = OrderedDict()
+        self.covered, self.bare = set(), set()
+
+    def __contains__(self, key):    # loaded (or known to have no cover)
+        return key in self.pix or key in self.bare
+
+    def __len__(self):
+        return len(self.pix)
+
+    def __getitem__(self, key):
+        if key in self.bare:
+            return None
+        self.pix.move_to_end(key)
+        return self.pix[key]
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+    def __setitem__(self, key, pix):
+        self.pop(key)
+        if pix is None:
+            self.bare.add(key)
+            return
+        self.pix[key] = pix
+        self.covered.add(key)
+        while len(self.pix) > self.limit:
+            self.pix.popitem(last=False)
+
+    def pop(self, key, default=None):
+        """Forget the album completely (its cover changed)."""
+        self.covered.discard(key)
+        self.bare.discard(key)
+        return self.pix.pop(key, default)
+
+    def has_cover(self, key):
+        return key in self.covered
+
+    def known(self, key):
+        return key in self.covered or key in self.bare
+
+
 class ThumbLoader(QThread):
-    """Reads album covers in the background so the library list never freezes."""
-    loaded = pyqtSignal(object, object)   # album key, image bytes (or None)
+    """Reads and shrinks album covers in the background so the library list never freezes."""
+    loaded = pyqtSignal(object, object)   # album key, 160 px QImage (or None)
 
     def __init__(self):
         super().__init__()
@@ -1645,19 +1809,11 @@ class ThumbLoader(QThread):
                 self.event.clear()
                 continue
             key, paths, artist, album = job
-            data = None
             try:
-                for path in paths[:3]:
-                    data = embedded_cover(path)
-                    if data:
-                        break
-                if not data and paths:
-                    data = folder_cover(paths[0])
-                if not data:
-                    data = read_cached_cover(artist, album)
+                img = load_thumb(paths, artist, album)
             except Exception:
-                data = None
-            self.loaded.emit(key, data)
+                img = None
+            self.loaded.emit(key, img)
 
 
 BAD_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -4362,7 +4518,11 @@ class SongInfoDialog(QDialog):
         top = QHBoxLayout()
         top.setSpacing(16)
         cover = QLabel()
-        cover.setPixmap(main.thumb_pixmap(key, 120, main.radius(10)))
+        pix = main.thumb_cache.get(key)
+        if pix is None and main.thumb_cache.has_cover(key):
+            pix = main.cover_for(key)    # dropped from the small cache; one cover is quick to read
+        cover.setPixmap(rounded_pixmap(pix, 120, main.radius(10)) if pix is not None
+                        else main.thumb_pixmap(key, 120, main.radius(10)))
         names = QVBoxLayout()
         title = QLabel(t["title"])
         title.setObjectName("heading2")
@@ -4494,6 +4654,9 @@ class QueueDrawer(QWidget):
         p.end()
 
 
+FS_MOTION_MS = 100   # the background drifts slowly; 10 frames a second is enough (each one is the whole screen)
+
+
 class FullPlayer(QWidget):
     """Full-screen player: big cover and controls on the left, lyrics on the right."""
 
@@ -4618,8 +4781,10 @@ class FullPlayer(QWidget):
         self.idle_timer.setInterval(300)
         self.idle_timer.timeout.connect(self._check_idle)
         self.motion_timer = QTimer(self)
-        self.motion_timer.setInterval(50)
-        self.motion_timer.timeout.connect(self.update)
+        self.motion_timer.setInterval(FS_MOTION_MS)
+        self.motion_timer.timeout.connect(self._motion_tick)
+        self.motion_clock = time.monotonic()   # only runs while the background moves
+        self._motion_last = None
         self.viz = Visualizer(self, bars=64)
         self.viz.hide()
 
@@ -4636,6 +4801,7 @@ class FullPlayer(QWidget):
             f"QPushButton#fsplay {{ background: {sc['accent']}; border-radius: 32px; }}"
             f"QPushButton#fsplay:hover {{ background: {sc['accent_hover']}; }}"
             "QPushButton#fsclose:hover { background: rgba(232, 17, 35, 200); }"
+            + accent_qss(sc)   # no parent window, so it can't inherit the accent widgets' sheets
         )
 
     def cover_side(self):
@@ -4662,17 +4828,37 @@ class FullPlayer(QWidget):
             if self._cache is None or self._cache.size().width() < want.width() - 2:
                 self._cache = self.backdrop.scaled(want, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                                                    Qt.TransformationMode.SmoothTransformation)
+                dim = QPainter(self._cache)   # darken once here, not over the whole screen every frame
+                dim.fillRect(self._cache.rect(), QColor(0, 0, 0, 140))
+                dim.end()
             x = (self.width() - self._cache.width()) / 2
             y = (self.height() - self._cache.height()) / 2
             if motion:   # slow, gentle drift
-                t = time.monotonic()
+                t = self.motion_clock
                 x += math.sin(t / 9.0) * (self._cache.width() - self.width()) * 0.45
                 y += math.cos(t / 13.0) * (self._cache.height() - self.height()) * 0.45
             p.drawPixmap(int(x), int(y), self._cache)
         else:
             p.fillRect(self.rect(), QColor("#111114"))
-        p.fillRect(self.rect(), QColor(0, 0, 0, 140))
+            p.fillRect(self.rect(), QColor(0, 0, 0, 140))
         p.end()
+
+    def sync_motion(self):
+        """Move the background only while it's on screen and the music plays."""
+        main = self.main
+        want = (self.isVisible() and bool(main.cfg["fs_motion"])
+                and main.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState)
+        if want and not self.motion_timer.isActive():
+            self._motion_last = time.monotonic()
+            self.motion_timer.start()
+        elif not want:
+            self.motion_timer.stop()
+
+    def _motion_tick(self):
+        now = time.monotonic()
+        self.motion_clock += min(now - self._motion_last, 0.5)   # paused time doesn't count
+        self._motion_last = now
+        self.update()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -4698,8 +4884,7 @@ class FullPlayer(QWidget):
         super().showEvent(e)
         self._wake()
         self.idle_timer.start()
-        if self.main.cfg["fs_motion"]:
-            self.motion_timer.start()
+        self.sync_motion()
 
     def hideEvent(self, e):
         super().hideEvent(e)
@@ -4785,6 +4970,7 @@ class Player(QMainWindow):
 
         self.workers = set()
         self.albums = {}        # (artist_key, album_key) -> album dict
+        self.by_artist = {}     # artist_key -> its album keys, oldest first
         self.artists = {}       # artist_key -> display name
         self.tree_albums = {}   # key -> tree item
         self.queue = []         # [(track, album_key)]
@@ -4797,6 +4983,7 @@ class Player(QMainWindow):
         self.poll_busy = False
         self.poll_fails = 0     # polls in a row slskd didn't answer
         self.all_tracks = []
+        self.built_tracks = []   # what the library on screen was last built from (completely)
         self.scanning = False
         self.rescan_pending = False
         self.soul_raw = []      # every file found by the current Soulseek search
@@ -4852,7 +5039,8 @@ class Player(QMainWindow):
         self.lyric_wait_path = None
         self.disco_worker = None
         self.disco_rows = []
-        self.thumb_cache = {}       # album key -> 160px square cover (None = no cover)
+        self.thumb_cache = ThumbCache()   # album key -> 160px square cover (None = no cover)
+        self.thumb_asked = set()          # covers asked for and not back yet
         self.ph_cache = {}          # placeholder pixmaps
         self.backdrop_cache = {}
         self.tree_artists = {}
@@ -4907,10 +5095,17 @@ class Player(QMainWindow):
         self.np_timer.setInterval(140)
         self.np_timer.timeout.connect(self.tick_now_playing)
         self.np_timer.start()
+        self.stats_timer = QTimer(self)   # listening stats are written at most every 30 s
+        self.stats_timer.setSingleShot(True)
+        self.stats_timer.setInterval(30000)
+        self.stats_timer.timeout.connect(self.flush_stats)
+        self.stats_dirty = False
         self.viz_timer = QTimer(self)
         self.viz_timer.setInterval(33)
         self.viz_timer.timeout.connect(self.tick_visualizers)
         QShortcut(QKeySequence("Escape"), self, activated=self.on_escape)
+        self.app_accent = None    # the accent baked into the app stylesheet
+        self.accent_sheet = ""    # small sheet for accent widgets when the accent has moved on since
         QApplication.instance().installEventFilter(self)
         self.system_dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
         self.scheme = make_scheme(True, ACCENTS["Blue"])
@@ -5860,7 +6055,8 @@ class Player(QMainWindow):
 
         def job():
             tracks = scan_folders(folders, old)
-            save_cache(tracks)
+            if not same_tracks(tracks, old):   # 9 MB for 18k songs, and most starts change nothing
+                save_cache(tracks)
             return tracks
 
         w = Worker(job)
@@ -5870,7 +6066,11 @@ class Player(QMainWindow):
 
     def on_scan_done(self, tracks):
         self.scanning = False
-        self.build_library(tracks)
+        if tracks and same_tracks(tracks, self.built_tracks):
+            self.cover_cache = {}    # cover files may have been added; songs are as they were
+            self.statusBar().showMessage(f"{len(tracks)} tracks - {len(self.artists)} artists - {len(self.albums)} albums")
+        else:
+            self.build_library(tracks)
         if self.rescan_pending:
             self.rescan_pending = False
             self.rescan()
@@ -5889,7 +6089,7 @@ class Player(QMainWindow):
             for i in range(self.tree.topLevelItemCount())
             if self.tree.topLevelItem(i).isExpanded()
         }
-        self.albums, self.artists, self.cover_cache = {}, {}, {}
+        self.albums, self.artists, self.cover_cache, self.by_artist = {}, {}, {}, {}
         group = bool(self.cfg["group_featured"])
         split = bool(self.cfg["split_collabs"])
         keep = {k.strip().lower() for k in self.cfg["keep_together"] if k.strip()}
@@ -5900,10 +6100,10 @@ class Player(QMainWindow):
                                else (raw.strip() or "Unknown Artist"))
             akey, alkey = t["artist"].lower(), t["album"].lower()
             self.artists.setdefault(akey, t["artist"])
-            alb = self.albums.setdefault(
-                (akey, alkey),
-                {"artist": self.artists[akey], "album": t["album"], "tracks": []},
-            )
+            alb = self.albums.get((akey, alkey))
+            if alb is None:
+                alb = self.albums[(akey, alkey)] = {"artist": self.artists[akey], "album": t["album"], "tracks": []}
+                self.by_artist.setdefault(akey, []).append((akey, alkey))
             alb["tracks"].append(t)
 
         for alb in self.albums.values():
@@ -5926,6 +6126,8 @@ class Player(QMainWindow):
                     entry["albums"].append(key)
             if alb["year"]:
                 self.decades.setdefault(f"{alb['year'] // 10 * 10}s", []).append(key)
+        for keys in self.by_artist.values():
+            keys.sort(key=lambda k: (self.albums[k]["year"] or 9999, k[1]))
 
         ignore_the = bool(self.cfg["ignore_the"])
 
@@ -5959,9 +6161,7 @@ class Player(QMainWindow):
             bold.setBold(True)
             a_item.setFont(0, bold)
             self.tree.addTopLevelItem(a_item)
-            keys = [k for k in self.albums if k[0] == akey]
-            keys.sort(key=lambda k: (self.albums[k]["year"] or 9999, k[1]))
-            for number, key in enumerate(keys, start=1):
+            for number, key in enumerate(self.by_artist[akey], start=1):
                 alb = self.albums[key]
                 al_item = QTreeWidgetItem([alb["album"]])
                 al_item.setData(0, NUM_ROLE, number)
@@ -5985,8 +6185,9 @@ class Player(QMainWindow):
         if self.list_covers():
             for akey, a_item in self.tree_artists.items():
                 a_item.setIcon(0, self.artist_icon(akey, 28))
-        missing = [k for k in self.albums if k not in self.thumb_cache]
+        missing = [k for k in self.albums if not self.thumb_cache.known(k)]
         self.thumbs.clear()
+        self.thumb_asked.clear()
         self.thumbs.add([self.thumb_job(k) for k in missing])
         self.refresh_context()
         if self.current_album in self.tree_albums:
@@ -6019,6 +6220,7 @@ class Player(QMainWindow):
         elif idx == 7 and self.current_artist in self.artists:
             self.show_artist(self.current_artist, switch=False)
         self.refresh_queue_view()
+        self.built_tracks = tracks
 
     def visible_album_count(self):
         n = 0
@@ -6621,17 +6823,28 @@ class Player(QMainWindow):
         if self.current_album in self.albums:
             self.show_album(self.current_album, switch=False)
 
-    def refresh_colors(self):
-        """Re-colour everything (theme, accent, icons, covers). Runs on song change in album-art mode."""
+    def refresh_colors(self, accent_only=False):
+        """Re-colour everything (theme, accent, icons, covers). Runs on song change in album-art mode;
+        then only the accent moved, so the app stylesheet stays and the accent widgets get a small
+        sheet of their own (restyling all ~450 widgets took 0.3-0.5 s per song)."""
         app = QApplication.instance()
-        self.scheme = apply_look(
-            app, self.cfg["theme"], self.accent_hex(), self.system_dark,
-            style_tokens(self.cfg, self.display_family),
-        )
+        args = (self.cfg["theme"], self.accent_hex(), self.system_dark, style_tokens(self.cfg, self.display_family))
+        if accent_only and self.app_accent is not None:
+            self.scheme = look_scheme(*args)
+            app.setPalette(palette_from_scheme(self.scheme))
+        else:
+            self.scheme = apply_look(app, *args)
+            self.app_accent = self.scheme["accent"]
+        self.accent_sheet = accent_qss(self.scheme) if self.scheme["accent"] != self.app_accent else ""
+        for w in app.allWidgets():
+            if w.isVisible() and is_accent_target(w):
+                self.sync_accent(w)      # hidden ones catch up when shown (see eventFilter)
         self.apply_lyrics_look()
         self.refresh_icons()
-        self.album_header.setStyleSheet(header_qss(self.scheme))
-        self.artist_header.setStyleSheet(header_qss(self.scheme))
+        self.set_sheet(self.album_header, header_qss(self.scheme))
+        self.set_sheet(self.artist_header, header_qss(self.scheme))
+        if self.fs_active and self.fs is not None:
+            self.fs.style_for(self.scheme)
         if self.list_covers():
             for k, item in self.tree_albums.items():
                 if self.thumb_cache.get(k) is None:
@@ -6639,8 +6852,9 @@ class Player(QMainWindow):
             for ak, item in self.tree_artists.items():
                 item.setIcon(0, self.artist_icon(ak, 28))
         self.refresh_album_hearts()
-        self.tree_px.clear()
-        self.neutral_cache.clear()
+        if not accent_only:   # small covers don't use the accent; dropped ones would be read again
+            self.tree_px.clear()
+            self.neutral_cache.clear()
         self.tree.viewport().update()
         key = self.current_key()
         self.set_cover(self.np_cover, key, 56, self.radius(8))
@@ -6651,6 +6865,32 @@ class Player(QMainWindow):
         elif self.cover_for(self.current_album) is None:   # placeholder uses the accent
             self.set_cover(self.cover_label, self.current_album, self.cover_px, self.radius(14))
         self.update_mini()
+
+    def sync_accent(self, w):
+        """Give an accent widget the current accent sheet, or take it away again. Not under a parent
+        with a sheet of its own (lyrics page, cover headers): that sheet must keep beating the accent."""
+        sheet = w.styleSheet()
+        if sheet and not sheet.startswith(ACCENT_MARK):
+            return
+        want = self.accent_sheet
+        up = w
+        while up is not self:
+            up = up.parentWidget()
+            if up is None:
+                return           # not one of ours (the mini player draws its own accent)
+            above = up.styleSheet()
+            if above and not above.startswith(ACCENT_MARK):
+                want = ""
+        if sheet != want:
+            w.setStyleSheet(want)
+
+    def set_sheet(self, widget, qss):
+        """Set a container's own sheet (skipped when unchanged: it restyles everything inside)."""
+        if widget.styleSheet() != qss:
+            widget.setStyleSheet(qss)
+            for w in widget.findChildren(QWidget):
+                if is_accent_target(w):
+                    self.sync_accent(w)
 
     def refresh_icons(self):
         self.icon_fg = "#ffffff" if self.scheme.get("dark", True) else self.scheme["text"]
@@ -6706,7 +6946,7 @@ class Player(QMainWindow):
         self.lyrics_list.setFont(base)
         self.lyrics_list.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff if immersive else Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.ly_page.setStyleSheet(lyrics_page_qss(apple, immersive))
+        self.set_sheet(self.ly_page, lyrics_page_qss(apple, immersive))
         self.lyric_pad = (28, 10) if apple else (14, 8)
         self.set_lyrics_fade(bool(self.cfg["lyrics_fade"]))
         if getattr(self, "ly_viz", None) is not None:
@@ -6803,6 +7043,7 @@ class Player(QMainWindow):
     def save_session(self, *_args):
         """Remember the song, the spot in it, the queue and where it was playing from. Runs on close,
         and also when Windows logs off or shuts down (closeEvent doesn't always come then)."""
+        self.flush_stats()
         if getattr(self, "session_closed", False):
             return   # saved on close already; the player is stopped now, so position() would say 0
         if 0 <= self.index < len(self.queue):
@@ -6833,6 +7074,7 @@ class Player(QMainWindow):
             if self.mini is not None:
                 self.mini.close()
             self.finalize_listen()
+            self.flush_stats()
             if self.cover_batch is not None:
                 self.cover_batch.stop()
                 self.cover_batch.wait(2000)
@@ -6876,9 +7118,15 @@ class Player(QMainWindow):
         if key in self.thumb_cache:
             pix = self.thumb_cache[key]
             return rounded_pixmap(pix, size, radius) if pix is not None else self.placeholder(size, radius)
-        if request and key in self.albums:
-            self.thumbs.add([self.thumb_job(key)], front=True)
+        if request:
+            self.ask_thumb(key)
         return self.placeholder(size, radius)
+
+    def ask_thumb(self, key):
+        """Read this cover next (once; a library row asks on every paint)."""
+        if key in self.albums and key not in self.thumb_asked:
+            self.thumb_asked.add(key)
+            self.thumbs.add([self.thumb_job(key)], front=True)
 
     def thumb_icon(self, key, size, radius, request=True):
         return static_icon(self.thumb_pixmap(key, size, radius, request))
@@ -6896,28 +7144,27 @@ class Player(QMainWindow):
         return False   # covers in the library list are drawn by TreeRowDelegate
 
     def artist_cover_key(self, akey):
-        keys = [k for k in self.albums if k[0] == akey]
-        keys.sort(key=lambda k: (self.albums[k]["year"] or 9999, k[1]))
+        keys = self.by_artist.get(akey, [])
         for k in keys:
-            if self.thumb_cache.get(k) is not None:
+            if self.thumb_cache.has_cover(k):
                 return k
         return keys[0] if keys else None
 
     def artist_pixmap(self, akey, size):
         key = self.artist_cover_key(akey)
-        if key is not None and self.thumb_cache.get(key) is not None:
-            return rounded_pixmap(self.thumb_cache[key], size, size // 2)
+        pix = self.thumb_cache.get(key) if key is not None else None
+        if pix is not None:
+            return rounded_pixmap(pix, size, size // 2)
+        if key is not None and self.thumb_cache.has_cover(key):
+            self.ask_thumb(key)          # dropped from the cache; the view updates when it's back
         return avatar_pixmap(self.artists.get(akey, "?"), size, self.scheme["raised"], self.scheme["text"])
 
     def artist_icon(self, akey, size):
         return static_icon(self.artist_pixmap(akey, size))
 
-    def on_thumb_loaded(self, key, data):
-        pix = None
-        if data:
-            img = QPixmap()
-            if img.loadFromData(data):
-                pix = rounded_pixmap(img, 160, 0)
+    def on_thumb_loaded(self, key, img):
+        pix = QPixmap.fromImage(img) if img is not None else None   # decoded and shrunk by ThumbLoader
+        self.thumb_asked.discard(key)
         self.thumb_cache[key] = pix
         self.tree_px.pop(key, None)
         if key in self.tree_albums:
@@ -7013,7 +7260,7 @@ class Player(QMainWindow):
             if key is not None:
                 self.view_targets[view].setdefault(key, []).append((item, size, r, True))
                 if key not in self.thumb_cache:
-                    self.thumbs.add([self.thumb_job(key)], front=True)
+                    self.ask_thumb(key)
         else:
             key = value if kind == "album" else self.track_by_path[value][1]
             item.setIcon(self.thumb_icon(key, size, r))
@@ -7059,9 +7306,7 @@ class Player(QMainWindow):
 
     # ----- artist page
     def artist_album_keys(self, akey):
-        keys = [k for k in self.albums if k[0] == akey]
-        keys.sort(key=lambda k: (self.albums[k]["year"] or 9999, k[1]))
-        return keys
+        return list(self.by_artist.get(akey, []))
 
     def show_artist(self, akey, switch=True):
         self.current_artist = akey
@@ -7255,6 +7500,8 @@ class Player(QMainWindow):
         pix = self.thumb_cache.get(key)
         radius = max(2, self.radius(6))
         if pix is None:
+            if key not in self.thumb_cache:
+                self.ask_thumb(key)      # dropped from the cache (or not read yet)
             ck = (28, radius, self.scheme["raised"])
             if ck not in self.neutral_cache:
                 self.neutral_cache[ck] = neutral_cover(28, radius, self.scheme["raised"], self.scheme["sub"])
@@ -7360,6 +7607,8 @@ class Player(QMainWindow):
 
     def eventFilter(self, obj, event):
         etype = event.type()
+        if etype == QEvent.Type.Show and isinstance(obj, QWidget) and is_accent_target(obj):
+            self.sync_accent(obj)        # shown after the album-art accent changed (pages, menus, dialogs)
         if etype == QEvent.Type.Resize and obj is getattr(self, "lyrics_list", None):
             QTimer.singleShot(0, self.resize_lyric_spacers)
         elif etype == QEvent.Type.Wheel and obj is getattr(self, "lyrics_viewport", None):
@@ -7853,10 +8102,7 @@ class Player(QMainWindow):
         v = self.volume.value()
         kind = "vol_mute" if (self.audio.isMuted() or v == 0) else ("vol_low" if v < 50 else "vol_high")
         fs.vol_btn.setIcon(make_icon(kind, "#ffffff"))
-        if self.cfg["fs_motion"] and not fs.motion_timer.isActive():
-            fs.motion_timer.start()
-        elif not self.cfg["fs_motion"]:
-            fs.motion_timer.stop()
+        fs.sync_motion()
         self.setup_visualizer()
         fs.show_next_card("")
 
@@ -8104,7 +8350,7 @@ class Player(QMainWindow):
         new = self.accent_for_key(key)
         if new != self.album_accent:
             self.album_accent = new
-            self.refresh_colors()
+            self.refresh_colors(accent_only=True)
 
     # ----- favorites
     def update_heart(self):
@@ -8157,11 +8403,20 @@ class Player(QMainWindow):
         length_ms = hit[0]["length"] * 1000 if hit and hit[0]["length"] else 60000
         if ms >= min(30000, length_ms * 0.5):
             record_play(self.stats, path, ms / 1000)
-            save_stats(self.stats)
+            self.stats_dirty = True
+            if not self.stats_timer.isActive():   # the whole file (~10 MB) took ~60 ms per song
+                self.stats_timer.start()
             if hit and hit[1] == self.current_album and self.current_album in self.albums:
                 for r, t in enumerate(self.albums[self.current_album]["tracks"]):
                     if t["path"] == path and self.track_table.item(r, 3) is not None:
                         self.track_table.item(r, 3).setText(str(self.stats["plays"][path]["count"]))
+
+    def flush_stats(self):
+        """Write the listening stats now if a write is waiting (timer, close, log-off)."""
+        self.stats_timer.stop()
+        if self.stats_dirty:
+            self.stats_dirty = False
+            save_stats(self.stats)
 
     def make_stats_table(self, headers):
         table = QTableWidget(0, len(headers))
