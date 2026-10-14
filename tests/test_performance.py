@@ -3,6 +3,8 @@ Performance checks: work that used to grow with the library or repeat on every s
 how often something happens (stylesheet applied, file written, covers decoded) rather than time,
 so they don't get flaky on a busy machine. Big libraries are faked in memory, like test_speed.py.
 """
+import os
+import shutil
 import time
 import unittest
 from unittest import mock
@@ -11,7 +13,8 @@ from PyQt6.QtCore import QBuffer, QByteArray, QIODevice
 from PyQt6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPixmap
 from PyQt6.QtWidgets import QApplication, QMenu
 
-from test_mpv_engine import APP, wait_for
+from test_core import TempDirTest
+from test_mpv_engine import APP, tone, wait_for
 from test_player import PlayerHarness, mp
 
 
@@ -304,6 +307,72 @@ class LibraryBuildTest(PlayerHarness):
             self.assertTrue(wait_for(lambda: not p.scanning))
             self.assertEqual(build.call_count, 1)
         self.assertEqual(len(p.all_tracks), 1)
+
+
+
+class ScanSpeedTest(TempDirTest):
+    """Every start-up rescans the library; files that didn't change come from the cache."""
+
+    def library(self, n):
+        lib = self.tmp / "lib"
+        first = lib / "Band" / "Alb"
+        first.mkdir(parents=True)
+        tone(first / "00.wav", 0.01)
+        for i in range(1, n):
+            folder = lib / f"Band {i // 50}" / f"Alb {i // 10}"
+            folder.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(first / "00.wav", folder / f"{i:04d}.wav")
+        return lib
+
+    def test_unchanged_files_need_no_stat_each(self):
+        """os.scandir already knows size and dates on Windows; os.walk + os.stat asked again per file."""
+        lib = self.library(300)
+        cache = mp.scan_folders([str(lib)])
+        self.assertEqual(len(cache), 300)
+        with mock.patch.object(mp.os, "stat", wraps=os.stat) as stat:
+            started = time.perf_counter()
+            again = mp.scan_folders([str(lib)], cache)
+            took = time.perf_counter() - started
+        print(f" 300 cached files: {took * 1000:.0f} ms, {stat.call_count} stat calls", end=" ")
+        self.assertTrue(mp.same_tracks(again, cache))
+        self.assertLess(stat.call_count, 5)
+
+    def test_scan_order_and_paths_match_os_walk(self):
+        """Paths are the cache's keys: they must be spelled exactly as before, in the same order."""
+        lib = self.library(60)
+        (lib / "notes.txt").write_text("not music")
+        expected = [os.path.join(root, f) for root, _d, files in os.walk(str(lib)) for f in files
+                    if f.endswith(".wav")]
+        self.assertEqual([t["path"] for t in mp.scan_folders([str(lib)])], expected)
+
+    def test_unreadable_subfolder_keeps_its_songs(self):
+        lib = self.library(30)
+        cache = mp.scan_folders([str(lib)])
+        locked = str(lib / "Band 0")
+        real = os.scandir
+
+        def scandir(path="."):
+            if os.path.normcase(str(path)) == os.path.normcase(locked):
+                raise PermissionError(13, "denied", str(path))
+            return real(path)
+        with mock.patch.object(mp.os, "scandir", scandir):
+            again = mp.scan_folders([str(lib)], cache)
+        self.assertEqual(sorted(t["path"] for t in again), sorted(t["path"] for t in cache))
+
+
+class CacheWriteTest(PlayerHarness):
+    def test_rescan_without_changes_does_not_rewrite_the_cache(self):
+        self.make_player(["One", "Two"])
+        p = self.player
+        with mock.patch.object(mp, "save_cache", wraps=mp.save_cache) as save:
+            p.rescan()
+            self.assertTrue(wait_for(lambda: not p.scanning))
+            self.assertEqual(save.call_count, 0)
+            tone(self.tmp / "music" / "Band" / "Alb" / "03 - Three.wav", 0.2)
+            p.rescan()
+            self.assertTrue(wait_for(lambda: not p.scanning))
+            self.assertEqual(save.call_count, 1)
+        self.assertEqual(len(mp.load_cache()), 3)
 
 
 if __name__ == "__main__":

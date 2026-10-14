@@ -371,6 +371,37 @@ def distinct_roots(folders):
     return roots
 
 
+def audio_entries(top, unreachable):
+    """The audio files under top as os.DirEntry, in os.walk's order and spelling. On Windows an
+    entry already carries size and dates, so unchanged files cost no extra stat each (18k stats
+    were most of a start-up scan). Folders that can't be listed go to unreachable."""
+    stack = [top]
+    while stack:
+        folder = stack.pop()
+        dirs, files = [], []
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    try:
+                        is_dir = entry.is_dir()
+                    except OSError:
+                        is_dir = False
+                    (dirs if is_dir else files).append(entry)
+        except OSError as e:
+            unreachable.append(norm_path(e.filename or folder))
+            continue
+        for entry in files:
+            if os.path.splitext(entry.name)[1].lower() in AUDIO_EXTS:
+                yield entry
+        for entry in reversed(dirs):
+            try:
+                if entry.is_symlink():      # os.walk doesn't follow folder links either
+                    continue
+            except OSError:
+                pass
+            stack.append(entry.path)
+
+
 def scan_folders(folders, cache=None):
     """Walk the folders. Files that haven't changed since the last scan are
     taken from the cache instead of being re-read (this is what makes
@@ -381,29 +412,26 @@ def scan_folders(folders, cache=None):
         if not os.path.isdir(folder):
             unreachable.append(nroot)    # unplugged drive / NAS that's offline right now
             continue
-        for root, _, files in os.walk(folder, onerror=lambda e: unreachable.append(norm_path(e.filename))):
-            for name in files:
-                if Path(name).suffix.lower() not in AUDIO_EXTS:
-                    continue
-                path = os.path.join(root, name)
-                key = norm_path(path)
-                if key in seen:
-                    continue
-                seen.add(key)
-                try:
-                    st = os.stat(path)
-                except OSError:
-                    continue
-                prev = old.get(path)
-                if (prev and prev.get("mtime") == st.st_mtime and prev.get("size") == st.st_size
-                        and "artist_raw" in prev and "genre" in prev):
-                    tracks.append(prev)
-                else:
-                    t = read_track(path)
-                    if not t.pop("read_failed", False):   # no mtime/size = read it again next time
-                        t["mtime"], t["size"] = st.st_mtime, st.st_size
-                    t["added"] = max(st.st_mtime, st.st_ctime)
-                    tracks.append(t)
+        for entry in audio_entries(folder, unreachable):
+            path = entry.path
+            key = norm_path(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                st = entry.stat()
+            except OSError:
+                continue
+            prev = old.get(path)
+            if (prev and prev.get("mtime") == st.st_mtime and prev.get("size") == st.st_size
+                    and "artist_raw" in prev and "genre" in prev):
+                tracks.append(prev)
+            else:
+                t = read_track(path)
+                if not t.pop("read_failed", False):   # no mtime/size = read it again next time
+                    t["mtime"], t["size"] = st.st_mtime, st.st_size
+                t["added"] = max(st.st_mtime, st.st_ctime)
+                tracks.append(t)
     # keep the songs of folders we couldn't reach, so an unplugged drive doesn't empty the library
     for path, t in old.items():
         key = norm_path(path)
@@ -5880,7 +5908,8 @@ class Player(QMainWindow):
 
         def job():
             tracks = scan_folders(folders, old)
-            save_cache(tracks)
+            if not same_tracks(tracks, old):   # 9 MB for 18k songs, and most starts change nothing
+                save_cache(tracks)
             return tracks
 
         w = Worker(job)
