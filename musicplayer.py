@@ -81,7 +81,7 @@ AUDIO_EXTS = {
 }
 COVER_NAMES = ("cover", "folder", "front", "album", "albumart")
 COVER_EXTS = (".jpg", ".jpeg", ".png")
-APP_VERSION = "1.1"   # raise it with every release; the release tag is "v" + this (see MANUAL)
+APP_VERSION = "1.2-beta.1"   # raise it with every release; the release tag is "v" + this (see MANUAL)
 CONFIG_FILE = Path.home() / ".simple_music_player.json"
 CACHE_FILE = Path.home() / ".simple_music_player_cache.json"
 LOSSLESS_EXTS = {"flac", "wav", "aiff", "aif", "ape", "wv"}
@@ -220,18 +220,26 @@ def read_json(path, kind, quarantine=True):
 UPDATE_REPO = "erenoozr/eozMP"
 
 
-def version_tuple(text):
-    """'v1.2 - Bugfix' -> (1, 2); None when there is no version number at the start."""
-    m = re.match(r"\s*v?(\d+(?:\.\d+)*)", text or "")
-    return tuple(int(x) for x in m.group(1).split(".")) if m else None
+VERSION_STAGES = {"alpha": -3, "beta": -2, "rc": -1}   # a test version comes before its release
+
+
+def version_key(text):
+    """'v1.2 - Bugfix' -> ((1, 2), (0, 0)); 'v1.2-beta.1' -> ((1, 2), (-2, 1)).
+    None when there is no version number at the start."""
+    m = re.match(r"\s*v?(\d+(?:\.\d+)*)(?:[-.](alpha|beta|rc)\.?(\d+)?)?", text or "", re.IGNORECASE)
+    if not m:
+        return None
+    stage = VERSION_STAGES.get((m.group(2) or "").lower(), 0)
+    return tuple(int(x) for x in m.group(1).split(".")), (stage, int(m.group(3) or 0))
 
 
 def is_newer(tag, current):
-    a, b = version_tuple(tag), version_tuple(current)
+    a, b = version_key(tag), version_key(current)
     if not a or not b:
         return False
-    n = max(len(a), len(b))
-    return a + (0,) * (n - len(a)) > b + (0,) * (n - len(b))
+    n = max(len(a[0]), len(b[0]))
+    pad = lambda nums: nums + (0,) * (n - len(nums))
+    return (pad(a[0]), a[1]) > (pad(b[0]), b[1])
 
 
 def latest_release():

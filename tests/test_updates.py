@@ -31,6 +31,14 @@ class VersionTest(unittest.TestCase):
     def test_tag_with_words_after_the_number(self):
         self.assertTrue(mp.is_newer("v1.2 - Bugfix", "1.1"))
 
+    def test_beta_comes_after_the_last_release_and_before_its_own(self):
+        self.assertTrue(mp.is_newer("v1.2-beta.1", "1.1"))
+        self.assertTrue(mp.is_newer("v1.2", "1.2-beta.1"))
+        self.assertTrue(mp.is_newer("v1.2-beta.2", "1.2-beta.1"))
+        self.assertTrue(mp.is_newer("v1.2-rc.1", "1.2-beta.3"))
+        self.assertFalse(mp.is_newer("v1.2-beta.1", "1.2"))
+        self.assertFalse(mp.is_newer("v1.1", "1.2-beta.1"))
+
 
 class UpdateCheckTest(PlayerHarness):
     def start_with(self, latest=LATEST, **cfg):
