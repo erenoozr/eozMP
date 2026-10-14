@@ -7,9 +7,12 @@ echo     eozMP builder - turns musicplayer.py into eozMP.exe
 echo  ==============================================
 echo.
 
-rem --- 1. Python must be installed (python.org, tick "Add Python to PATH")
-where python >nul 2>nul
-if errorlevel 1 (
+rem --- 1. Python must be installed (python.org). The "py" launcher comes with it; "python" works
+rem        when "Add Python to PATH" was ticked. (On some PCs "python" only opens the Microsoft Store.)
+set "PY="
+py -3 --version >nul 2>nul && set "PY=py -3"
+if not defined PY python --version >nul 2>nul && set "PY=python"
+if not defined PY (
     echo  Python was not found.
     echo  Install it from https://www.python.org/downloads/ and tick "Add Python to PATH",
     echo  then run this file again.
@@ -25,10 +28,11 @@ if not exist "musicplayer.py" (
 
 rem --- 2. Install / update everything eozMP uses
 echo  [1/3] Installing what eozMP needs (this can take a few minutes the first time)...
-python -m pip install --upgrade pip
-python -m pip install --upgrade PyQt6 mutagen numpy pyinstaller
-rem Optional: lets eozMP use VLC (needed for the equalizer). Harmless if VLC isn't installed.
-python -m pip install --upgrade python-vlc
+%PY% -m pip install --upgrade pip
+%PY% -m pip install --upgrade PyQt6 mutagen numpy pyinstaller
+rem Optional engines. mpv: gapless playback, ReplayGain, equalizer (needs libmpv-2.dll next to
+rem eozMP.exe or picked in Settings). VLC: needs VLC installed. Both are harmless if missing.
+%PY% -m pip install --upgrade mpv python-vlc
 if errorlevel 1 (
     echo  Something went wrong while installing. Check your internet connection and try again.
     pause
@@ -40,10 +44,10 @@ echo.
 echo  [2/3] Building eozMP.exe ...
 if exist build rmdir /s /q build
 if exist "eozMP.ico" (
-    python -m PyInstaller --noconfirm --onefile --windowed --name eozMP --icon eozMP.ico musicplayer.py
+    %PY% -m PyInstaller --noconfirm --onefile --windowed --name eozMP --icon eozMP.ico --hidden-import mpv --hidden-import vlc musicplayer.py
 ) else (
     echo  (eozMP.ico not found - building without the icon)
-    python -m PyInstaller --noconfirm --onefile --windowed --name eozMP musicplayer.py
+    %PY% -m PyInstaller --noconfirm --onefile --windowed --name eozMP --hidden-import mpv --hidden-import vlc musicplayer.py
 )
 if not exist "dist\eozMP.exe" (
     echo.
