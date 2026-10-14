@@ -28,7 +28,7 @@ KEEP = {"Soulseek", "&Soulseek", "Apple Music", "Arial", "Georgia", "Fusion", "L
         "Times New Roman", "Qt", "Preamp", "MP3 320k+", "Soulseek Guide.txt", "eozMP", "MYMEMORY WARNING",
         "AcoustID", "Last.fm", "Last.fm..."}
 TECH_RE = re.compile(r"^[\w\-{}.]*:(?!\s|$)|^\S*[/|]\S*$|^/|^\{0\}\.|rgba\(|font-|^color:|^explorer |"
-                     r"^[\w-]+-[A-Z][\w-]*$|^[A-Z]{2,}\{0\}$|^eozMP(/|-backup)|^release|^\d+px|^M-SEARCH|\?v=")
+                     r"^[\w-]+-[A-Z][\w-]*$|^[A-Z]{2,}\{0\}$|^eozMP(/|-backup)|^release|^\d+px|^M-SEARCH|\?v=|@\w|=\w+=")
 
 
 def literal_ok(s):
@@ -95,7 +95,7 @@ def gtx(text, lang):
     return None
 
 
-BRANDS = ["Soulseek", "slskd", "eozMP", "MusicBrainz", "VLC", "lrclib.net", "AcoustID", "Last.fm"]   # never translated
+BRANDS = ["Soulseek", "slskd", "eozMP", "MusicBrainz", "VLC", "lrclib.net", "AcoustID", "Last.fm", "ReplayGain"]   # never translated
 
 
 def prep(s):

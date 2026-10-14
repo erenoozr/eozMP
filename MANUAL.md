@@ -8,9 +8,9 @@ step by step.
 [Finding your way around](#finding-your-way-around) · [Playing music](#playing-music) ·
 [Lyrics, mini player and fullscreen](#lyrics-mini-player-and-fullscreen) ·
 [Playlists, Browse, Search, Home and Stats](#playlists-browse-search-home-and-stats) ·
-[New in 1.2](#new-in-12) ·
+[New in 1.3](#new-in-13) ·
 [Soulseek](#soulseek-logging-in-and-downloading) · [Preferences](#making-it-yours-preferences) ·
-[Optional extras](#optional-extras-vlc-equalizer-and-visualizer) · [Backups and updates](#backups-updates-and-your-data) ·
+[Optional extras](#optional-extras-mpv-vlc-equalizer-and-visualizer) · [Backups and updates](#backups-updates-and-your-data) ·
 [Troubleshooting](#troubleshooting) · [Shortcuts](#keyboard-and-mouse-shortcuts)
 
 ## What you need
@@ -18,12 +18,13 @@ step by step.
 | Item | Needed? | Where it comes from |
 | --- | --- | --- |
 | A Windows 10 or 11 PC | Yes | |
-| `eozMP-Setup-1.2.exe` | Yes | The [latest release](../../releases/latest) of this repository |
+| `eozMP-Setup-1.3.exe` | Yes | The [latest release](../../releases/latest) of this repository |
 | Your music files (mp3, flac, m4a, wav, ogg and more) | Yes | Your own folders |
 | An internet connection | For lyrics and covers | |
 | Python 3 | Only to build eozMP yourself | [python.org/downloads](https://www.python.org/downloads/) |
 | slskd (a small Soulseek program) | Only for Soulseek | Included in the installer |
-| VLC | Only for the equalizer | The installer can download it, or [videolan.org](https://www.videolan.org/) |
+| mpv (libmpv-2.dll) | For gapless playback, ReplayGain, the equalizer | [mpv.io/installation](https://mpv.io/installation/) |
+| VLC | Only if you don't use mpv and want the equalizer | The installer can download it, or [videolan.org](https://www.videolan.org/) |
 
 A Soulseek account is free. slskd creates it for you the first time it connects (see the Soulseek section).
 
@@ -31,7 +32,7 @@ A Soulseek account is free. slskd creates it for you the first time it connects 
 
 ### The easy way: the installer
 
-1. Open the [latest release](../../releases/latest) and download **eozMP-Setup-1.2.exe** under *Assets*.
+1. Open the [latest release](../../releases/latest) and download **eozMP-Setup-1.3.exe** under *Assets*.
 2. Double-click it. If Windows shows a blue **Windows protected your PC** box, click **More info**, then
    **Run anyway**. This happens because the app is new and unsigned.
 3. Pick a language (English or Türkçe). Setup then asks, step by step, what to install:
@@ -53,7 +54,7 @@ Soulseek in detail. Uninstall eozMP from **Settings → Apps**; your music, sett
    tick **Add Python to PATH**, then click **Install Now**.
 2. On this repository's page, click the green **Code** button → **Download ZIP**, and extract it.
 3. Double-click **build_exe.bat**. A black window installs everything eozMP uses (PyQt6, mutagen, numpy,
-   PyInstaller and python-vlc), then builds the app. The first time takes a few minutes.
+   PyInstaller, python-mpv and python-vlc), then builds the app. The first time takes a few minutes.
 4. When it says **Done!**, `eozMP.exe` is on your Desktop (and in the `dist` folder).
 5. To build the installer as well, install [Inno Setup 6](https://jrsoftware.org/isdl.php) and double-click
    **build_setup.bat**: it downloads slskd and fpcalc once and writes `installer\Output\eozMP-Setup-x.y.exe`.
@@ -69,8 +70,12 @@ python musicplayer.py
 The build command `build_exe.bat` runs, if you ever want to type it yourself:
 
 ```
-python -m PyInstaller --noconfirm --onefile --windowed --name eozMP --icon eozMP.ico musicplayer.py
+python -m PyInstaller --noconfirm --onefile --windowed --name eozMP --icon eozMP.ico --hidden-import mpv --hidden-import vlc musicplayer.py
 ```
+
+**Publishing a new version:** raise `APP_VERSION` near the top of `musicplayer.py` (for example to `"1.2"`),
+build the exe, and publish a GitHub release whose tag is `v` plus that number (`v1.2`). eozMP compares its own
+`APP_VERSION` with the newest release tag to tell people a new version is out.
 
 ## First start: adding your music
 
@@ -207,14 +212,15 @@ directories:
   downloads: C:\Users\YOURNAME\Music\Soulseek
 
 web:
+  ip_address: 127.0.0.1
   authentication:
     username: slskd
-    password: slskd
+    password: PickAnotherPassword456
     api_keys:
       eozmp:
         key: PUT-ANY-LONG-RANDOM-TEXT-HERE-1234
         role: readwrite
-        cidr: 0.0.0.0/0,::/0
+        cidr: 127.0.0.1/32,::1/128
 ```
 
 - **username / password (under soulseek):** make up a Soulseek name with some random numbers so nobody else has
@@ -223,6 +229,10 @@ web:
 - **downloads:** the folder where downloaded music should go. Replace `YOURNAME` with your Windows user name.
 - **key:** type 20 or more random letters and numbers, like a password. eozMP needs this same text later, so copy
   it somewhere.
+- **password (under web):** the password for the slskd page in your browser. Change it from the default `slskd`;
+  from now on you log in to `localhost:5030` with `slskd` and this password.
+- **ip_address and cidr:** these keep slskd to this PC only. Without them, anyone on the same Wi-Fi (a dorm,
+  a café) could open your slskd page and use the key. Leave them as they are unless you know you need otherwise.
 - Use spaces, never the Tab key, and keep the spacing exactly as shown. The words `soulseek:`, `directories:` and
   `web:` must each appear only once without a `#` in front.
 
@@ -235,13 +245,15 @@ web:
 1. In eozMP, open **Preferences → Soulseek**.
 2. Fill in: slskd address `http://localhost:5030`, the **API key** (the long text from the file) and the
    **downloads folder** (the same folder as in the file).
-3. Click **Test connection**. "Connected to slskd." means it works. Click **OK**.
+3. Click **Test connection**. "Connected to slskd, and slskd is logged in to Soulseek." means it works. Click
+   **OK**. If it says slskd isn't logged in, check the username and password under `soulseek:` in `slskd.yml`.
 
 ### 4. Finding and downloading music
 
-- **From the search box:** type an artist or album and press **Enter**. Under your library results, a
-  **From Soulseek** section fills in after about 30 seconds, grouped by album with quality and size. Double-click a
-  row, or select rows and click **Download selected**.
+- **From the search box:** type an artist or album and press **Enter**; this searches your own library. To look
+  on Soulseek too, press **Search Soulseek too** under the results. A **From Soulseek** section shows how many
+  people have answered and fills in when the search is done (usually within a minute or two), grouped by album
+  with quality and size. Double-click a row, or select rows and click **Download selected**.
 - **The Soulseek page:** click the Soulseek search icon next to the search box for a full results page with
   filters: Albums or Files, quality (lossless only, MP3 320k+), and free slots only.
 - **Whole discography:** on the Soulseek page, click **Whole discography...** and type an artist. eozMP picks the
@@ -251,10 +263,12 @@ web:
 - **Tidy library:** finished downloads are moved into your first music folder as `Artist / Album / 01 - Title` and
   show up in your library by themselves. You can turn this off or pick another folder in Preferences → Soulseek;
   **Library → Organize downloads now** tidies files you already have.
+  Files that came with an album (`.cue`, `.log`, scans) move along with it. Organizing never deletes
+  anything except folders it left empty.
 
 Soulseek is a file-sharing network. Only download music you're allowed to have.
 
-## New in 1.2
+## New in 1.3
 
 ### Your language
 
@@ -316,8 +330,6 @@ line, in the lyrics page and the fullscreen player. Each song is translated once
 - **Fluid background:** **Preferences → Audio → Fluid colour background** replaces the fullscreen backdrop with soft
   colours from the cover that move with the music.
 - **Repeat this song:** with repeat set to *this song*, **Next** starts the song again instead of skipping it.
-- **Updates:** **Help → Check for updates...**, plus a quiet check at start-up (turn it off in
-  Preferences → General).
 - The first rescan after updating is slower than usual because eozMP also reads the BPM tag.
 
 ## Making it yours: Preferences
@@ -326,21 +338,30 @@ Click **Preferences** in the top menu (or press Ctrl+,). **Apply** shows a chang
 
 | Tab | What you can change |
 | --- | --- |
-| General | Reopen on the song where you stopped, keep playing the next song, show the current lyric line under the song title, keep playing in the tray when you close the window, use the keyboard's media keys |
+| General | Reopen on the song where you stopped, keep playing the next song, show the current lyric line under the song title, keep playing in the tray when you close the window, use the keyboard's media keys, tell me when a new version is out |
 | Appearance | Theme (System, Dark, Light), accent color (presets, colors from each album cover, or any custom color by hex code or color picker), corners, spacing, album cover size, how albums look in the left list, fade between pages, app font (Times New Roman, the system font or any font) and text size, mini player opacity |
 | Library | Music folders, group featured artists, put collaborations under the first artist, names that should never be split (such as Simon & Garfunkel), ignore "The" when sorting, find missing covers online, save found covers into album folders |
 | Lyrics | Style (Album art or Classic), alignment, font, weight, size, brightness of the other lines, fade at the edges, smooth line changes, soft shadow, online lookup, save found lyrics next to songs |
-| Audio | Audio engine (built-in or VLC), visualizer (Off, Bars, Wave), moving fullscreen background, open the equalizer |
+| Audio | Audio engine (Automatic, mpv, VLC or built-in), mpv folder, ReplayGain (Off, Track, Album), output device, exclusive mode, visualizer (Off, Bars, Wave), moving fullscreen background, open the equalizer |
 | Soulseek | slskd address, API key and downloads folder, Test connection, default results view and quality filter, free slots only, organizing finished downloads |
 
-## Optional extras: VLC, equalizer and visualizer
+## Optional extras: mpv, VLC, equalizer and visualizer
 
 These are optional; eozMP works fully without them.
 
-- **VLC engine and equalizer:** install VLC from [videolan.org](https://www.videolan.org/) (the normal 64-bit
-  version). Then open **Preferences → Audio**, set the engine to **Automatic (VLC if installed)** and click OK.
-  Press **EQ** (or Ctrl+E) for a 10-band equalizer with presets. If VLC can't play on your PC, eozMP switches back
-  to the built-in engine by itself and tells you why.
+- **mpv engine (recommended):** with mpv, songs follow each other without a gap (live albums, DJ mixes), and you
+  get ReplayGain, a choice of output device, exclusive mode and the equalizer. eozMP needs mpv's
+  `libmpv-2.dll`: put it next to `eozMP.exe`, or pick the folder that has it in **Preferences → Audio → mpv folder**.
+  With the engine on **Automatic (mpv, then VLC)**, eozMP uses mpv when it finds it.
+  - **ReplayGain:** evens out loudness between songs that have ReplayGain tags. **Album** keeps the loud and quiet
+    songs of one album as they were mastered; **Track** makes every song about equally loud.
+  - **Exclusive mode:** eozMP alone uses the sound device and the sound goes out untouched; other apps are silent
+    while eozMP plays.
+- **VLC engine:** install VLC from [videolan.org](https://www.videolan.org/) (the normal 64-bit version) and set
+  the engine to **VLC**. If VLC can't play on your PC, eozMP switches back to the built-in engine by itself and
+  tells you why.
+- **Equalizer:** press **EQ** (or Ctrl+E) for a 10-band equalizer with presets. It works with mpv and VLC, and a
+  setting sounds the same with both.
 - **Visualizer:** in **Preferences → Audio**, choose **Bars** or **Wave**. It shows at the bottom of the lyrics page
   and the fullscreen player. It works with the built-in engine (not VLC).
 
@@ -348,8 +369,11 @@ These are optional; eozMP works fully without them.
 
 - **Back up:** **Library → Back up eozMP...** saves your settings, playlists, favorites, listening stats and saved
   lyrics into one `.zip` file. **Library → Restore from backup...** loads them back, for example on a new PC.
-- **Updating:** download the newest `eozMP.exe` from the [releases](../../releases) and replace the old one
-  (or download the new source and run `build_exe.bat` again). Your settings, playlists and stats are kept.
+- **Updating:** eozMP asks GitHub once a day whether a new version is out and, if so, offers to open the
+  download page (**Help → Check for updates...** asks right away; turn it off in **Preferences → General**).
+  Only the public releases page is read; nothing about you or your music is sent. Download the newest
+  `eozMP.exe` from the [releases](../../releases) and replace the old one (or download the new source and run
+  `build_exe.bat` again). Your settings, playlists and stats are kept.
 - **Your music files** are never changed, except when you allow it: organizing Soulseek downloads, saving lyrics
   next to songs, or saving found covers into album folders.
 

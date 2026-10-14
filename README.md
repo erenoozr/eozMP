@@ -17,10 +17,11 @@ synced lyrics, and can find and download music through Soulseek.
 - **Playlists, queue panel, favorites, shuffle and repeat** (previous always goes back to the song you heard)
 - **Browse** by genre and decade, **search** artists / albums / songs, **listening stats**
 - **Soulseek** (through slskd): search, download albums or whole discographies, auto-organize downloads
-- **Make it yours:** themes, accent colors (even from the album cover), fonts, lyric styles, visualizer, equalizer (VLC)
+- **Make it yours:** themes, accent colors (even from the album cover), fonts, lyric styles, visualizer, equalizer
+- **Sound (with mpv):** gapless playback, ReplayGain, output device and exclusive mode
 - Media keys, system tray, drag and drop, backup and restore
 
-### New in 1.2
+### New in 1.3
 
 - **12 languages:** the whole app in English, Türkçe, Español, Deutsch, Français, Português, Русский, العربية, 中文,
   हिन्दी, 日本語 and Bahasa Indonesia (and lyrics translated into them, line by line)
@@ -33,11 +34,11 @@ synced lyrics, and can find and download music through Soulseek.
 - **Audio quality check** finds fake 320k / FLAC files; **find a better copy** on Soulseek replaces them
 - **Missing songs** of an album, **duplicate finder**, **moods** (Calm / Energetic / Night)
 - Soulseek **wishlist**, **trusted users**, **new releases** from your artists
-- Fluid fullscreen background, update check, and *repeat this song* now restarts the song on **Next**
+- Fluid fullscreen background, and *repeat this song* now restarts the song on **Next**
 
 ## Download
 
-Get **`eozMP-Setup-1.2.exe`** from the [latest release](../../releases/latest) and double-click it. Setup asks
+Get **`eozMP-Setup-1.3.exe`** from the [latest release](../../releases/latest) and double-click it. Setup asks
 step by step what to install (eozMP, Soulseek support, VLC for the equalizer, a desktop shortcut) and, if you want
 Soulseek, your Soulseek name and password, then sets everything up. No Python needed.
 Windows may show a blue *"Windows protected your PC"* box because the app is new and unsigned:

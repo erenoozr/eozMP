@@ -25,7 +25,7 @@ if not exist "%ISCC%" (
 )
 
 echo  [1/3] Installing what eozMP needs...
-python -m pip install --upgrade PyQt6 mutagen numpy pyinstaller python-vlc segno winrt-runtime winrt-Windows.Foundation winrt-Windows.Foundation.Collections winrt-Windows.Media winrt-Windows.Media.Playback winrt-Windows.Storage winrt-Windows.Storage.Streams
+python -m pip install --upgrade PyQt6 mutagen numpy pyinstaller mpv python-vlc segno winrt-runtime winrt-Windows.Foundation winrt-Windows.Foundation.Collections winrt-Windows.Media winrt-Windows.Media.Playback winrt-Windows.Storage winrt-Windows.Storage.Streams
 if errorlevel 1 (
     echo  Installing failed. Check your internet connection and try again.
     pause
@@ -35,7 +35,7 @@ if errorlevel 1 (
 echo.
 echo  [2/3] Building eozMP.exe ...
 if exist build rmdir /s /q build
-python -m PyInstaller --noconfirm --onefile --windowed --name eozMP --icon eozMP.ico --collect-all winrt musicplayer.py
+python -m PyInstaller --noconfirm --onefile --windowed --name eozMP --icon eozMP.ico --hidden-import mpv --hidden-import vlc --collect-all winrt musicplayer.py
 if not exist "dist\eozMP.exe" (
     echo  The build failed. Scroll up to see the error.
     pause

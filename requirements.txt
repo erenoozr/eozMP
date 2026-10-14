@@ -1,7 +1,8 @@
 PyQt6>=6.5
 mutagen
 numpy
-# optional: lets eozMP use VLC (needed for the equalizer); VLC itself must be installed
+# optional engines: mpv (needs libmpv-2.dll) and VLC (VLC itself must be installed)
+mpv
 python-vlc
 # phone remote QR code
 segno

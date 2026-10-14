@@ -15,10 +15,11 @@ See the GNU General Public License for more details.
 You should have received a copy of the GNU General Public License along with this program.
 If not, see <https://www.gnu.org/licenses/>.
 
-Requires: pip install PyQt6 mutagen numpy   (optional: python-vlc + VLC for the equalizer)
+Requires: pip install PyQt6 mutagen numpy   (optional: python-mpv + libmpv-2.dll, or python-vlc + VLC)
 """
 import bisect
 import colorsys
+import copy
 import hashlib
 import html
 import json
@@ -28,12 +29,13 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import uuid
 import random
 import filecmp
 import shutil
 import zipfile
-from collections import deque
+from collections import OrderedDict, deque
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -42,12 +44,12 @@ from pathlib import Path
 
 from mutagen import File as MutagenFile
 from PyQt6.QtCore import (
-    QAbstractNativeEventFilter, QByteArray, QEasingCurve, QEvent, QMimeData, QPoint, QPointF, QRect, QRectF,
+    QAbstractNativeEventFilter, QBuffer, QByteArray, QEasingCurve, QEvent, QIODevice, QMimeData, QPoint, QPointF, QRect, QRectF,
     QVariantAnimation, QFileSystemWatcher, QItemSelectionModel, QObject, QPropertyAnimation, QSize, Qt, QThread,
     QTimer, QUrl, pyqtSignal,
 )
 from PyQt6.QtGui import (
-    QAction, QBrush, QColor, QCursor, QGradient, QImage, QKeySequence, QShortcut, QDesktopServices, QFont, QFontDatabase, QFontMetrics, QIcon, QLinearGradient, QPainter,
+    QAction, QBrush, QColor, QCursor, QGradient, QImage, QImageReader, QKeySequence, QShortcut, QDesktopServices, QFont, QFontDatabase, QFontMetrics, QIcon, QLinearGradient, QPainter,
     QPainterPath, QPalette, QPen, QPixmap, QRadialGradient,
 )
 from PyQt6.QtMultimedia import QAudioFormat, QAudioOutput, QMediaPlayer
@@ -66,12 +68,12 @@ except Exception:
 from array import array
 import math
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
+    QAbstractItemView, QAbstractSlider, QApplication, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QColorDialog, QFileDialog, QFontComboBox, QFrame, QGraphicsBlurEffect, QGraphicsOpacityEffect,
     QGraphicsPixmapItem, QGraphicsScene, QPlainTextEdit, QScrollArea, QFormLayout, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox,
-    QPushButton, QSizePolicy, QSlider, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QSpinBox, QSplitter, QStackedWidget,
+    QPushButton, QSizePolicy, QSlider, QStyle, QStyledItemDelegate, QStyleOptionSlider, QStyleOptionViewItem, QSpinBox, QSplitter, QStackedWidget,
     QSystemTrayIcon, QTabWidget,
     QTableWidget, QTableWidgetItem, QToolTip, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
@@ -184,6 +186,7 @@ def install_ui_translation():
         (QTableWidget, "setHorizontalHeaderLabels", (1,)), (QTreeWidget, "setHeaderLabels", (1,)),
         (QStatusBar, "showMessage", (1,)), (QSystemTrayIcon, "showMessage", (1, 2)),
         (QSystemTrayIcon, "setToolTip", (1,)), (QListWidgetItem, "setText", (1,)),
+        (QMessageBox, "setText", (1,)), (QMessageBox, "setInformativeText", (1,)), (QMessageBox, "addButton", (1,)),
     ):
         setattr(cls, name, _tr_wrap(getattr(cls, name), idx))
     for name in ("about", "question", "information", "warning", "critical"):
@@ -257,7 +260,7 @@ AUDIO_EXTS = {
 }
 COVER_NAMES = ("cover", "folder", "front", "album", "albumart")
 COVER_EXTS = (".jpg", ".jpeg", ".png")
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"   # raise it with every release; the release tag is "v" + this (see MANUAL)
 CONFIG_FILE = Path.home() / ".simple_music_player.json"
 CACHE_FILE = Path.home() / ".simple_music_player_cache.json"
 LOSSLESS_EXTS = {"flac", "wav", "aiff", "aif", "ape", "wv"}
@@ -270,10 +273,8 @@ TRANS_ROLE = Qt.ItemDataRole.UserRole + 5     # a lyric line's translation
 TRANSLATE_LANGS = dict(UI_LANGS)     # lyrics can be translated into every interface language
 TRANSLATE_DIR = Path.home() / ".simple_music_player_translations"
 QUALITY_FILE = Path.home() / ".simple_music_player_quality.json"
-REPO_URL = "https://github.com/erenoozr/eozMP"
 # where eozMP.exe lives; the installer puts slskd and the Soulseek guide next to it
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-UPDATE_URL = "https://raw.githubusercontent.com/erenoozr/eozMP/main/musicplayer.py"
 SOUL_TRUST = {}       # Soulseek user -> how many of their files finished (minus failed ones)
 CUTOFF_DB = 70        # how far below the mid-range level the music must fall to count as "ended"
 SYSTEM_FONT_TAG = "__system__"
@@ -317,7 +318,11 @@ DEFAULT_CFG = {
     "split_collabs": True,
     "keep_together": [],
     "cfg_version": 1,
-    "audio_engine": "Automatic (VLC if installed)",
+    "audio_engine": "Automatic (mpv, then VLC)",
+    "mpv_dir": "",
+    "replaygain": "Off",          # Off / Track / Album (mpv only)
+    "audio_device": "auto",       # mpv's device name; "auto" = the Windows default
+    "audio_exclusive": False,     # WASAPI exclusive mode (mpv only)
     "eq_enabled": False,
     "eq_preamp": 0.0,
     "eq_bands": [],
@@ -336,9 +341,14 @@ DEFAULT_CFG = {
     "soul_view": "Albums",
     "soul_quality": "Any format",
     "soul_free_only": False,
+    "update_check": True,         # look for a new eozMP version on GitHub, at most once a day
+    "update_last_check": 0.0,
+    "update_skip": "",            # a version the user chose to skip
     "last_path": "",
     "queue": [],
     "last_pos": 0,
+    "ctx_kind": "",               # the playlist/album you were playing from ("" = the whole library)
+    "ctx_paths": [],
     "win_size": [1100, 700],
     "translate_lang": "",
     "wishlist": [],
@@ -347,7 +357,6 @@ DEFAULT_CFG = {
     "new_releases": {},
     "new_releases_seen": [],
     "mb_artist_ids": {},
-    "update_check": True,
     "fs_fluid": False,
     "slskd_autostart": True,
     "ui_lang": "",
@@ -381,12 +390,90 @@ def write_json_atomic(path, data, **kw):
         raise
 
 
+LOAD_PROBLEMS = []   # files that couldn't be read at start-up (a copy was kept aside), shown to the user
+
+
+def read_json(path, kind, quarantine=True):
+    """Read a JSON file of the given kind (dict or list). Returns None if it's missing.
+    If it exists but can't be read, a copy is kept as <name>.corrupt-<time> so nothing is lost
+    when the app later saves fresh data over it."""
+    for attempt in range(4):
+        try:
+            text = path.read_text(encoding="utf-8-sig")   # -sig: some editors add a BOM
+            break
+        except FileNotFoundError:
+            return None
+        except OSError as e:   # locked for a moment (antivirus, backup tool): try again
+            problem = str(e)
+            time.sleep(0.25)
+    else:
+        text = None
+    if text is not None:
+        try:
+            data = json.loads(text)
+            if isinstance(data, kind):
+                return data
+            problem = f"expected a {kind.__name__}, found a {type(data).__name__}"
+        except ValueError as e:
+            problem = str(e)
+    if quarantine:
+        backup = path.with_name(f"{path.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}")
+        try:
+            shutil.copy2(path, backup)
+            LOAD_PROBLEMS.append(f"{path.name}: {problem}\nA copy was kept as {backup.name}")
+        except OSError:
+            LOAD_PROBLEMS.append(f"{path.name}: {problem}")
+    return None
+
+
+UPDATE_REPO = "erenoozr/eozMP"
+
+
+VERSION_STAGES = {"alpha": -3, "beta": -2, "rc": -1}   # a test version comes before its release
+
+
+def version_key(text):
+    """'v1.2 - Bugfix' -> ((1, 2), (0, 0)); 'v1.2-beta.1' -> ((1, 2), (-2, 1)).
+    None when there is no version number at the start."""
+    m = re.match(r"\s*v?(\d+(?:\.\d+)*)(?:[-.](alpha|beta|rc)\.?(\d+)?)?", text or "", re.IGNORECASE)
+    if not m:
+        return None
+    stage = VERSION_STAGES.get((m.group(2) or "").lower(), 0)
+    return tuple(int(x) for x in m.group(1).split(".")), (stage, int(m.group(3) or 0))
+
+
+def is_newer(tag, current):
+    a, b = version_key(tag), version_key(current)
+    if not a or not b:
+        return False
+    n = max(len(a[0]), len(b[0]))
+    pad = lambda nums: nums + (0,) * (n - len(nums))
+    return (pad(a[0]), a[1]) > (pad(b[0]), b[1])
+
+
+def latest_release():
+    """The newest published release on GitHub (only its public page is read; nothing is sent)."""
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest",
+        headers={"Accept": "application/vnd.github+json", "User-Agent": f"eozMP/{APP_VERSION}"})
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        return json.loads(resp.read())
+
+
+def same_kind(default, value):
+    """Is a loaded setting the same type as its default? (ints and floats count as one kind)"""
+    if isinstance(default, bool) or isinstance(value, bool):
+        return isinstance(default, bool) and isinstance(value, bool)
+    if isinstance(default, (int, float)):
+        return isinstance(value, (int, float))
+    return isinstance(value, type(default))
+
+
 def load_config():
-    cfg = dict(DEFAULT_CFG)
-    try:
-        cfg.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
-    except Exception:
-        pass
+    cfg = copy.deepcopy(DEFAULT_CFG)
+    for key, value in (read_json(CONFIG_FILE, dict) or {}).items():
+        if key not in DEFAULT_CFG or same_kind(DEFAULT_CFG[key], value):
+            cfg[key] = value
     return cfg
 
 
@@ -402,11 +489,8 @@ PLAYLIST_FILE = Path.home() / ".simple_music_player_playlists.json"
 
 def load_playlists():
     """{playlist name: [song file paths]}"""
-    try:
-        data = json.loads(PLAYLIST_FILE.read_text(encoding="utf-8"))
-        return {str(k): [str(p) for p in v] for k, v in data.items() if isinstance(v, list)}
-    except Exception:
-        return {}
+    data = read_json(PLAYLIST_FILE, dict) or {}
+    return {str(k): [str(p) for p in v] for k, v in data.items() if isinstance(v, list)}
 
 
 def save_playlists(playlists):
@@ -461,6 +545,7 @@ def to_int(text, default=9999):
 def read_track(path):
     title = artist = album = genre = ""
     num, disc, year, length, bpm = 9999, 1, 0, 0, 0
+    failed = False
     try:
         audio = MutagenFile(path, easy=True)
         if audio is not None:
@@ -476,8 +561,11 @@ def read_track(path):
                 disc = to_int(first(t, "discnumber"), 1)
                 year = to_int(first(t, "date")[:4], 0)
                 bpm = to_int(first(t, "bpm"), 0)
-    except Exception:
-        pass
+    except Exception as e:
+        # a file that's locked right now (a tagger, antivirus...) must be read again next scan,
+        # not remembered as untagged (mutagen wraps the OSError in its own error)
+        if isinstance(e, OSError) or isinstance(e.__cause__, OSError):
+            failed = True
     return {
         "path": path,
         "title": title or Path(path).stem,
@@ -490,15 +578,12 @@ def read_track(path):
         "year": year,
         "length": length,
         "bpm": bpm,
+        **({"read_failed": True} if failed else {}),
     }
 
 
 def load_cache():
-    try:
-        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
+    return read_json(CACHE_FILE, list, quarantine=False) or []   # only a cache: rebuilt by the next scan
 
 
 def save_cache(tracks):
@@ -508,34 +593,101 @@ def save_cache(tracks):
         pass
 
 
+def same_tracks(new, old):
+    """True when a scan found exactly the songs it was given (it hands back the very same dicts
+    for files that didn't change), so the library and its cache needn't be rebuilt."""
+    return len(new) == len(old) and all(a is b for a, b in zip(new, old))
+
+
+def norm_path(path):
+    """One spelling per file: 'D:/Music' and 'd:\\music' are the same place on Windows."""
+    return os.path.normcase(os.path.abspath(path))
+
+
+def is_inside(path, folder):
+    """Both normalized with norm_path."""
+    return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
+
+
+def distinct_roots(folders):
+    """[(folder, normalized)] without duplicates and without folders that sit inside another one."""
+    roots = []
+    for folder in folders:
+        n = norm_path(folder)
+        if any(is_inside(n, r) for _, r in roots):
+            continue
+        roots = [(f, r) for f, r in roots if not is_inside(r, n)]
+        roots.append((folder, n))
+    return roots
+
+
+def audio_entries(top, unreachable):
+    """The audio files under top as os.DirEntry, in os.walk's order and spelling. On Windows an
+    entry already carries size and dates, so unchanged files cost no extra stat each (18k stats
+    were most of a start-up scan). Folders that can't be listed go to unreachable."""
+    stack = [top]
+    while stack:
+        folder = stack.pop()
+        dirs, files = [], []
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    try:
+                        is_dir = entry.is_dir()
+                    except OSError:
+                        is_dir = False
+                    (dirs if is_dir else files).append(entry)
+        except OSError as e:
+            unreachable.append(norm_path(e.filename or folder))
+            continue
+        for entry in files:
+            if os.path.splitext(entry.name)[1].lower() in AUDIO_EXTS:
+                yield entry
+        for entry in reversed(dirs):
+            try:
+                if entry.is_symlink():      # os.walk doesn't follow folder links either
+                    continue
+            except OSError:
+                pass
+            stack.append(entry.path)
+
+
 def scan_folders(folders, cache=None):
     """Walk the folders. Files that haven't changed since the last scan are
     taken from the cache instead of being re-read (this is what makes
     start-up fast)."""
     old = {t["path"]: t for t in (cache or []) if "path" in t}
-    tracks, seen = [], set()
-    for folder in folders:
-        for root, _, files in os.walk(folder):
-            for name in files:
-                if Path(name).suffix.lower() not in AUDIO_EXTS:
-                    continue
-                path = os.path.join(root, name)
-                if path in seen:
-                    continue
-                seen.add(path)
-                try:
-                    st = os.stat(path)
-                except OSError:
-                    continue
-                prev = old.get(path)
-                if (prev and prev.get("mtime") == st.st_mtime and prev.get("size") == st.st_size
-                        and "artist_raw" in prev and "genre" in prev and "bpm" in prev):
-                    tracks.append(prev)
-                else:
-                    t = read_track(path)
+    tracks, seen, unreachable = [], set(), []
+    for folder, nroot in distinct_roots(folders):
+        if not os.path.isdir(folder):
+            unreachable.append(nroot)    # unplugged drive / NAS that's offline right now
+            continue
+        for entry in audio_entries(folder, unreachable):
+            path = entry.path
+            key = norm_path(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                st = entry.stat()
+            except OSError:
+                continue
+            prev = old.get(path)
+            if (prev and prev.get("mtime") == st.st_mtime and prev.get("size") == st.st_size
+                    and "artist_raw" in prev and "genre" in prev and "bpm" in prev):
+                tracks.append(prev)
+            else:
+                t = read_track(path)
+                if not t.pop("read_failed", False):   # no mtime/size = read it again next time
                     t["mtime"], t["size"] = st.st_mtime, st.st_size
-                    t["added"] = max(st.st_mtime, st.st_ctime)
-                    tracks.append(t)
+                t["added"] = max(st.st_mtime, st.st_ctime)
+                tracks.append(t)
+    # keep the songs of folders we couldn't reach, so an unplugged drive doesn't empty the library
+    for path, t in old.items():
+        key = norm_path(path)
+        if key not in seen and any(is_inside(key, u) for u in unreachable):
+            seen.add(key)
+            tracks.append(t)
     return tracks
 
 
@@ -750,11 +902,19 @@ def get_lyrics(track, online, save_files, force=False):
 
 
 # ---------------------------------------------------------------- slskd
+def slskd_address(text):
+    """'localhost:5030' -> 'http://localhost:5030' (urllib can't open an address without http://)."""
+    text = (text or "").strip().rstrip("/")
+    if text and "://" not in text:
+        text = "http://" + text
+    return text
+
+
 class Slskd:
     """Tiny client for the slskd REST API (https://github.com/slskd/slskd)."""
 
     def __init__(self, url, key):
-        self.base = url.rstrip("/") + "/api/v0"
+        self.base = slskd_address(url) + "/api/v0"
         self.key = key
 
     def call(self, method, path, body=None, timeout=20):
@@ -771,6 +931,19 @@ class Slskd:
         except urllib.error.URLError as e:
             raise RuntimeError(f"Can't reach slskd ({e.reason}). Is it running?")
         return json.loads(raw) if raw else None
+
+
+def check_slskd(client):
+    """(all good, message) for the Test connection button: slskd answering isn't enough,
+    it also has to be logged in to Soulseek. Raises RuntimeError when slskd can't be reached."""
+    state = client.call("GET", "/server", timeout=8) or {}
+    if state.get("isLoggedIn"):
+        return True, "Connected to slskd, and slskd is logged in to Soulseek."
+    if state.get("isConnected"):
+        return False, ("slskd works, but it isn't logged in to Soulseek. Check the username and password "
+                       "under soulseek: in slskd.yml (the name may be taken), then restart slskd.")
+    return False, ("slskd works, but it isn't connected to Soulseek yet. Wait a moment and test again; "
+                   "if it stays like this, check slskd's black window for the reason.")
 
 
 def flatten_responses(responses):
@@ -792,7 +965,41 @@ def flatten_responses(responses):
                 "queue": r.get("queueLength", 0) or 0,
             })
     rows.sort(key=lambda x: (not x["free"], -x["speed"]))
-    return rows[:2000]
+    return rows   # capped only after filtering, or "Lossless only" could find nothing
+
+
+SOUL_ROWS_SHOWN = 2000   # a longer results table gets slow to draw
+POLL_MS = 3000           # how often the downloads list is checked while slskd answers
+
+
+def enqueue_files(client, files):
+    """Ask slskd to download files, user by user. One offline user doesn't stop the rest.
+    Returns (how many were queued, {user: how many couldn't be})."""
+    by_user = {}
+    for f in files:
+        by_user.setdefault(f["username"], []).append({"filename": f["filename"], "size": f["size"]})
+    queued, failed = 0, {}
+    for user, items in by_user.items():
+        try:
+            res = client.call("POST", f"/transfers/downloads/{urllib.parse.quote(user, safe='')}", items)
+        except Exception:
+            failed[user] = len(items)
+            continue
+        bad = len(res.get("failed") or []) if isinstance(res, dict) else 0
+        queued += len(items) - bad
+        if bad:
+            failed[user] = bad
+    return queued, failed
+
+
+def enqueue_report(queued, failed, ok_msg):
+    """Status bar text for enqueue_files' result."""
+    msg = ok_msg.format(n=queued) if queued else "Nothing could be queued."
+    if failed:
+        users = ", ".join(sorted(failed)[:3]) + (" and others" if len(failed) > 3 else "")
+        msg += (f" {sum(failed.values())} couldn't be queued: {users} may be offline or no longer "
+                "sharing them. Try other results.")
+    return msg
 
 
 def passes_filters(row, fmt, free_only):
@@ -866,10 +1073,22 @@ class Worker(QThread):
             self.fail.emit(str(e))
 
 
+def answered_text(n):
+    return f"{n} {'person has' if n == 1 else 'people have'} answered so far." if n else "No answers yet."
+
+
+def searching_text(answered):
+    """Status while slskd searches: it only hands over the results at the end."""
+    return f"Searching Soulseek... {answered_text(answered)} Results show up when the search is done."
+
+
 class SearchWorker(QThread):
     results = pyqtSignal(list)
+    progress = pyqtSignal(int)      # how many people have answered so far
     failed = pyqtSignal(str)
     finished_search = pyqtSignal()
+    LONGEST = 90     # seconds before we ask slskd to wrap the search up
+    WRAP_UP = 20     # and how long slskd then gets to hand over what it found
 
     def __init__(self, client, text):
         super().__init__()
@@ -884,15 +1103,32 @@ class SearchWorker(QThread):
         sid = str(uuid.uuid4())
         try:
             self.client.call("POST", "/searches", {"id": sid, "searchText": self.text})
-            deadline = time.time() + 30
-            while time.time() < deadline and not self._stop:
+            # slskd keeps the answers to itself until the search is over, so watch the count
+            # and fetch them once it's done (or as soon as a newer slskd hands them out early)
+            start = time.time()
+            stopped_at = None
+            shown = 0
+            while not self._stop:
                 time.sleep(2)
                 state = self.client.call("GET", f"/searches/{sid}") or {}
-                resp = self.client.call("GET", f"/searches/{sid}/responses") or []
+                count = int(state.get("responseCount") or 0)
+                done = bool(state.get("isComplete"))
                 if not self._stop:
-                    self.results.emit(flatten_responses(resp))
-                if state.get("isComplete"):
+                    self.progress.emit(count)
+                if done or count > shown:
+                    resp = self.client.call("GET", f"/searches/{sid}/responses") or []
+                    if resp and not self._stop:
+                        shown = len(resp)
+                        self.results.emit(flatten_responses(resp))
+                if done:
                     break
+                if stopped_at is None and time.time() - start > self.LONGEST:
+                    stopped_at = time.time()
+                    self.client.call("PUT", f"/searches/{sid}")
+                elif stopped_at is not None and time.time() - stopped_at > self.WRAP_UP:
+                    break
+            if not shown and not self._stop:
+                self.results.emit([])
             try:
                 self.client.call("DELETE", f"/searches/{sid}")
             except Exception:
@@ -1069,15 +1305,57 @@ def build_qss(sc):
     return qss
 
 
-def apply_look(app, theme, accent_name, system_dark, tokens=None):
+def look_scheme(theme, accent_name, system_dark, tokens=None):
     dark = theme == "Dark" or (theme == "System" and system_dark)
     accent = accent_name if str(accent_name).startswith("#") else ACCENTS.get(accent_name, ACCENTS["Blue"])
     sc = make_scheme(dark, accent)
     sc.update(tokens or {})
     sc.update(chevron_tokens(sc["sub"]))
+    return sc
+
+
+def apply_look(app, theme, accent_name, system_dark, tokens=None):
+    sc = look_scheme(theme, accent_name, system_dark, tokens)
     app.setPalette(palette_from_scheme(sc))
     app.setStyleSheet(build_qss(sc))
     return sc
+
+
+ACCENT_TOKENS = ("@accent@", "@accent_hover@", "@on_accent@")
+ACCENT_MARK = "/* accent */ "
+
+
+def _accent_rules():
+    """The accent-coloured declarations of QSS_TEMPLATE as (selector, declarations), and the
+    (widget class, object name) pairs those rules can colour."""
+    rules, targets = [], set()
+    for line in QSS_TEMPLATE.splitlines():
+        if "{" not in line or not any(t in line for t in ACCENT_TOKENS):
+            continue
+        sel, body = line.split("{", 1)
+        decls = [d.strip() for d in body.rsplit("}", 1)[0].split(";") if any(t in d for t in ACCENT_TOKENS)]
+        rules.append((sel.strip(), "; ".join(decls)))
+        for part in sel.split(","):
+            m = re.match(r"\s*(\w+)(?:#(\w+))?", part)   # the first widget in the selector carries the sheet
+            targets.add((m.group(1), m.group(2)))
+    return rules, frozenset(targets)
+
+
+ACCENT_RULES, ACCENT_TARGETS = _accent_rules()
+
+
+def accent_qss(sc):
+    """Only the accent colours, for the few widgets that show them. A widget's own sheet beats the
+    app's, so they follow the album-art accent without restyling every widget in the app."""
+    qss = ACCENT_MARK + " ".join(f"{sel} {{ {decls}; }}" for sel, decls in ACCENT_RULES)
+    for key in ("accent_hover", "on_accent", "accent"):
+        qss = qss.replace(f"@{key}@", sc[key])
+    return qss
+
+
+def is_accent_target(w):
+    name = w.objectName()
+    return any(w.inherits(cls) and (obj is None or obj == name) for cls, obj in ACCENT_TARGETS)
 
 
 def rounded_pixmap(pix, size, radius):
@@ -1688,9 +1966,97 @@ class BackdropWidget(QWidget):
         painter.end()
 
 
+THUMB_PX = 160   # library covers are kept this big; lists and tiles shrink them further
+
+
+def thumb_image(data, size=THUMB_PX):
+    """Square, centre-cropped cover as a QImage (unlike QPixmap, fine to make off the GUI thread).
+    The reader shrinks while decoding, so a 3000 px cover is never unpacked at full size."""
+    buf = QBuffer()
+    buf.setData(QByteArray(data))
+    buf.open(QIODevice.OpenModeFlag.ReadOnly)
+    reader = QImageReader(buf)
+    src = reader.size()
+    short = min(src.width(), src.height()) if src.isValid() else 0
+    if short > 2 * size:   # decode at ~2x, then a smooth scale like before
+        f = 2 * size / short
+        reader.setScaledSize(QSize(max(1, round(src.width() * f)), max(1, round(src.height() * f))))
+    img = reader.read()
+    if img.isNull():
+        return None
+    img = img.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                     Qt.TransformationMode.SmoothTransformation)
+    return img.copy((img.width() - size) // 2, (img.height() - size) // 2, size, size)
+
+
+def load_thumb(paths, artist, album):
+    """The library cover for an album: embedded art, a cover file in the folder, or a downloaded one."""
+    data = None
+    for path in paths[:3]:
+        data = embedded_cover(path)
+        if data:
+            break
+    if not data and paths:
+        data = folder_cover(paths[0])
+    if not data:
+        data = read_cached_cover(artist, album)
+    return thumb_image(data) if data else None
+
+
+THUMB_CACHE_SIZE = 256   # ~100 KB each, so ~25 MB (every cover of a big library was 80 MB+)
+
+
+class ThumbCache:
+    """Library covers by album key, keeping only the most recently used ones. "No cover" is
+    remembered for every album (it costs nothing), and so is which albums have one, even after
+    their picture was dropped: a dropped cover is simply read again when it's needed."""
+
+    def __init__(self, limit=THUMB_CACHE_SIZE):
+        self.limit = limit
+        self.pix = OrderedDict()
+        self.covered, self.bare = set(), set()
+
+    def __contains__(self, key):    # loaded (or known to have no cover)
+        return key in self.pix or key in self.bare
+
+    def __len__(self):
+        return len(self.pix)
+
+    def __getitem__(self, key):
+        if key in self.bare:
+            return None
+        self.pix.move_to_end(key)
+        return self.pix[key]
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+    def __setitem__(self, key, pix):
+        self.pop(key)
+        if pix is None:
+            self.bare.add(key)
+            return
+        self.pix[key] = pix
+        self.covered.add(key)
+        while len(self.pix) > self.limit:
+            self.pix.popitem(last=False)
+
+    def pop(self, key, default=None):
+        """Forget the album completely (its cover changed)."""
+        self.covered.discard(key)
+        self.bare.discard(key)
+        return self.pix.pop(key, default)
+
+    def has_cover(self, key):
+        return key in self.covered
+
+    def known(self, key):
+        return key in self.covered or key in self.bare
+
+
 class ThumbLoader(QThread):
-    """Reads album covers in the background so the library list never freezes."""
-    loaded = pyqtSignal(object, object)   # album key, image bytes (or None)
+    """Reads and shrinks album covers in the background so the library list never freezes."""
+    loaded = pyqtSignal(object, object)   # album key, 160 px QImage (or None)
 
     def __init__(self):
         super().__init__()
@@ -1725,24 +2091,14 @@ class ThumbLoader(QThread):
                 self.event.clear()
                 continue
             key, paths, artist, album = job
-            data = None
             try:
-                for path in paths[:3]:
-                    data = embedded_cover(path)
-                    if data:
-                        break
-                if not data and paths:
-                    data = folder_cover(paths[0])
-                if not data:
-                    data = read_cached_cover(artist, album)
+                img = load_thumb(paths, artist, album)
             except Exception:
-                data = None
-            self.loaded.emit(key, data)
+                img = None
+            self.loaded.emit(key, img)
 
 
 BAD_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-LEFTOVER_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".nfo", ".m3u", ".m3u8", ".sfv",
-                 ".log", ".cue", ".txt", ".url", ".ini", ".db", ".md5"}
 # names Windows keeps for devices: a folder called "NUL" (or "CON", "AUX"... on Windows 10) can't be made
 WINDOWS_RESERVED_NAMES = ({"CON", "PRN", "AUX", "NUL"}
                           | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)})
@@ -1762,22 +2118,46 @@ def same_file(a, b):
     return os.path.getsize(a) == os.path.getsize(b) and filecmp.cmp(a, b, shallow=False)
 
 
-def organize_downloads(src_root, dest_root, group_featured=True):
+def names_from_folder(folder, src_root):
+    """For untagged downloads: 'Artist - Album (2009) [FLAC]' -> ('Artist', 'Album'),
+    'Album' -> ('', 'Album'). A disc folder ('CD2') uses the folder above it."""
+    try:
+        parts = Path(os.path.relpath(folder, src_root)).parts
+    except ValueError:
+        return "", ""
+    parts = [x for x in parts if x not in (".", "..")]
+    if len(parts) > 1 and DISC_RE.match(_words(parts[-1])):
+        parts = parts[:-1]
+    if not parts:
+        return "", ""
+    name = parts[-1]
+    while True:   # drop '(2009)', '[FLAC 24bit]' and the like from the end
+        m = re.search(r"\s*[(\[]([^()\[\]]*)[)\]]\s*$", name)
+        if not m or not (YEAR_RE.fullmatch(m.group(1).strip()) or QUALITY_RE.search(m.group(1).lower())):
+            break
+        name = name[:m.start()]
+    bits = [b.strip() for b in NAME_SEP_RE.split(name) if b.strip() and not YEAR_RE.fullmatch(b.strip())]
+    if len(bits) > 1:
+        return bits[0], " - ".join(bits[1:])
+    return "", (bits[0] if bits else "")
+
+
+def organize_downloads(src_root, dest_root, group_featured=True, split_collabs=True, keep=()):
     """Move finished downloads to dest_root/Artist/Album/NN - Title.ext (runs in a background thread).
     If another organize is still running, does nothing and returns 0."""
     if not ORGANIZE_LOCK.acquire(blocking=False):
         return 0
     try:
-        return _organize_downloads(src_root, dest_root, group_featured)
+        return _organize_downloads(src_root, dest_root, group_featured, split_collabs, keep)
     finally:
         ORGANIZE_LOCK.release()
 
 
-def _organize_downloads(src_root, dest_root, group_featured):
+def _organize_downloads(src_root, dest_root, group_featured, split_collabs, keep):
     moved = 0
     if not src_root or not os.path.isdir(src_root) or not dest_root:
         return 0
-    emptied = set()
+    went_to = {}   # download folder -> album folders its songs went to
     for root, _dirs, files in os.walk(src_root):
         for name in files:
             ext = Path(name).suffix.lower()
@@ -1787,22 +2167,30 @@ def _organize_downloads(src_root, dest_root, group_featured):
             try:
                 t = read_track(src)
                 raw = t.get("artist_raw") or ""
-                artist = main_artist(raw) if group_featured else (raw.strip() or "Unknown Artist")
+                album = t["album"]
+                if not raw.strip() or album == "Unknown Album":   # untagged: the folder name tells
+                    f_artist, f_album = names_from_folder(root, src_root)
+                    raw = raw if raw.strip() else f_artist
+                    album = f_album if album == "Unknown Album" and f_album else album
+                artist = (main_artist(raw, split_collabs, keep) if group_featured
+                          else (raw.strip() or "Unknown Artist"))
                 folder = os.path.join(dest_root, safe_name(artist, "Unknown Artist"),
-                                      safe_name(t["album"], "Unknown Album"))
+                                      safe_name(album, "Unknown Album"))
                 base = safe_name(t["title"], Path(name).stem)
                 if t["num"] != 9999:
                     base = f"{t['num']:02d} - {base}"
                     if t["disc"] > 1:
                         base = f"{t['disc']}-{base}"
                 target = os.path.join(folder, base + ext)
-                if os.path.normcase(os.path.abspath(target)) == os.path.normcase(os.path.abspath(src)):
+                if norm_path(target) == norm_path(src):
                     continue   # already in place
+                if os.path.exists(target) and os.path.samefile(src, target):
+                    continue   # the same file seen through another path (junction, mapped drive, NAS)
                 os.makedirs(folder, exist_ok=True)
                 if os.path.exists(target):
                     if same_file(target, src):
                         os.remove(src)          # exact duplicate of a song you already have
-                        emptied.add(root)
+                        went_to.setdefault(root, set()).add(folder)
                         continue
                     n = 2
                     while os.path.exists(os.path.join(folder, f"{base} ({n}){ext}")):
@@ -1810,7 +2198,7 @@ def _organize_downloads(src_root, dest_root, group_featured):
                     target = os.path.join(folder, f"{base} ({n}){ext}")
                 shutil.move(src, target)
                 moved += 1
-                emptied.add(root)
+                went_to.setdefault(root, set()).add(folder)
                 stem_src = os.path.splitext(src)[0]
                 stem_dst = os.path.splitext(target)[0]
                 for side in (".lrc", ".txt"):           # lyrics files travel with their song
@@ -1823,19 +2211,49 @@ def _organize_downloads(src_root, dest_root, group_featured):
                             shutil.copy2(os.path.join(root, img), dst_img)
             except Exception:
                 continue   # file still busy or unreadable: try again next time
-    # tidy up download folders that now only hold leftovers (covers, .nfo, playlists...)
-    for folder in sorted(emptied, key=len, reverse=True):
+    # A download folder that held exactly one album: its extras (.cue, .log, scans...) follow
+    # the album. Nothing is ever deleted here except folders that end up empty.
+    for root in sorted(went_to, key=len, reverse=True):
         try:
-            if os.path.normcase(folder) == os.path.normcase(src_root) or not os.path.isdir(folder):
+            if norm_path(root) == norm_path(src_root) or not os.path.isdir(root):
                 continue
-            left = []
-            for r, _d, fs in os.walk(folder):
-                left += fs
-            if all(Path(f).suffix.lower() in LEFTOVER_EXTS for f in left):
-                shutil.rmtree(folder, ignore_errors=True)
+            if len(went_to[root]) == 1 and not contains_audio(root):
+                album = next(iter(went_to[root]))
+                if not (is_inside(norm_path(album), norm_path(root))
+                        or is_inside(norm_path(root), norm_path(album))):
+                    move_extras(root, album, skip={norm_path(r) for r in went_to})
+            remove_empty_dirs(root)
         except Exception:
             pass
     return moved
+
+
+def contains_audio(folder):
+    return any(Path(f).suffix.lower() in AUDIO_EXTS for _r, _d, fs in os.walk(folder) for f in fs)
+
+
+def move_extras(src_dir, album_dir, skip=()):
+    """Move what's left in src_dir into album_dir. A file that's already there with the same
+    bytes (e.g. the cover copied earlier) is dropped; anything else that would clash stays put."""
+    for entry in os.listdir(src_dir):
+        src = os.path.join(src_dir, entry)
+        dst = os.path.join(album_dir, entry)
+        if os.path.isdir(src) and (norm_path(src) in skip or contains_audio(src)):
+            continue   # another download folder of its own
+        if os.path.exists(dst):
+            if os.path.isfile(src) and os.path.isfile(dst) and same_file(src, dst):
+                os.remove(src)
+            continue
+        shutil.move(src, dst)
+
+
+def remove_empty_dirs(folder):
+    """Remove folder and its subfolders, but only the ones that are completely empty."""
+    for r, _d, _f in os.walk(folder, topdown=False):
+        try:
+            os.rmdir(r)
+        except OSError:
+            pass   # not empty: keep it
 
 
 def lyrics_page_qss(apple, immersive):
@@ -1918,6 +2336,8 @@ class PreferencesDialog(QDialog):
         self.close_tray.setChecked(bool(cfg["close_to_tray"]))
         self.media_keys = QCheckBox("Use the keyboard's media keys (play/pause, next, previous)")
         self.media_keys.setChecked(bool(cfg["media_keys"]))
+        self.update_check = QCheckBox("Tell me when a new version of eozMP is out (asks GitHub once a day)")
+        self.update_check.setChecked(bool(cfg["update_check"]))
         gf.addRow(self.close_tray)
         gf.addRow(self.media_keys)
         self.ui_lang = QComboBox()
@@ -1926,8 +2346,6 @@ class PreferencesDialog(QDialog):
             self.ui_lang.addItem(name)
         self.ui_lang.setCurrentText(cfg["ui_lang"] or UI_LANG_AUTO)
         gf.addRow("Language", self.ui_lang)
-        self.update_check = QCheckBox("Check for a newer eozMP when it starts")
-        self.update_check.setChecked(bool(cfg["update_check"]))
         gf.addRow(self.update_check)
         self.tabs.addTab(gen, "General")
 
@@ -2081,21 +2499,58 @@ class PreferencesDialog(QDialog):
         au = QWidget()
         uf = QFormLayout(au)
         self.engine = QComboBox()
-        self.engine.addItems(["Automatic (VLC if installed)", "Qt (built-in)"])
-        self.engine.setCurrentText(cfg["audio_engine"])
+        self.engine.addItems(ENGINE_CHOICES)
+        self.engine.setCurrentText(cfg["audio_engine"] if cfg["audio_engine"] in ENGINE_CHOICES
+                                   else ENGINE_CHOICES[0])
+        self.mpv_dir = QLineEdit(cfg["mpv_dir"])
+        self.mpv_dir.setPlaceholderText("Folder with libmpv-2.dll (empty: next to eozMP)")
+        mpv_pick = QPushButton("Browse...")
+        mpv_pick.clicked.connect(self.pick_mpv_dir)
+        mpv_row = QHBoxLayout()
+        mpv_row.addWidget(self.mpv_dir, 1)
+        mpv_row.addWidget(mpv_pick)
         using = getattr(parent, "engine_name", "Qt")
         problem = getattr(parent, "vlc_error", "") or ENGINE_ERROR
+        names = {"mpv": "mpv", "VLC": "VLC"}
         info = QLabel(
-            f"Now playing through: {'VLC' if using == 'VLC' else 'the built-in Qt engine'}.\n"
-            f"VLC: {VLC_STATUS}." + (f"\nLast VLC problem: {problem}" if problem else "") + "\n"
-            "VLC plays more formats and powers the equalizer. If VLC can't play, eozMP switches "
-            "back to the built-in engine by itself."
+            f"Now playing through: {names.get(using, 'the built-in Qt engine')}.\n"
+            f"mpv: {MPV_STATUS}.  VLC: {VLC_STATUS}." + (f"\nLast problem: {problem}" if problem else "") + "\n"
+            "mpv gives the cleanest sound; the equalizer works with mpv and VLC. If neither is there, "
+            "eozMP uses the built-in engine."
         )
         info.setWordWrap(True)
         info.setObjectName("sub")
         eq_open = QPushButton("Open equalizer...")
         eq_open.clicked.connect(lambda: self.player.open_equalizer())
         uf.addRow("Audio engine", self.engine)
+        uf.addRow("mpv folder", mpv_row)
+        engine = getattr(parent, "player", None)
+        has_mpv = hasattr(engine, "output_devices")
+        self.replaygain = QComboBox()
+        self.replaygain.addItems(["Off", "Track", "Album"])
+        self.replaygain.setCurrentText(cfg["replaygain"] if cfg["replaygain"] in ("Off", "Track", "Album") else "Off")
+        self.replaygain.setToolTip("Evens out loudness between songs using their ReplayGain tags.\n"
+                                   "Album keeps the loud and quiet songs of an album as they were mastered.")
+        self.audio_device = QComboBox()
+        devices = engine.output_devices() if has_mpv else [("auto", "Windows default")]
+        if cfg["audio_device"] not in {n for n, _d in devices}:
+            devices.append((cfg["audio_device"], "Last used device (not connected now)"))
+        for name, desc in devices:
+            self.audio_device.addItem(desc, name)
+        self.audio_device.setCurrentIndex(max(0, self.audio_device.findData(cfg["audio_device"])))
+        self.exclusive = QCheckBox("Exclusive mode: eozMP alone uses the device, the sound goes out untouched.\n"
+                                   "Other apps are silent while eozMP plays.")
+        self.exclusive.setChecked(bool(cfg["audio_exclusive"]))
+        for w in (self.replaygain, self.audio_device, self.exclusive):
+            w.setEnabled(has_mpv)
+        uf.addRow("ReplayGain", self.replaygain)
+        uf.addRow("Output device", self.audio_device)
+        uf.addRow(self.exclusive)
+        if not has_mpv:
+            mpv_note = QLabel("ReplayGain, the output device and exclusive mode need the mpv engine.")
+            mpv_note.setWordWrap(True)
+            mpv_note.setObjectName("sub")
+            uf.addRow(mpv_note)
         self.viz_style = QComboBox()
         self.viz_style.addItems(["Off", "Bars", "Wave"])
         self.viz_style.setCurrentText(cfg["visualizer"])
@@ -2203,8 +2658,8 @@ class PreferencesDialog(QDialog):
     def test_connection(self):
         client = Slskd(self.url.text().strip(), self.key.text().strip())
         self.test_label.setText("Testing...")
-        w = Worker(lambda: client.call("GET", "/searches", timeout=8))
-        w.ok.connect(lambda _r: self.set_test_text("Connected to slskd."))
+        w = Worker(lambda: check_slskd(client))
+        w.ok.connect(lambda r: self.set_test_text(r[1]))
         w.fail.connect(lambda m: self.set_test_text(m))
         self.player.keep(w)
 
@@ -2233,7 +2688,6 @@ class PreferencesDialog(QDialog):
             "lyrics_shadow": self.ly_shadow.isChecked(),
             "fs_motion": self.fs_motion.isChecked(),
             "fs_fluid": self.fs_fluid.isChecked(),
-            "update_check": self.update_check.isChecked(),
             "ui_lang": "" if self.ui_lang.currentText() == UI_LANG_AUTO else self.ui_lang.currentText(),
             "visualizer": self.viz_style.currentText(),
             "split_collabs": self.split_collabs.isChecked(),
@@ -2243,7 +2697,7 @@ class PreferencesDialog(QDialog):
             "lyrics_dim": self.ly_dim.value(),
             "lyrics_online": self.ly_online.isChecked(),
             "lyrics_save_lrc": self.ly_save.isChecked(),
-            "slskd_url": self.url.text().strip(),
+            "slskd_url": slskd_address(self.url.text()),
             "slskd_key": self.key.text().strip(),
             "downloads_dir": self.dl.text().strip(),
             "soul_view": self.soul_view.currentText(),
@@ -2254,10 +2708,15 @@ class PreferencesDialog(QDialog):
             "covers_auto": self.covers_auto.isChecked(),
             "covers_to_folder": self.covers_folder.isChecked(),
             "audio_engine": self.engine.currentText(),
+            "mpv_dir": self.mpv_dir.text().strip(),
+            "replaygain": self.replaygain.currentText(),
+            "audio_device": self.audio_device.currentData() or "auto",
+            "audio_exclusive": self.exclusive.isChecked(),
             "accent_custom": self.custom_value(),
             "mini_opacity": self.mini_opacity.value(),
             "close_to_tray": self.close_tray.isChecked(),
             "media_keys": self.media_keys.isChecked(),
+            "update_check": self.update_check.isChecked(),
         }
 
     @staticmethod
@@ -2281,6 +2740,11 @@ class PreferencesDialog(QDialog):
         if mode.currentText() == "Custom":
             return picker.currentFont().family()
         return ""
+
+    def pick_mpv_dir(self):
+        folder = QFileDialog.getExistingDirectory(self, "Folder that has libmpv-2.dll", self.mpv_dir.text())
+        if folder:
+            self.mpv_dir.setText(folder)
 
     def pick_organize_root(self):
         folder = QFileDialog.getExistingDirectory(self, "Organize downloads into...")
@@ -2311,12 +2775,7 @@ SMART_PLAYLISTS = (SMART_FAV, SMART_MOST, SMART_ADDED, SMART_RECENT)
 
 
 def load_stats():
-    try:
-        data = json.loads(STATS_FILE.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            data = {}
-    except Exception:
-        data = {}
+    data = read_json(STATS_FILE, dict) or {}
     data.setdefault("favorites", [])      # song paths, oldest first
     data.setdefault("plays", {})          # path -> {"count", "last", "seconds"}
     data.setdefault("events", [])         # [timestamp, path, seconds listened]
@@ -2776,6 +3235,7 @@ class VlcEngine(QObject):
         self._fresh = False
         self._play_at = None
         self._ever_played = False
+        self._media_played = False
         self.eq = None
         self._eq_on = False
         self.timer = QTimer(self)
@@ -2799,6 +3259,7 @@ class VlcEngine(QObject):
         self._media = self.instance.media_new_path(path)
         self.mp.set_media(self._media)
         self._duration, self._pending, self._ended, self._play_at = 0, None, False, None
+        self._media_played = False
         self._set_state(QMediaPlayer.PlaybackState.StoppedState)
         self.mediaStatusChanged.emit(QMediaPlayer.MediaStatus.LoadedMedia)
 
@@ -2871,7 +3332,7 @@ class VlcEngine(QObject):
         self._play_at = None
         self._ended = True
         self._set_state(QMediaPlayer.PlaybackState.StoppedState)
-        if not self._ever_played:
+        if not self._ever_played and os.path.exists(self._source.toLocalFile()):
             self.failed.emit(why)              # VLC itself doesn't work here
         else:
             self.errorOccurred.emit(None, why)  # just this one file
@@ -2882,7 +3343,7 @@ class VlcEngine(QObject):
         st = self.mp.get_state()
         if st == vlc.State.Playing:
             self._play_at = None
-            self._ever_played = True
+            self._ever_played = self._media_played = True
             if self._fresh:   # VLC only accepts volume once audio is running
                 self._fresh = False
                 self.mp.audio_set_mute(self.audio._muted)
@@ -2897,6 +3358,8 @@ class VlcEngine(QObject):
                     self.durationChanged.emit(d)
             now = max(0, self.mp.get_time() or 0)
             self.positionChanged.emit(now)
+        elif st == vlc.State.Ended and not self._ended and not self._media_played:
+            self._fail("VLC could not open this file")   # VLC says "Ended" for missing files
         elif st == vlc.State.Ended and not self._ended:
             self._ended = True
             self._set_state(QMediaPlayer.PlaybackState.StoppedState)
@@ -2907,36 +3370,387 @@ class VlcEngine(QObject):
             self._fail(f"VLC didn't start playing (stuck at {st})")
 
 
-def vlc_eq_info():
-    """(band frequencies, [(preset name, preamp, [band amps])])"""
-    n = vlc.libvlc_audio_equalizer_get_band_count()
-    freqs = [vlc.libvlc_audio_equalizer_get_band_frequency(i) for i in range(n)]
-    presets = []
-    for i in range(vlc.libvlc_audio_equalizer_get_preset_count()):
-        name = vlc.libvlc_audio_equalizer_get_preset_name(i)
-        if isinstance(name, bytes):
-            name = name.decode("utf-8", "replace")
-        eq = vlc.libvlc_audio_equalizer_new_from_preset(i)
+# ---------------------------------------------------------------- optional mpv engine (gapless, ReplayGain...)
+mpv = None
+MPV_STATUS = "libmpv-2.dll wasn't found"
+
+
+def app_dir():
+    """The folder eozMP runs from (next to the .exe when it's built)."""
+    return os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
+
+
+def load_mpv(extra_dir=""):
+    """Import python-mpv, which needs libmpv-2.dll. Looks in the folder from the settings,
+    EOZMP_LIBMPV, next to eozMP (or in its 'libmpv' folder), then on PATH. True if it worked."""
+    global mpv, MPV_STATUS
+    if mpv is not None:
+        return True
+    for d in (extra_dir, os.environ.get("EOZMP_LIBMPV", ""), app_dir(), os.path.join(app_dir(), "libmpv")):
+        if d and os.path.isfile(os.path.join(d, "libmpv-2.dll")):
+            os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+            try:
+                os.add_dll_directory(d)
+            except (OSError, AttributeError):
+                pass
+            break
+    try:
+        import mpv as python_mpv
+    except ImportError:
+        MPV_STATUS = "python-mpv isn't installed (run: pip install mpv)"
+        return False
+    except Exception:
+        MPV_STATUS = "libmpv-2.dll wasn't found (set its folder in Preferences > Audio)"
+        return False
+    mpv = python_mpv
+    MPV_STATUS = "Found mpv"
+    return True
+
+
+class MpvAudio:
+    """Looks like QAudioOutput. mpv's volume curve is cubic, so the slider feels even."""
+
+    def __init__(self, engine):
+        self.engine = engine
+        self._volume = 1.0
+        self._muted = False
+
+    def setVolume(self, v):
+        self._volume = float(v)
+        self.engine.mp.volume = self._volume * 100
+
+    def volume(self):
+        return self._volume
+
+    def isMuted(self):
+        return self._muted
+
+    def setMuted(self, muted):
+        self._muted = bool(muted)
+        self.engine.mp.mute = self._muted
+
+
+class _Nothing:
+    """Any call returns None and the value counts as empty."""
+
+    def __call__(self, *_args, **_kwargs):
+        return None
+
+    def __bool__(self):
+        return False
+
+
+class _ClosedMpv:
+    """Takes mpv's place after shutdown(). mpv's events reach the GUI thread through a queue, so one
+    can still arrive after mpv is closed; touching the closed mpv then crashed the whole app."""
+
+    def __getattr__(self, _name):
+        return _Nothing()
+
+    def __setattr__(self, _name, _value):
+        pass
+
+
+class MpvEngine(QObject):
+    """Wraps libmpv so it behaves like QMediaPlayer for the rest of eozMP."""
+    positionChanged = pyqtSignal(int)
+    durationChanged = pyqtSignal(int)
+    mediaStatusChanged = pyqtSignal(object)
+    playbackStateChanged = pyqtSignal(object)
+    errorOccurred = pyqtSignal(object, str)
+    failed = pyqtSignal(str)                 # same interface as VlcEngine (mpv reports per-file errors)
+    advanced = pyqtSignal()                  # moved on to the song given to setNext(), without a gap
+    _from_mpv = pyqtSignal(str, object)      # mpv's event thread -> the GUI thread
+
+    def __init__(self, **options):
+        super().__init__()
+        opts = dict(load_scripts=False, config=False, video=False, vo="null", ytdl=False, idle=True,
+                    audio_display=False, keep_open=False, input_default_bindings=False,
+                    prefetch_playlist=True)   # open the next song early so it follows without a gap
+        opts.update(options)
+        self.mp = mpv.MPV(**opts)
+        self.audio = MpvAudio(self)
+        self._source = QUrl()
+        self._state = QMediaPlayer.PlaybackState.StoppedState
+        self._duration = 0
+        self._pending = None        # position asked for before the file was loaded
+        self._loaded = False
+        self._ended = True          # nothing loaded yet
+        self._at_start = True       # stopped: position() is 0
+        self._play_when_loaded = False
+        self._loads = self._starts = 0   # match mpv's events to the file we asked for last
+        # mpv's playlist is [current] or [current, next]; right after a gapless move it is briefly
+        # [finished, current, ...] until the new song starts and the finished one is removed
+        self._next = None
+        self._advancing = False
+        self._eq = None             # (preamp, bands) the running equalizer filters are set to
+        self._from_mpv.connect(self._on_mpv)
+        for name in ("start-file", "file-loaded", "end-file"):
+            self.mp.event_callback(name)(lambda ev, n=name: self._from_mpv.emit(n, ev.as_dict()))
+        self.timer = QTimer(self)
+        self.timer.setInterval(100)
+        self.timer.timeout.connect(self._poll)
+
+    def setAudioOutput(self, _audio):
+        pass
+
+    def source(self):
+        return self._source
+
+    def setSource(self, url):
+        self._source = QUrl(url)
+        self._duration, self._pending, self._play_when_loaded = 0, None, False
+        self.mp.pause = True
+        self._load()
+        self._set_state(QMediaPlayer.PlaybackState.StoppedState)
+        self.mediaStatusChanged.emit(QMediaPlayer.MediaStatus.LoadedMedia)
+
+    def _load(self):
+        self._loads += 1
+        self._loaded, self._ended, self._at_start = False, False, True
+        self._next, self._advancing = None, False
+        self.mp.loadfile(os.path.normpath(self._source.toLocalFile()))   # also empties mpv's playlist
+
+    def setNext(self, url):
+        """Line up the song that should follow this one with no gap (None: nothing, stop at the end)."""
+        path = os.path.normpath(url.toLocalFile()) if url is not None and not url.isEmpty() else None
+        if path == self._next:
+            return
+        if self._next is not None:
+            self.mp.command("playlist-remove", 1 + self._advancing)
+        self._next = path
+        if path is not None:
+            self.mp.loadfile(path, "append")
+
+    def play(self):
+        if self._source.isEmpty():
+            return
+        if self._ended:
+            self.mp.pause = True
+            self._load()
+        self._at_start = False
+        if self._pending is not None and not self._loaded:
+            self._play_when_loaded = True   # unpause once the start position is set, no blip from 0:00
+        else:
+            self.mp.pause = False
+        self._set_state(QMediaPlayer.PlaybackState.PlayingState)
+        self.timer.start()
+
+    def pause(self):
+        self._play_when_loaded = False
+        if self._state == QMediaPlayer.PlaybackState.PlayingState:
+            self.mp.pause = True
+            self._set_state(QMediaPlayer.PlaybackState.PausedState)
+
+    def stop(self):
+        self._play_when_loaded = False
+        self.mp.pause = True
+        self._pending = None
+        if self._loaded:
+            self.mp.seek(0, "absolute")
+        self._at_start = True
+        self.timer.stop()
+        self._set_state(QMediaPlayer.PlaybackState.StoppedState)
+        self.positionChanged.emit(0)
+
+    def set_equalizer(self, enabled, preamp, bands):
+        """ffmpeg's equalizer filters, one per band (same bands and preamp scale as VLC). Moving a
+        slider changes the running filter instead of rebuilding the chain, so the sound doesn't drop."""
+        bands = ([float(b) for b in bands] + [0.0] * len(EQ_FREQS))[:len(EQ_FREQS)]
+        preamp = float(preamp)
+        if not enabled:
+            if self._eq is not None:
+                self.mp.command("af", "remove", "@eq")
+                self._eq = None
+            return
+        if self._eq is not None:
+            old_pre, old_bands = self._eq
+            try:
+                if preamp != old_pre:
+                    self.mp.command("af-command", "eq", "volume", f"{preamp - EQ_UNITY_PREAMP}dB", "volume@pre")
+                for i, (g, old) in enumerate(zip(bands, old_bands)):
+                    if g != old:
+                        self.mp.command("af-command", "eq", "g", f"{g}", f"equalizer@b{i}")
+                self._eq = (preamp, bands)
+                return
+            except Exception:
+                self.mp.command("af", "remove", "@eq")   # build it again below
+        parts = [f"volume@pre=volume={preamp - EQ_UNITY_PREAMP}dB:precision=float"]
+        parts += [f"equalizer@b{i}=f={f}:t=o:w=1:g={g}" for i, (f, g) in enumerate(zip(EQ_FREQS, bands))]
+        self.mp.command("af", "add", f"@eq:lavfi=[{','.join(parts)}]")
+        self._eq = (preamp, bands)
+
+    def output_devices(self):
+        """[(mpv device name, description)], "auto" (the Windows default) first."""
+        out = [("auto", "Windows default")]
         try:
-            pre = eq.get_preamp()
-            amps = [eq.get_amp_at_index(b) for b in range(n)]
-        except AttributeError:
-            pre = vlc.libvlc_audio_equalizer_get_preamp(eq)
-            amps = [vlc.libvlc_audio_equalizer_get_amp_at_index(eq, b) for b in range(n)]
-        presets.append((name, pre, amps))
-    return freqs, presets
+            for d in self.mp.audio_device_list or []:
+                name, desc = str(d.get("name", "")), str(d.get("description", "") or d.get("name", ""))
+                if name and name != "auto":
+                    out.append((name, desc))
+        except Exception:
+            pass
+        return out
+
+    def set_audio_options(self, replaygain="Off", device="auto", exclusive=False):
+        self.mp.replaygain = {"Track": "track", "Album": "album"}.get(replaygain, "no")
+        # a device that isn't plugged in would leave mpv with no sound at all
+        if device not in {n for n, _d in self.output_devices()}:
+            device = "auto"
+        changed = self.mp.audio_device != device or bool(self.mp.audio_exclusive) != bool(exclusive)
+        self.mp.audio_device = device
+        self.mp.audio_exclusive = bool(exclusive)
+        if changed and self._loaded:
+            self.mp.command("ao-reload")   # switch the running song over to the new output
+
+    def shutdown(self):
+        self.timer.stop()
+        try:
+            self.mp.terminate()
+        except Exception:
+            pass
+        self.mp = _ClosedMpv()
+
+    def position(self):
+        if self._pending is not None:
+            return self._pending
+        if self._at_start:
+            return 0
+        t = self.mp.time_pos
+        return int(t * 1000) if t else 0
+
+    def setPosition(self, ms):
+        ms = max(0, int(ms))
+        self._at_start = False
+        if self._loaded:
+            self.mp.seek(ms / 1000, "absolute+exact")
+        else:
+            self._pending = ms
+        self.positionChanged.emit(ms)
+
+    def playbackState(self):
+        return self._state
+
+    def _set_state(self, state):
+        if state != self._state:
+            self._state = state
+            self.playbackStateChanged.emit(state)
+
+    def _on_mpv(self, name, data):
+        if name == "start-file":
+            self._starts += 1
+            if self._advancing and self._starts == self._loads:
+                self._advancing = False
+                self.mp.command("playlist-remove", 0)   # the song that just finished
+            return
+        if self._starts != self._loads:
+            return   # about a file we already replaced
+        if name == "file-loaded":
+            self._loaded = True
+            if self._pending is not None:
+                self.mp.seek(self._pending / 1000, "absolute+exact")
+                self._pending = None
+            if self._play_when_loaded:
+                self._play_when_loaded = False
+                self.mp.pause = False
+            self._update_duration()
+        elif name == "end-file":
+            reason = data.get("reason")
+            if reason not in (b"eof", b"error", "eof", "error"):
+                return   # stopped or replaced on purpose
+            if reason in (b"eof", "eof") and self._next is not None:
+                # mpv carries straight on with the song we lined up
+                self._source = QUrl.fromLocalFile(self._next)
+                self._next, self._advancing = None, True
+                self._loads += 1                     # its start-file is the one we wait for now
+                self._loaded, self._pending, self._duration, self._at_start = False, None, 0, False
+                self.advanced.emit()
+                return
+            self._loaded, self._ended, self._pending = False, True, None
+            self.timer.stop()
+            self._set_state(QMediaPlayer.PlaybackState.StoppedState)
+            if reason in (b"eof", "eof"):
+                self.mediaStatusChanged.emit(QMediaPlayer.MediaStatus.EndOfMedia)
+            else:
+                why = data.get("file_error") or b"unknown error"
+                why = why.decode("utf-8", "replace") if isinstance(why, bytes) else str(why)
+                self.errorOccurred.emit(None, f"mpv couldn't play this file ({why})")
+
+    def _update_duration(self):
+        d = self.mp.duration
+        if d and int(d * 1000) != self._duration:
+            self._duration = int(d * 1000)
+            self.durationChanged.emit(self._duration)
+
+    def _poll(self):
+        if self._loaded and self._state == QMediaPlayer.PlaybackState.PlayingState:
+            if not self._duration:
+                self._update_duration()
+            self.positionChanged.emit(self.position())
 
 
-def create_engine(choice):
+ENGINE_CHOICES = ["Automatic (mpv, then VLC)", "mpv", "VLC", "Qt (built-in)"]
+
+# The equalizer's bands and presets: VLC 3's, so a setting sounds the same with mpv and VLC and the
+# presets are there without VLC. The preamp is VLC's too: 12 dB means "no change" (VLC lowers its
+# input by 12 dB first), which is why every preset has a preamp around 12.
+EQ_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+EQ_UNITY_PREAMP = 12.0
+EQ_PRESETS = [
+    ("Flat", 12.0, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+    ("Classical", 12.0, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -7.2, -7.2, -7.2, -9.6]),
+    ("Club", 6.0, [0.0, 0.0, 8.0, 5.6, 5.6, 5.6, 3.2, 0.0, 0.0, 0.0]),
+    ("Dance", 5.0, [9.6, 7.2, 2.4, 0.0, 0.0, -5.6, -7.2, -7.2, 0.0, 0.0]),
+    ("Full bass", 5.0, [-8.0, 9.6, 9.6, 5.6, 1.6, -4.0, -8.0, -10.4, -11.2, -11.2]),
+    ("Full bass and treble", 4.0, [7.2, 5.6, 0.0, -7.2, -4.8, 1.6, 8.0, 11.2, 12.0, 12.0]),
+    ("Full treble", 3.0, [-9.6, -9.6, -9.6, -4.0, 2.4, 11.2, 16.0, 16.0, 16.0, 16.8]),
+    ("Headphones", 4.0, [4.8, 11.2, 5.6, -3.2, -2.4, 1.6, 4.8, 9.6, 12.8, 14.4]),
+    ("Large Hall", 5.0, [10.4, 10.4, 5.6, 5.6, 0.0, -4.8, -4.8, -4.8, 0.0, 0.0]),
+    ("Live", 7.0, [-4.8, 0.0, 4.0, 5.6, 5.6, 5.6, 4.0, 2.4, 2.4, 2.4]),
+    ("Party", 6.0, [7.2, 7.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 7.2, 7.2]),
+    ("Pop", 6.0, [-1.6, 4.8, 7.2, 8.0, 5.6, 0.0, -2.4, -2.4, -1.6, -1.6]),
+    ("Reggae", 8.0, [0.0, 0.0, 0.0, -5.6, 0.0, 6.4, 6.4, 0.0, 0.0, 0.0]),
+    ("Rock", 5.0, [8.0, 4.8, -5.6, -8.0, -3.2, 4.0, 8.8, 11.2, 11.2, 11.2]),
+    ("Ska", 6.0, [-2.4, -4.8, -4.0, 0.0, 4.0, 5.6, 8.8, 9.6, 11.2, 9.6]),
+    ("Soft", 5.0, [4.8, 1.6, 0.0, -2.4, 0.0, 4.0, 8.0, 9.6, 11.2, 12.0]),
+    ("Soft rock", 7.0, [4.0, 4.0, 2.4, 0.0, -4.0, -5.6, -3.2, 0.0, 2.4, 8.8]),
+    ("Techno", 5.0, [8.0, 5.6, 0.0, -5.6, -4.8, 0.0, 8.0, 9.6, 9.6, 8.8]),
+]
+
+
+def engine_order(choice):
+    """Engines to try, best first. The built-in Qt engine is always the last resort."""
+    choice = str(choice)
+    if choice.startswith("Qt"):
+        return ["Qt"]
+    if choice in ("mpv", "VLC"):
+        return [choice, "Qt"]
+    return ["mpv", "VLC", "Qt"]   # "Automatic", including the old "Automatic (VLC if installed)"
+
+
+def create_engine(choice, mpv_dir=""):
     """Returns (player, audio output, engine name)."""
     global ENGINE_ERROR
-    if not str(choice).startswith("Qt") and vlc is not None:
-        try:
-            engine = VlcEngine()
-            ENGINE_ERROR = ""
-            return engine, engine.audio, "VLC"
-        except Exception as e:
-            ENGINE_ERROR = f"VLC failed to start: {e}"
+    problems = []
+    for name in engine_order(choice):
+        if name == "mpv":
+            if not load_mpv(mpv_dir):
+                problems.append(MPV_STATUS)
+                continue
+            try:
+                engine = MpvEngine()
+                ENGINE_ERROR = ""
+                return engine, engine.audio, "mpv"
+            except Exception as e:
+                problems.append(f"mpv failed to start: {e}")
+        elif name == "VLC" and vlc is not None:
+            try:
+                engine = VlcEngine()
+                ENGINE_ERROR = ""
+                return engine, engine.audio, "VLC"
+            except Exception as e:
+                problems.append(f"VLC failed to start: {e}")
+    ENGINE_ERROR = "; ".join(problems)
     audio = QAudioOutput()
     player = QMediaPlayer()
     player.setAudioOutput(audio)
@@ -2950,19 +3764,19 @@ class EqualizerDialog(QDialog):
         self._loading = False
         self.setWindowTitle("Equalizer")
         lay = QVBoxLayout(self)
-        if main.engine_name != "VLC" or vlc is None:
-            reason = main.vlc_error or ENGINE_ERROR or VLC_STATUS
+        if not hasattr(main.player, "set_equalizer"):
+            reason = main.vlc_error or ENGINE_ERROR or f"mpv: {MPV_STATUS}. VLC: {VLC_STATUS}"
             note = QLabel(
-                "The equalizer needs the VLC audio engine.\n\n"
+                "The equalizer needs the mpv or VLC audio engine.\n\n"
                 f"Status: {reason}\n\n"
-                "To set it up: install VLC (free) from videolan.org, then in a command window run\n"
-                "pip install python-vlc  and restart eozMP (rebuild the exe if you use it).")
+                "To set it up: put libmpv-2.dll next to eozMP (or pick its folder in Settings > Audio),\n"
+                "or install VLC from videolan.org and run  pip install python-vlc,  then restart eozMP.")
             note.setWordWrap(True)
             lay.addWidget(note)
             row = QHBoxLayout()
             row.addStretch(1)
-            if vlc is not None:
-                use = QPushButton("Use VLC now")
+            if mpv is not None or vlc is not None:
+                use = QPushButton("Use " + ("mpv" if mpv is not None else "VLC") + " now")
                 use.setObjectName("primary")
                 use.clicked.connect(self.use_vlc)
                 row.addWidget(use)
@@ -2971,7 +3785,7 @@ class EqualizerDialog(QDialog):
             row.addWidget(ok)
             lay.addLayout(row)
             return
-        self.freqs, self.presets = vlc_eq_info()
+        self.freqs, self.presets = EQ_FREQS, EQ_PRESETS
         cfg = main.cfg
         bands = [float(x) for x in cfg["eq_bands"]] + [0.0] * len(self.freqs)
         top = QHBoxLayout()
@@ -3002,11 +3816,11 @@ class EqualizerDialog(QDialog):
         reset.clicked.connect(self.reset)
 
     def use_vlc(self):
-        self.main.cfg["audio_engine"] = "Automatic (VLC if installed)"
+        self.main.cfg["audio_engine"] = ENGINE_CHOICES[0]   # Automatic: mpv, then VLC
         save_config(self.main.cfg)
         self.main.switch_engine(self.main.cfg["audio_engine"])
         self.accept()
-        if self.main.engine_name == "VLC":
+        if hasattr(self.main.player, "set_equalizer"):
             QTimer.singleShot(150, self.main.open_equalizer)
 
     @staticmethod
@@ -3107,20 +3921,41 @@ QUALITY_RE = re.compile(
     r"web|webrip|cd|cdrip|vinyl|lossless|hi res|hires|remaster|remastered)\b")
 
 
+YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+NAME_SEP_RE = re.compile(r"\s+[-\u2013\u2014]+\s+|_+-_+")
+
+
+def _words(text):
+    """Lower-case words of any script, accents dropped: 'Björk' -> 'bjork', 'Кино' stays 'кино'."""
+    text = unicodedata.normalize("NFKD", str(text))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"[\W_]+", " ", text.casefold()).strip()
+
+
+def has_words(text, words):
+    """'muse' is in 'muse absolution' but not in 'museum'."""
+    return bool(words) and f" {words} " in f" {text} "
+
+
 def album_key(name, artist):
-    """'Artist - Album (2009) [FLAC]' -> 'album', so different uploads of one album match."""
-    n = _norm(name)
-    a = _norm(artist)
-    if a:
-        n = n.replace(a, " ")
-    n = re.sub(r"\b(19|20)\d{2}\b", " ", n)
-    n = QUALITY_RE.sub(" ", n)
-    return re.sub(r"\s+", " ", n).strip()
+    """'Artist - Album (2009) [FLAC]' -> 'album', so different uploads of one album match.
+    A self-titled album keys to the artist's name, an album called '1989' to '1989'."""
+    a = _words(artist)
+    name = re.sub(r"[(\[]\s*(?:19|20)\d{2}\s*[)\]]", " ", str(name))   # '(2009)': the release year
+    parts = [x for x in NAME_SEP_RE.split(name) if x.strip()]
+    if len(parts) > 1 and _words(parts[0]) == a:
+        parts = parts[1:]                                       # 'Artist - ...'
+    n = QUALITY_RE.sub(" ", _words(" ".join(parts)))
+    rest = re.sub(r"\s+", " ", YEAR_RE.sub(" ", n)).strip()
+    if rest:
+        return rest
+    years = YEAR_RE.findall(n)
+    return years[-1] if years else a
 
 
 def pick_discography(rows, artist):
     """From raw Soulseek results, pick the best folder for every album by this artist."""
-    a = _norm(artist)
+    a = _words(artist)
     best = {}
     for group in group_by_folder(rows):
         if len(group) < 3:
@@ -3129,12 +3964,13 @@ def pick_discography(rows, artist):
         parts = [x for x in folder.split("/") if x]
         if not parts:
             continue
-        if a and a not in _norm(folder) and not any(a in _norm(f["filename"]) for f in group):
+        if a and not has_words(_words(folder), a) and not any(has_words(_words(f["filename"]), a)
+                                                              for f in group):
             continue
         name = parts[-1]
         disc = ""
-        if DISC_RE.match(_norm(name)) and len(parts) > 1:
-            disc, name = _norm(parts[-1]), parts[-2]
+        if DISC_RE.match(_words(name)) and len(parts) > 1:
+            disc, name = _words(parts[-1]), parts[-2]
         key = album_key(name, artist)
         if not key:
             continue
@@ -3208,6 +4044,47 @@ class DiscographyDialog(QDialog):
 
 
 # ---------------------------------------------------------------- mini player
+class SeekSlider(QSlider):
+    """The song's progress bar. A click jumps straight there; dragging only moves the handle and
+    the song follows when you let go (seeking on every mouse move makes the audio stutter)."""
+    seekRequested = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(Qt.Orientation.Horizontal, parent)
+        self._pressed_at = None
+        self.sliderReleased.connect(self._released)
+        self.actionTriggered.connect(self._on_action)
+
+    def _released(self):
+        if self.value() != self._pressed_at:   # just clicking the handle shouldn't re-seek (and click)
+            self.seekRequested.emit(self.value())
+
+    def mousePressEvent(self, e):
+        self._pressed_at = self.value()
+        if e.button() == Qt.MouseButton.LeftButton and self.maximum() > self.minimum():
+            opt = QStyleOptionSlider()
+            self.initStyleOption(opt)
+            style = self.style()
+            groove = style.subControlRect(QStyle.ComplexControl.CC_Slider, opt,
+                                          QStyle.SubControl.SC_SliderGroove, self)
+            handle = style.subControlRect(QStyle.ComplexControl.CC_Slider, opt,
+                                          QStyle.SubControl.SC_SliderHandle, self)
+            if not handle.contains(e.position().toPoint()):
+                span = max(1, groove.width() - handle.width())
+                x = int(e.position().x()) - groove.x() - handle.width() // 2
+                self.setValue(QStyle.sliderValueFromPosition(self.minimum(), self.maximum(),
+                                                             max(0, min(span, x)), span))
+                # the handle is now under the mouse: the press below starts a drag from here
+        super().mousePressEvent(e)
+
+    def _on_action(self, action):
+        # keyboard and page steps move the song right away; a drag waits for the release
+        if self.isSliderDown() or action in (QAbstractSlider.SliderAction.SliderMove,
+                                             QAbstractSlider.SliderAction.SliderNoAction):
+            return
+        QTimer.singleShot(0, lambda: self.seekRequested.emit(self.value()))
+
+
 class MarqueeLabel(QWidget):
     """One line of text that slowly slides when it doesn't fit."""
 
@@ -3305,6 +4182,7 @@ class MiniPlayer(QWidget):
         self.accent = "#4C8DFF"
         self._drag = None
         self._seeking = False
+        self._seek_frac = None
         self._hover = False
         self.idle_opacity = 0.9
         self.fade = QPropertyAnimation(self, b"windowOpacity", self)
@@ -3443,7 +4321,8 @@ class MiniPlayer(QWidget):
 
     # --- mouse: drag to move, click/drag the bottom bar to seek, wheel for volume
     def _seek_to(self, x):
-        self.main.seek_fraction(max(0.0, min(1.0, x / max(1, self.width()))))
+        self._seek_frac = max(0.0, min(1.0, x / max(1, self.width())))
+        self.set_progress(self._seek_frac)   # the song moves when you let go
 
     def mousePressEvent(self, e):
         if e.button() != Qt.MouseButton.LeftButton:
@@ -3464,8 +4343,11 @@ class MiniPlayer(QWidget):
     def mouseReleaseEvent(self, e):
         if self._drag is not None:
             self.snap()
+        if self._seeking and self._seek_frac is not None:
+            self.main.seek_fraction(self._seek_frac)
         self._drag = None
         self._seeking = False
+        self._seek_frac = None
 
     def mouseDoubleClickEvent(self, e):
         if e.position().toPoint().y() < self.height() - self.BAR_ZONE:
@@ -3580,6 +4462,33 @@ def song_tech_info(path):
     except Exception:
         pass
     return out
+
+
+def plain_tip(text):
+    """A tooltip that shows song tags as text (Qt would render '<b>...' in a tag as HTML)."""
+    return f"<qt>{html.escape(text)}</qt>"
+
+
+class PlainLabels(QObject):
+    """Song tags come from downloaded files, so a label must never guess they are HTML: a title like
+    '<img src="file://...">' would load a network file. Labels that really use links set RichText
+    themselves and escape the tags; every other label is switched to plain text before it is shown."""
+
+    def eventFilter(self, obj, event):
+        if (event.type() == QEvent.Type.Polish and isinstance(obj, QLabel)
+                and obj.textFormat() == Qt.TextFormat.AutoText):
+            obj.setTextFormat(Qt.TextFormat.PlainText)
+        return False
+
+
+PLAIN_LABELS = None
+
+
+def make_labels_plain():
+    global PLAIN_LABELS
+    if PLAIN_LABELS is None:
+        PLAIN_LABELS = PlainLabels()
+        QApplication.instance().installEventFilter(PLAIN_LABELS)
 
 
 class SongTable(QTableWidget):
@@ -3928,7 +4837,11 @@ class SongInfoDialog(QDialog):
         top = QHBoxLayout()
         top.setSpacing(16)
         cover = QLabel()
-        cover.setPixmap(main.thumb_pixmap(key, 120, main.radius(10)))
+        pix = main.thumb_cache.get(key)
+        if pix is None and main.thumb_cache.has_cover(key):
+            pix = main.cover_for(key)    # dropped from the small cache; one cover is quick to read
+        cover.setPixmap(rounded_pixmap(pix, 120, main.radius(10)) if pix is not None
+                        else main.thumb_pixmap(key, 120, main.radius(10)))
         names = QVBoxLayout()
         title = QLabel(_raw(t["title"]))
         title.setObjectName("heading2")
@@ -4060,6 +4973,9 @@ class QueueDrawer(QWidget):
         p.end()
 
 
+FS_MOTION_MS = 100   # the background drifts slowly; 10 frames a second is enough (each one is the whole screen)
+
+
 class FullPlayer(QWidget):
     """Full-screen player: big cover and controls on the left, lyrics on the right."""
 
@@ -4093,8 +5009,8 @@ class FullPlayer(QWidget):
         seek_row = QHBoxLayout()
         self.pos_label = QLabel("0:00")
         self.pos_label.setObjectName("fssub")
-        self.seek = QSlider(Qt.Orientation.Horizontal)
-        self.seek.sliderMoved.connect(lambda v: self.main.player.setPosition(v))
+        self.seek = SeekSlider()
+        self.seek.seekRequested.connect(lambda v: self.main.player.setPosition(v))
         self.len_label = QLabel("0:00")
         self.len_label.setObjectName("fssub")
         seek_row.addWidget(self.pos_label)
@@ -4184,8 +5100,10 @@ class FullPlayer(QWidget):
         self.idle_timer.setInterval(300)
         self.idle_timer.timeout.connect(self._check_idle)
         self.motion_timer = QTimer(self)
-        self.motion_timer.setInterval(50)
-        self.motion_timer.timeout.connect(self.update)
+        self.motion_timer.setInterval(FS_MOTION_MS)
+        self.motion_timer.timeout.connect(self._motion_tick)
+        self.motion_clock = time.monotonic()   # only runs while the background moves
+        self._motion_last = None
         self.viz = Visualizer(self, bars=64)
         self.viz.hide()
 
@@ -4202,6 +5120,7 @@ class FullPlayer(QWidget):
             f"QPushButton#fsplay {{ background: {sc['accent']}; border-radius: 32px; }}"
             f"QPushButton#fsplay:hover {{ background: {sc['accent_hover']}; }}"
             "QPushButton#fsclose:hover { background: rgba(232, 17, 35, 200); }"
+            + accent_qss(sc)   # no parent window, so it can't inherit the accent widgets' sheets
         )
 
     def cover_side(self):
@@ -4264,17 +5183,39 @@ class FullPlayer(QWidget):
             if self._cache is None or self._cache.size().width() < want.width() - 2:
                 self._cache = self.backdrop.scaled(want, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                                                    Qt.TransformationMode.SmoothTransformation)
+                dim = QPainter(self._cache)   # darken once here, not over the whole screen every frame
+                dim.fillRect(self._cache.rect(), QColor(0, 0, 0, 140))
+                dim.end()
             x = (self.width() - self._cache.width()) / 2
             y = (self.height() - self._cache.height()) / 2
             if motion:   # slow, gentle drift
-                t = time.monotonic()
+                t = self.motion_clock
                 x += math.sin(t / 9.0) * (self._cache.width() - self.width()) * 0.45
                 y += math.cos(t / 13.0) * (self._cache.height() - self.height()) * 0.45
             p.drawPixmap(int(x), int(y), self._cache)
         else:
             p.fillRect(self.rect(), QColor("#111114"))
-        p.fillRect(self.rect(), QColor(0, 0, 0, 140))
+            p.fillRect(self.rect(), QColor(0, 0, 0, 140))
         p.end()
+
+    def sync_motion(self):
+        """Move the background only while it's on screen and the music plays."""
+        main = self.main
+        fluid = bool(main.cfg.get("fs_fluid"))
+        want = (self.isVisible() and (bool(main.cfg["fs_motion"]) or fluid)
+                and main.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState)
+        self.motion_timer.setInterval(33 if fluid else FS_MOTION_MS)   # the colours need smoother frames
+        if want and not self.motion_timer.isActive():
+            self._motion_last = time.monotonic()
+            self.motion_timer.start()
+        elif not want:
+            self.motion_timer.stop()
+
+    def _motion_tick(self):
+        now = time.monotonic()
+        self.motion_clock += min(now - self._motion_last, 0.5)   # paused time doesn't count
+        self._motion_last = now
+        self.update()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -4300,8 +5241,7 @@ class FullPlayer(QWidget):
         super().showEvent(e)
         self._wake()
         self.idle_timer.start()
-        if self.main.cfg["fs_motion"] or self.main.cfg.get("fs_fluid"):
-            self.motion_timer.start()
+        self.sync_motion()
 
     def hideEvent(self, e):
         super().hideEvent(e)
@@ -4616,16 +5556,6 @@ def check_new_releases(artists, known_ids, owned, since):
     return {"ids": ids, "items": items}
 
 
-def fetch_remote_version():
-    req = urllib.request.Request(UPDATE_URL, headers={"User-Agent": f"eozMP/{APP_VERSION}"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        text = resp.read(14000).decode("utf-8", "replace")
-    m = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', text, re.M)
-    if not m:
-        raise RuntimeError("couldn't read the version number")
-    return m.group(1)
-
-
 def slskd_running(url):
     """True if anything answers at the slskd address."""
     try:
@@ -4635,10 +5565,6 @@ def slskd_running(url):
     except Exception:
         return False
     return True
-
-
-def version_tuple(v):
-    return tuple(int(x) for x in re.findall(r"\d+", v))
 
 
 class AudioAnalyzer(QObject):
@@ -5024,8 +5950,6 @@ class ExtrasMixin:
         self.extras_timer.timeout.connect(self.extras_tick)
         self.extras_timer.start(20 * 60 * 1000)
         QTimer.singleShot(90_000, self.extras_tick)     # first pass once the library has loaded
-        if self.cfg.get("update_check", True):
-            QTimer.singleShot(8000, lambda: self.check_updates(silent=True))
         self.init_bundled_slskd()
         self.init_extras2()
 
@@ -5090,7 +6014,6 @@ class ExtrasMixin:
         add(soul, "Wishlist...", self.open_wishlist)
         add(soul, "Add current search to wishlist", lambda: self.wishlist_add(self.search.text().strip()))
         hlp = [m for m in self.menuBar().findChildren(QMenu) if m.title() == _t("&Help")][0]
-        add(hlp, "Check for updates...", lambda: self.check_updates(silent=False))
         self.build_connect_menu()
         guide = APP_DIR / "Soulseek Guide.txt"
         if guide.exists():
@@ -5333,23 +6256,6 @@ class ExtrasMixin:
             self.cfg["soul_trust"] = dict(SOUL_TRUST)
             self.cfg["soul_trust_seen"] = list(seen)[-2000:]
             save_config(self.cfg)
-
-    # ----- updates
-    def check_updates(self, silent):
-        w = Worker(fetch_remote_version)
-
-        def done(remote):
-            if version_tuple(remote) > version_tuple(APP_VERSION):
-                if QMessageBox.question(self, "eozMP update", f"eozMP {remote} is available (you have {APP_VERSION}).\n"
-                                        "Open the download page?") == QMessageBox.StandardButton.Yes:
-                    QDesktopServices.openUrl(QUrl(REPO_URL))
-            elif not silent:
-                QMessageBox.information(self, "eozMP update", f"You have the newest version ({APP_VERSION}).")
-
-        w.ok.connect(done)
-        if not silent:
-            w.fail.connect(lambda m: QMessageBox.information(self, "eozMP update", f"Couldn't check ({m})."))
-        self.keep(w)
 
 
 # ---------------------------------------------------------------- v1.2 extras, part 2
@@ -6517,6 +7423,10 @@ class Extras2Mixin:
 class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
     def __init__(self):
         super().__init__()
+        make_labels_plain()
+        app = QApplication.instance()
+        app.commitDataRequest.connect(self.save_session)   # Windows is logging off / shutting down
+        app.aboutToQuit.connect(self.save_session)
         self.setWindowTitle("eozMP")
         self.cfg = load_config()
         if int(self.cfg.get("cfg_version", 1)) < 2:
@@ -6545,6 +7455,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
 
         self.workers = set()
         self.albums = {}        # (artist_key, album_key) -> album dict
+        self.by_artist = {}     # artist_key -> its album keys, oldest first
         self.artists = {}       # artist_key -> display name
         self.tree_albums = {}   # key -> tree item
         self.queue = []         # [(track, album_key)]
@@ -6555,12 +7466,15 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.search_worker = None
         self.last_done = None
         self.poll_busy = False
+        self.poll_fails = 0     # polls in a row slskd didn't answer
         self.all_tracks = []
+        self.built_tracks = []   # what the library on screen was last built from (completely)
         self.scanning = False
         self.rescan_pending = False
         self.soul_raw = []      # every file found by the current Soulseek search
         self.soul_view = []     # rows currently shown (each row = list of files)
         self.soul_count_text = ""
+        self.soul_answered = 0
         self.searching = False
         self.search_failed = False
         self.dl_rows = []
@@ -6587,6 +7501,10 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.shuffle_played = set()
         self.listen_ms = 0
         self.last_pos = None
+        self.last_tick = 0.0
+        self.fail_streak = 0      # songs in a row that couldn't be played
+        self.shuffle_pick = None  # shuffle's next song, picked early so it can be lined up
+        self._planning_off = False
         self.listen_path = None
         self.album_accent = None
         self.accent_cache = {}
@@ -6606,7 +7524,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.lyric_wait_path = None
         self.disco_worker = None
         self.disco_rows = []
-        self.thumb_cache = {}       # album key -> 160px square cover (None = no cover)
+        self.thumb_cache = ThumbCache()   # album key -> 160px square cover (None = no cover)
+        self.thumb_asked = set()          # covers asked for and not back yet
         self.ph_cache = {}          # placeholder pixmaps
         self.backdrop_cache = {}
         self.tree_artists = {}
@@ -6645,7 +7564,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.search_timer.setSingleShot(True)
         self.search_timer.timeout.connect(self.run_search)
 
-        self.player, self.audio, self.engine_name = create_engine(self.cfg["audio_engine"])
+        self.player, self.audio, self.engine_name = create_engine(self.cfg["audio_engine"], self.cfg["mpv_dir"])
         self.audio.setVolume(self.cfg["volume"] / 100)
 
         self.build_ui()
@@ -6661,10 +7580,17 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.np_timer.setInterval(140)
         self.np_timer.timeout.connect(self.tick_now_playing)
         self.np_timer.start()
+        self.stats_timer = QTimer(self)   # listening stats are written at most every 30 s
+        self.stats_timer.setSingleShot(True)
+        self.stats_timer.setInterval(30000)
+        self.stats_timer.timeout.connect(self.flush_stats)
+        self.stats_dirty = False
         self.viz_timer = QTimer(self)
         self.viz_timer.setInterval(33)
         self.viz_timer.timeout.connect(self.tick_visualizers)
         QShortcut(QKeySequence("Escape"), self, activated=self.on_escape)
+        self.app_accent = None    # the accent baked into the app stylesheet
+        self.accent_sheet = ""    # small sheet for accent widgets when the accent has moved on since
         QApplication.instance().installEventFilter(self)
         self.system_dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
         self.scheme = make_scheme(True, ACCENTS["Blue"])
@@ -6685,7 +7611,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
 
         self.poll_timer = QTimer(self)
         self.poll_timer.timeout.connect(self.poll_downloads)
-        self.poll_timer.start(3000)
+        self.poll_timer.start(POLL_MS)
 
         # show the cached library instantly, then refresh it in the background
         cached = load_cache()
@@ -6699,8 +7625,70 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if self.cfg["media_keys"]:
             self.register_media_keys()
         self.init_extras()
+        if LOAD_PROBLEMS:
+            QTimer.singleShot(0, self.show_load_problems)
+        QTimer.singleShot(3000, self.auto_check_updates)   # after start-up, so it never slows it down
+
+    # ----- new versions
+    def auto_check_updates(self):
+        if not self.cfg["update_check"] or self.quitting:
+            return
+        if time.time() - float(self.cfg.get("update_last_check") or 0) < 24 * 3600:
+            return
+        self.check_updates(manual=False)
+
+    def check_updates_now(self):
+        self.check_updates(manual=True)
+
+    def check_updates(self, manual):
+        w = Worker(lambda: latest_release())
+        w.ok.connect(lambda rel: self.on_release_info(rel, manual))
+        w.fail.connect(lambda msg: self.on_release_error(msg, manual))
+        self.keep(w)
+
+    def on_release_info(self, rel, manual):
+        self.cfg["update_last_check"] = time.time()
+        save_config(self.cfg)
+        tag = str((rel or {}).get("tag_name") or "")
+        if is_newer(tag, APP_VERSION) and (manual or tag != self.cfg.get("update_skip")):
+            self.offer_update(rel)
+        elif manual:
+            QMessageBox.information(self, "eozMP", f"You have the newest version of eozMP (v{APP_VERSION}).")
+
+    def on_release_error(self, msg, manual):
+        # no internet on start-up isn't worth a message; it simply asks again next time
+        if manual:
+            QMessageBox.warning(self, "eozMP", f"Couldn't check for a new version.\n\n{msg}")
+
+    def offer_update(self, rel):
+        tag = str(rel.get("tag_name") or "")
+        url = str(rel.get("html_url") or "")
+        if not url.startswith(f"https://github.com/{UPDATE_REPO}/"):
+            url = f"https://github.com/{UPDATE_REPO}/releases/latest"
+        box = QMessageBox(self)
+        box.setWindowTitle("A new version of eozMP")
+        box.setText(f"eozMP {tag} is out. You have v{APP_VERSION}.")
+        box.setInformativeText("Download the new eozMP.exe and put it in place of the old one. "
+                               "Your settings, playlists and stats are kept.")
+        download = box.addButton("Download", QMessageBox.ButtonRole.AcceptRole)
+        skip = box.addButton("Skip this version", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("Later", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(download)
+        box.exec()
+        if box.clickedButton() is download:
+            QDesktopServices.openUrl(QUrl(url))
+        elif box.clickedButton() is skip:
+            self.cfg["update_skip"] = tag
+            save_config(self.cfg)
 
     # ----- helpers
+    def show_load_problems(self):
+        QMessageBox.warning(
+            self, "Some files couldn't be read",
+            "eozMP couldn't read these files and started with defaults for them. "
+            "Nothing was lost: the old files were kept next to them.\n\n" + "\n\n".join(LOAD_PROBLEMS))
+        LOAD_PROBLEMS.clear()
+
     def keep(self, worker):
         self.workers.add(worker)
         worker.finished.connect(lambda: self.workers.discard(worker))
@@ -6745,7 +7733,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         row.setSpacing(6)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search")
-        self.search.setToolTip("Search your library. Press Enter to also search Soulseek when something's missing.")
+        self.search.setToolTip("Search your library. Use the Soulseek button next to it to look for music you don't have.")
         self.search.textChanged.connect(self.apply_filter)
         self.search.textChanged.connect(lambda _t: self.search_timer.start(220))
         self.search.setClearButtonEnabled(True)
@@ -7329,7 +8317,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         srv = QVBoxLayout(sr)
         self.search_title = QLabel("")
         self.search_title.setObjectName("heading2")
-        search_hint = QLabel("Press Enter to also look on Soulseek.")
+        search_hint = QLabel('Not what you wanted? Press "Search Soulseek too" below.')
         search_hint.setObjectName("sub")
         srv.addWidget(self.search_title)
         srv.addWidget(search_hint)
@@ -7444,9 +8432,10 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         seek_row = QHBoxLayout()
         self.time_label = QLabel("0:00")
         self.time_label.setObjectName("sub")
-        self.seek = QSlider(Qt.Orientation.Horizontal)
+        self.seek = SeekSlider()
         self.seek.setRange(0, 0)
-        self.seek.sliderMoved.connect(lambda v: self.player.setPosition(v))
+        self.seek.seekRequested.connect(lambda v: self.player.setPosition(v))
+        self.seek.sliderMoved.connect(lambda v: self.time_label.setText(fmt_time(v)))
         self.total_label = QLabel("0:00")
         self.total_label.setObjectName("sub")
         self.total_label.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -7600,9 +8589,12 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         act.setShortcut("F1")
         act.triggered.connect(lambda: self.show_shortcuts())
         hlp.addAction(act)
+        act = QAction("Check for updates...", self)
+        act.triggered.connect(lambda: self.check_updates_now())
+        hlp.addAction(act)
         act = QAction("About eozMP", self)
         act.triggered.connect(lambda: QMessageBox.about(
-            self, "eozMP", "eozMP - eren's definitely (not) sketchy music player, customize and enjoy your music.\n\n"
+            self, "eozMP", f"eozMP v{APP_VERSION} - eren's definitely (not) sketchy music player, customize and enjoy your music.\n\n"
             "Copyright (C) 2026 Eren. Free software under the GNU General Public License v3."))
         hlp.addAction(act)
         self.build_extras_menu()
@@ -7634,7 +8626,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
 
         def job():
             tracks = scan_folders(folders, old)
-            save_cache(tracks)
+            if not same_tracks(tracks, old):   # 9 MB for 18k songs, and most starts change nothing
+                save_cache(tracks)
             return tracks
 
         w = Worker(job)
@@ -7644,7 +8637,11 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
 
     def on_scan_done(self, tracks):
         self.scanning = False
-        self.build_library(tracks)
+        if tracks and same_tracks(tracks, self.built_tracks):
+            self.cover_cache = {}    # cover files may have been added; songs are as they were
+            self.statusBar().showMessage(f"{len(tracks)} tracks - {len(self.artists)} artists - {len(self.albums)} albums")
+        else:
+            self.build_library(tracks)
         self.check_upgrades()
         if self.rescan_pending:
             self.rescan_pending = False
@@ -7664,7 +8661,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             for i in range(self.tree.topLevelItemCount())
             if self.tree.topLevelItem(i).isExpanded()
         }
-        self.albums, self.artists, self.cover_cache = {}, {}, {}
+        self.albums, self.artists, self.cover_cache, self.by_artist = {}, {}, {}, {}
         group = bool(self.cfg["group_featured"])
         split = bool(self.cfg["split_collabs"])
         keep = {k.strip().lower() for k in self.cfg["keep_together"] if k.strip()}
@@ -7675,10 +8672,10 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                                else (raw.strip() or "Unknown Artist"))
             akey, alkey = t["artist"].lower(), t["album"].lower()
             self.artists.setdefault(akey, t["artist"])
-            alb = self.albums.setdefault(
-                (akey, alkey),
-                {"artist": self.artists[akey], "album": t["album"], "tracks": []},
-            )
+            alb = self.albums.get((akey, alkey))
+            if alb is None:
+                alb = self.albums[(akey, alkey)] = {"artist": self.artists[akey], "album": t["album"], "tracks": []}
+                self.by_artist.setdefault(akey, []).append((akey, alkey))
             alb["tracks"].append(t)
 
         for alb in self.albums.values():
@@ -7701,6 +8698,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                     entry["albums"].append(key)
             if alb["year"]:
                 self.decades.setdefault(f"{alb['year'] // 10 * 10}s", []).append(key)
+        for keys in self.by_artist.values():
+            keys.sort(key=lambda k: (self.albums[k]["year"] or 9999, k[1]))
 
         ignore_the = bool(self.cfg["ignore_the"])
 
@@ -7734,14 +8733,12 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             bold.setBold(True)
             a_item.setFont(0, bold)
             self.tree.addTopLevelItem(a_item)
-            keys = [k for k in self.albums if k[0] == akey]
-            keys.sort(key=lambda k: (self.albums[k]["year"] or 9999, k[1]))
-            for number, key in enumerate(keys, start=1):
+            for number, key in enumerate(self.by_artist[akey], start=1):
                 alb = self.albums[key]
                 al_item = QTreeWidgetItem([alb["album"]])
                 al_item.setData(0, NUM_ROLE, number)
                 al_item.setData(0, YEAR_ROLE, alb["year"] or 0)
-                al_item.setToolTip(0, f"{alb['album']} ({alb['year']})" if alb["year"] else alb["album"])
+                al_item.setToolTip(0, plain_tip(f"{alb['album']} ({alb['year']})" if alb["year"] else alb["album"]))
                 al_item.setData(0, KEY_ROLE, key)
                 a_item.addChild(al_item)
                 self.tree_albums[key] = al_item
@@ -7760,8 +8757,9 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if self.list_covers():
             for akey, a_item in self.tree_artists.items():
                 a_item.setIcon(0, self.artist_icon(akey, 28))
-        missing = [k for k in self.albums if k not in self.thumb_cache]
+        missing = [k for k in self.albums if not self.thumb_cache.known(k)]
         self.thumbs.clear()
+        self.thumb_asked.clear()
         self.thumbs.add([self.thumb_job(k) for k in missing])
         self.refresh_context()
         if self.current_album in self.tree_albums:
@@ -7794,6 +8792,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         elif idx == 7 and self.current_artist in self.artists:
             self.show_artist(self.current_artist, switch=False)
         self.refresh_queue_view()
+        self.built_tracks = tracks
 
     def visible_album_count(self):
         n = 0
@@ -7822,11 +8821,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if len(text) < 2:
             return
         self.search_timer.stop()
-        self.run_search()
-        if self.slskd_ready():
-            self.search_soulseek_inline()
-        else:
-            self.statusBar().showMessage("Set up Soulseek in Preferences to search it too.", 6000)
+        self.run_search()   # Soulseek only on a button press: Enter shouldn't send what you type out
 
     # ----- album page
     def cover_for(self, key):
@@ -7871,6 +8866,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             + html.escape(f"{len(alb['tracks'])} tracks - {fmt_time(total * 1000)}")
         )
         self.album_header.set_backdrop(self.backdrop_for(key))
+        self.track_table.setRowCount(0)   # refilling old rows re-measures every row for each cell
         self.track_table.setRowCount(len(alb["tracks"]))
         plays = self.stats["plays"]
         for r, t in enumerate(alb["tracks"]):
@@ -7920,7 +8916,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             self.play_from_library(idx)
 
     # ----- playback
-    def play_index(self, idx, autoplay=True, start_pos=0, record=True):
+    def play_index(self, idx, autoplay=True, start_pos=0, record=True, loaded=None):
         if not self.queue:
             return
         self.finalize_listen()
@@ -7933,9 +8929,10 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             self.fwd.clear()
         self.listen_path = track["path"]
         self.pending_seek = start_pos
-        self.player.setSource(QUrl.fromLocalFile(track["path"]))
-        if autoplay:
-            self.player.play()
+        if not (loaded and os.path.normcase(os.path.normpath(loaded)) == os.path.normcase(os.path.normpath(track["path"]))):
+            self.player.setSource(QUrl.fromLocalFile(track["path"]))
+            if autoplay:
+                self.player.play()
         self.set_now_playing(track)
         self.set_cover(self.np_cover, key, 56, self.radius(8))
         if self.current_album == key:
@@ -7951,6 +8948,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.update_drawer()
         self.update_fullscreen()
         self.update_tray()
+        self.line_up_next()
         self.on_track_started(track, key)
 
     def toggle_play(self):
@@ -7968,58 +8966,107 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         else:
             self.player.play()
 
-    def next_track(self, auto=False):
+    def next_track(self, auto=False, loaded=None):
+        """loaded: the song the engine already moved on to by itself (gapless), so don't load it again."""
         if not self.queue:
             return
-        if self.cfg["repeat_mode"] == "one" and self.current_path():
-            # "repeat this song": next starts the same song again instead of skipping it
+        if not auto and loaded is None and self.cfg["repeat_mode"] == "one" and self.current_path():
+            # "repeat this song": Next starts the same song again instead of skipping it
             self.finalize_listen()
             self.listen_path = self.current_path()
             self.player.setPosition(0)
             self.player.play()
             return
-        # 0) after going back, "next" walks forward through what you already heard
-        while self.fwd:
-            path = self.fwd.pop()
-            idx = self.qindex.get(path)
-            if idx is not None:
-                self.history.append(path)
-                if path in self.ctx_paths:
-                    self.ctx_pos = self.ctx_paths.index(path)
-                self.play_index(idx, record=False)
-                return
-        # 1) songs you queued always go first
-        while self.up_next:
-            path = self.up_next.pop(0)
-            idx = self.qindex.get(path)
-            if idx is not None:
-                self.refresh_queue_view()
-                self.play_index(idx)
-                return
-        self.refresh_queue_view()
-        # 2) then the library / playlist you were playing from
+        self.apply_next(self.plan_next(auto), loaded)
+
+    def plan_next(self, auto=False):
+        """What "next" would do, without changing anything: a dict for apply_next(), or None.
+        Shuffle's random pick is remembered so the song lined up in advance is the one that plays."""
+        plan = {"fwd_keep": 0, "drop": len(self.up_next)}
+        # 1) songs you queued always go first (playing one starts a new forward history)
+        for j, path in enumerate(self.up_next):
+            if path in self.qindex:
+                return dict(plan, kind="queue", path=path, drop=j + 1)
+        # 2) after going back, "next" walks forward through what you already heard
+        for i in range(len(self.fwd) - 1, -1, -1):
+            if self.fwd[i] in self.qindex:
+                return dict(plan, kind="fwd", path=self.fwd[i], fwd_keep=i)
+        # 3) then the library / playlist you were playing from
         self.ensure_context()
         n = len(self.ctx_paths)
         if n == 0:
-            return
+            return dict(plan, kind="none")
         if self.shuffle.isChecked():
             current = self.current_path()
+            played = set(self.shuffle_played)
             if current:
-                self.shuffle_played.add(current)
-            if auto and self.cfg["repeat_mode"] != "all" and all(p in self.shuffle_played for p in self.ctx_paths):
-                self.shuffle_played.clear()
-                self.player.stop()
-                return
-            self.ctx_pos = pick_shuffle(self.ctx_paths, self.shuffle_played, avoid=current)
-            self.shuffle_played.add(self.ctx_paths[self.ctx_pos])
+                played.add(current)
+            if auto and self.cfg["repeat_mode"] != "all" and played.issuperset(self.ctx_paths):
+                return dict(plan, kind="stop", played=set())   # every song had its turn; next time is a new round
+            pick = self.shuffle_pick
+            if pick in self.ctx_paths and pick != current and pick in self.qindex:
+                pos = self.ctx_paths.index(pick)
+            else:
+                pos = pick_shuffle(self.ctx_paths, played, avoid=current)
+            self.shuffle_pick = self.ctx_paths[pos]
+            played.add(self.ctx_paths[pos])
+            plan["played"] = played
         elif self.ctx_pos + 1 >= n:
             if auto and self.cfg["repeat_mode"] != "all":
-                self.player.stop()
-                return
-            self.ctx_pos = 0
+                return dict(plan, kind="stop")
+            pos = 0
         else:
-            self.ctx_pos += 1
-        self.play_ctx()
+            pos = self.ctx_pos + 1
+        for _ in range(n):   # skip songs that left the library
+            if self.ctx_paths[pos] in self.qindex:
+                return dict(plan, kind="ctx", pos=pos, path=self.ctx_paths[pos])
+            pos = (pos + 1) % n
+        return dict(plan, kind="none")
+
+    def apply_next(self, plan, loaded=None):
+        del self.fwd[plan["fwd_keep"]:]
+        del self.up_next[:plan["drop"]]
+        self._planning_off = True        # no lining up of a next song halfway through the move
+        try:
+            if plan["drop"] or plan["kind"] != "fwd":
+                self.refresh_queue_view()
+        finally:
+            self._planning_off = False
+        kind = plan["kind"]
+        if kind == "fwd":
+            path = plan["path"]
+            self.history.append(path)
+            if path in self.ctx_paths:
+                self.ctx_pos = self.ctx_paths.index(path)
+            self.play_index(self.qindex[path], record=False, loaded=loaded)
+        elif kind == "queue":
+            self.play_index(self.qindex[plan["path"]], loaded=loaded)
+        elif kind == "ctx":
+            if "played" in plan:
+                self.shuffle_played = plan["played"]
+            self.shuffle_pick = None
+            self.ctx_pos = plan["pos"]
+            self.play_index(self.qindex[plan["path"]], loaded=loaded)
+        elif kind == "stop":
+            if "played" in plan:
+                self.shuffle_played = plan["played"]
+            self.player.stop()
+
+    def line_up_next(self):
+        """Tell the engine which song comes next so it can follow on without a gap (mpv only)."""
+        p = getattr(self, "player", None)
+        if p is None or not hasattr(p, "setNext") or getattr(self, "_planning_off", False):
+            return
+        path = None
+        if self.queue and self.cfg["autoplay_next"] and self.cfg["repeat_mode"] != "one" and not p.source().isEmpty():
+            plan = self.plan_next(auto=True)
+            if plan["kind"] in ("fwd", "queue", "ctx"):
+                path = plan["path"]
+        p.setNext(QUrl.fromLocalFile(path) if path else None)
+
+    def on_engine_advanced(self):
+        """The engine moved on to the song we lined up; catch the rest of the app up with it."""
+        self.next_track(auto=True, loaded=self.player.source().toLocalFile())
 
     def prev_track(self):
         """Never random: go back to the song you actually heard before."""
@@ -8028,6 +9075,15 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if self.player.position() > 3000:
             self.player.setPosition(0)
             return
+        if self.history and self.history[-1] != self.current_path():
+            # the song playing now left the library in a rescan: the last song in the history is
+            # the one before it, so go there instead of dropping it as if it were the current one
+            path = self.history[-1]
+            if path in self.qindex:
+                if path in self.ctx_paths:
+                    self.ctx_pos = self.ctx_paths.index(path)
+                self.play_index(self.qindex[path], record=False)
+                return
         if len(self.history) >= 2:
             current = self.history.pop()
             path = self.history[-1]
@@ -8067,6 +9123,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.ctx_kind = ""
         self.ctx_pos = max(0, min(idx, len(self.ctx_paths) - 1)) if self.ctx_paths else 0
         self.shuffle_played = set()
+        self.shuffle_pick = None
 
     def play_from_library(self, idx):
         if not self.queue:
@@ -8215,16 +9272,22 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.cast_watch_position(pos)
         if not self.seek.isSliderDown():
             self.seek.setValue(pos)
-        self.time_label.setText(fmt_time(pos))
+            self.time_label.setText(fmt_time(pos))
         if self.cfg["show_remaining"]:
             self.update_total_labels(pos)
         self.update_lyric_position(pos)
+        playing = self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        if playing and pos >= 1000:
+            self.fail_streak = 0      # this one plays fine
         # listening stats: count only time actually played (seeking doesn't count)
-        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState and self.last_pos is not None:
+        now = time.monotonic()
+        if playing and self.last_pos is not None:
             step = pos - self.last_pos
             if 0 < step < 2000:
-                self.listen_ms += step
-        self.last_pos = pos
+                # no more than the time that really went by: short jumps forward aren't listening
+                self.listen_ms += min(step, int((now - self.last_tick) * 1250) + 20)
+        if pos != self.last_pos:          # VLC moves in coarse steps; time the steps, not the polls
+            self.last_pos, self.last_tick = pos, now
         if self.mini is not None and self.mini.isVisible():
             dur = self.seek.maximum()
             self.mini.set_progress(pos / dur if dur else 0)
@@ -8304,11 +9367,13 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                 self.unregister_media_keys()
         if self.mini is not None:
             self.mini.set_idle_opacity(int(self.cfg["mini_opacity"]) / 100)
-        if old["audio_engine"] != self.cfg["audio_engine"]:
+        if old["audio_engine"] != self.cfg["audio_engine"] or old["mpv_dir"] != self.cfg["mpv_dir"]:
             self.vlc_error = ""
             self.switch_engine(self.cfg["audio_engine"])
         if any(old[k] != self.cfg[k] for k in ("slskd_url", "slskd_key", "downloads_dir")):
             self.last_done = None
+            self.poll_fails = 0
+            self.poll_timer.setInterval(POLL_MS)
         if old["folders"] != self.cfg["folders"] or old["downloads_dir"] != self.cfg["downloads_dir"]:
             self.rescan()
         elif (old["group_featured"] != self.cfg["group_featured"]
@@ -8320,6 +9385,9 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if (not old["lyrics_online"] and self.cfg["lyrics_online"]
                 and 0 <= self.index < len(self.queue) and not self.lyric_lines):
             self.load_lyrics(self.queue[self.index][0])
+        if any(old[k] != self.cfg[k] for k in ("replaygain", "audio_device", "audio_exclusive")):
+            self.apply_audio_options()
+        self.line_up_next()   # "play the next song" may have changed
 
     def radius(self, r):
         return int(round(r * self.corner))
@@ -8348,17 +9416,28 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if self.current_album in self.albums:
             self.show_album(self.current_album, switch=False)
 
-    def refresh_colors(self):
-        """Re-colour everything (theme, accent, icons, covers). Runs on song change in album-art mode."""
+    def refresh_colors(self, accent_only=False):
+        """Re-colour everything (theme, accent, icons, covers). Runs on song change in album-art mode;
+        then only the accent moved, so the app stylesheet stays and the accent widgets get a small
+        sheet of their own (restyling all ~450 widgets took 0.3-0.5 s per song)."""
         app = QApplication.instance()
-        self.scheme = apply_look(
-            app, self.cfg["theme"], self.accent_hex(), self.system_dark,
-            style_tokens(self.cfg, self.display_family),
-        )
+        args = (self.cfg["theme"], self.accent_hex(), self.system_dark, style_tokens(self.cfg, self.display_family))
+        if accent_only and self.app_accent is not None:
+            self.scheme = look_scheme(*args)
+            app.setPalette(palette_from_scheme(self.scheme))
+        else:
+            self.scheme = apply_look(app, *args)
+            self.app_accent = self.scheme["accent"]
+        self.accent_sheet = accent_qss(self.scheme) if self.scheme["accent"] != self.app_accent else ""
+        for w in app.allWidgets():
+            if w.isVisible() and is_accent_target(w):
+                self.sync_accent(w)      # hidden ones catch up when shown (see eventFilter)
         self.apply_lyrics_look()
         self.refresh_icons()
-        self.album_header.setStyleSheet(header_qss(self.scheme))
-        self.artist_header.setStyleSheet(header_qss(self.scheme))
+        self.set_sheet(self.album_header, header_qss(self.scheme))
+        self.set_sheet(self.artist_header, header_qss(self.scheme))
+        if self.fs_active and self.fs is not None:
+            self.fs.style_for(self.scheme)
         if self.list_covers():
             for k, item in self.tree_albums.items():
                 if self.thumb_cache.get(k) is None:
@@ -8366,8 +9445,9 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             for ak, item in self.tree_artists.items():
                 item.setIcon(0, self.artist_icon(ak, 28))
         self.refresh_album_hearts()
-        self.tree_px.clear()
-        self.neutral_cache.clear()
+        if not accent_only:   # small covers don't use the accent; dropped ones would be read again
+            self.tree_px.clear()
+            self.neutral_cache.clear()
         self.tree.viewport().update()
         key = self.current_key()
         self.set_cover(self.np_cover, key, 56, self.radius(8))
@@ -8378,6 +9458,32 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         elif self.cover_for(self.current_album) is None:   # placeholder uses the accent
             self.set_cover(self.cover_label, self.current_album, self.cover_px, self.radius(14))
         self.update_mini()
+
+    def sync_accent(self, w):
+        """Give an accent widget the current accent sheet, or take it away again. Not under a parent
+        with a sheet of its own (lyrics page, cover headers): that sheet must keep beating the accent."""
+        sheet = w.styleSheet()
+        if sheet and not sheet.startswith(ACCENT_MARK):
+            return
+        want = self.accent_sheet
+        up = w
+        while up is not self:
+            up = up.parentWidget()
+            if up is None:
+                return           # not one of ours (the mini player draws its own accent)
+            above = up.styleSheet()
+            if above and not above.startswith(ACCENT_MARK):
+                want = ""
+        if sheet != want:
+            w.setStyleSheet(want)
+
+    def set_sheet(self, widget, qss):
+        """Set a container's own sheet (skipped when unchanged: it restyles everything inside)."""
+        if widget.styleSheet() != qss:
+            widget.setStyleSheet(qss)
+            for w in widget.findChildren(QWidget):
+                if is_accent_target(w):
+                    self.sync_accent(w)
 
     def refresh_icons(self):
         self.icon_fg = "#ffffff" if self.scheme.get("dark", True) else self.scheme["text"]
@@ -8433,7 +9539,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.lyrics_list.setFont(base)
         self.lyrics_list.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff if immersive else Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.ly_page.setStyleSheet(lyrics_page_qss(apple, immersive))
+        self.set_sheet(self.ly_page, lyrics_page_qss(apple, immersive))
         self.lyric_pad = (28, 10) if apple else (14, 8)
         self.set_lyrics_fade(bool(self.cfg["lyrics_fade"]))
         if getattr(self, "ly_viz", None) is not None:
@@ -8521,7 +9627,27 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             item.parent().setExpanded(True)
             self.tree.setCurrentItem(item)
         self.set_library_context(idx)
+        kind, paths = self.cfg.get("ctx_kind") or "", [p for p in self.cfg.get("ctx_paths", []) if p in self.qindex]
+        if kind and self.cfg["last_path"] in paths:
+            self.ctx_paths, self.ctx_kind = paths, kind
+            self.ctx_pos = paths.index(self.cfg["last_path"])
         self.play_index(idx, autoplay=False, start_pos=int(self.cfg.get("last_pos", 0)))
+
+    def save_session(self, *_args):
+        """Remember the song, the spot in it, the queue and where it was playing from. Runs on close,
+        and also when Windows logs off or shuts down (closeEvent doesn't always come then)."""
+        self.flush_stats()
+        if getattr(self, "session_closed", False):
+            return   # saved on close already; the player is stopped now, so position() would say 0
+        if 0 <= self.index < len(self.queue):
+            self.cfg["last_path"] = self.queue[self.index][0]["path"]
+            self.cfg["last_pos"] = int(self.player.position())
+        self.cfg["ctx_kind"] = self.ctx_kind
+        self.cfg["ctx_paths"] = list(self.ctx_paths) if self.ctx_kind else []   # the library needs no list
+        self.cfg["win_size"] = [self.width(), self.height()]
+        self.cfg["queue"] = list(self.up_next)
+        self.remember_mini_pos()
+        save_config(self.cfg)
 
     def closeEvent(self, event):
         if (self.cfg["close_to_tray"] and not self.quitting and self.tray is not None
@@ -8536,17 +9662,12 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                                       app_icon(), 4000)
             return
         try:
-            if 0 <= self.index < len(self.queue):
-                self.cfg["last_path"] = self.queue[self.index][0]["path"]
-                self.cfg["last_pos"] = int(self.player.position())
-            self.cfg["win_size"] = [self.width(), self.height()]
-            self.cfg["queue"] = list(self.up_next)
+            self.save_session()
+            self.session_closed = True
             if self.mini is not None:
-                if self.mini.isVisible():
-                    self.cfg["mini_pos"] = [self.mini.x(), self.mini.y()]
                 self.mini.close()
-            save_config(self.cfg)
             self.finalize_listen()
+            self.flush_stats()
             if self.cover_batch is not None:
                 self.cover_batch.stop()
                 self.cover_batch.wait(2000)
@@ -8566,7 +9687,10 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         except Exception:
             pass
         try:
-            self.player.stop()
+            if hasattr(self.player, "shutdown"):
+                self.player.shutdown()   # mpv: end its event thread before the window goes away
+            else:
+                self.player.stop()
         except Exception:
             pass
         try:
@@ -8593,9 +9717,15 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if key in self.thumb_cache:
             pix = self.thumb_cache[key]
             return rounded_pixmap(pix, size, radius) if pix is not None else self.placeholder(size, radius)
-        if request and key in self.albums:
-            self.thumbs.add([self.thumb_job(key)], front=True)
+        if request:
+            self.ask_thumb(key)
         return self.placeholder(size, radius)
+
+    def ask_thumb(self, key):
+        """Read this cover next (once; a library row asks on every paint)."""
+        if key in self.albums and key not in self.thumb_asked:
+            self.thumb_asked.add(key)
+            self.thumbs.add([self.thumb_job(key)], front=True)
 
     def thumb_icon(self, key, size, radius, request=True):
         return static_icon(self.thumb_pixmap(key, size, radius, request))
@@ -8613,28 +9743,27 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         return False   # covers in the library list are drawn by TreeRowDelegate
 
     def artist_cover_key(self, akey):
-        keys = [k for k in self.albums if k[0] == akey]
-        keys.sort(key=lambda k: (self.albums[k]["year"] or 9999, k[1]))
+        keys = self.by_artist.get(akey, [])
         for k in keys:
-            if self.thumb_cache.get(k) is not None:
+            if self.thumb_cache.has_cover(k):
                 return k
         return keys[0] if keys else None
 
     def artist_pixmap(self, akey, size):
         key = self.artist_cover_key(akey)
-        if key is not None and self.thumb_cache.get(key) is not None:
-            return rounded_pixmap(self.thumb_cache[key], size, size // 2)
+        pix = self.thumb_cache.get(key) if key is not None else None
+        if pix is not None:
+            return rounded_pixmap(pix, size, size // 2)
+        if key is not None and self.thumb_cache.has_cover(key):
+            self.ask_thumb(key)          # dropped from the cache; the view updates when it's back
         return avatar_pixmap(self.artists.get(akey, "?"), size, self.scheme["raised"], self.scheme["text"])
 
     def artist_icon(self, akey, size):
         return static_icon(self.artist_pixmap(akey, size))
 
-    def on_thumb_loaded(self, key, data):
-        pix = None
-        if data:
-            img = QPixmap()
-            if img.loadFromData(data):
-                pix = rounded_pixmap(img, 160, 0)
+    def on_thumb_loaded(self, key, img):
+        pix = QPixmap.fromImage(img) if img is not None else None   # decoded and shrunk by ThumbLoader
+        self.thumb_asked.discard(key)
         self.thumb_cache[key] = pix
         self.tree_px.pop(key, None)
         if key in self.tree_albums:
@@ -8722,7 +9851,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         item = QListWidgetItem(text)
         item.setData(KEY_ROLE, (kind, value))
         item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        item.setToolTip(text.replace("\n", " - "))
+        item.setToolTip(plain_tip(text.replace("\n", " - ")))
         r = self.radius(10) if radius is None else radius
         if kind == "artist":
             item.setIcon(self.artist_icon(value, size))
@@ -8730,7 +9859,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             if key is not None:
                 self.view_targets[view].setdefault(key, []).append((item, size, r, True))
                 if key not in self.thumb_cache:
-                    self.thumbs.add([self.thumb_job(key)], front=True)
+                    self.ask_thumb(key)
         else:
             key = value if kind == "album" else self.track_by_path[value][1]
             item.setIcon(self.thumb_icon(key, size, r))
@@ -8776,9 +9905,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
 
     # ----- artist page
     def artist_album_keys(self, akey):
-        keys = [k for k in self.albums if k[0] == akey]
-        keys.sort(key=lambda k: (self.albums[k]["year"] or 9999, k[1]))
-        return keys
+        return list(self.by_artist.get(akey, []))
 
     def show_artist(self, akey, switch=True):
         self.current_artist = akey
@@ -8806,6 +9933,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if not top:
             top = self.artist_paths[:10]
         self.artist_top_paths = top
+        self.artist_top.setRowCount(0)   # refilling old rows re-measures every row for each cell
         self.artist_top.setRowCount(len(top))
         for r, path in enumerate(top):
             t = self.track_by_path[path][0]
@@ -8905,6 +10033,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         lab.setVisible(bool(albums))
         lst.setVisible(bool(albums))
         self.search_paths = songs
+        self.search_songs.setRowCount(0)   # refilling old rows re-measures every row for each cell
         self.search_songs.setRowCount(len(songs))
         for r, path in enumerate(songs):
             t = self.track_by_path[path][0]
@@ -8942,7 +10071,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             return
         self.organize_now(quiet=True)
 
-    def organize_now(self, quiet=False):
+    def organize_now(self, quiet=False, startup=False):
         src = self.cfg["downloads_dir"]
         dest = self.organize_target()
         if not src or not os.path.isdir(src):
@@ -8950,12 +10079,15 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                 self.statusBar().showMessage("Set your slskd downloads folder first (Preferences > Soulseek).")
             return
         group = bool(self.cfg["group_featured"])
-        w = Worker(lambda: organize_downloads(src, dest, group))
+        split = bool(self.cfg["split_collabs"])
+        keep = {k.strip().lower() for k in self.cfg["keep_together"] if k.strip()}
+        w = Worker(lambda: organize_downloads(src, dest, group, split, keep))
 
         def done(n):
             if n or not quiet:
                 self.statusBar().showMessage(f"Organized {n} song(s) into Artist / Album folders.", 8000)
-            self.rescan()
+            if n or not startup:
+                self.rescan()
 
         w.ok.connect(done)
         w.fail.connect(lambda m: (self.statusBar().showMessage(f"Couldn't organize downloads: {m}"), self.rescan()))
@@ -8969,6 +10101,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         pix = self.thumb_cache.get(key)
         radius = max(2, self.radius(6))
         if pix is None:
+            if key not in self.thumb_cache:
+                self.ask_thumb(key)      # dropped from the cache (or not read yet)
             ck = (28, radius, self.scheme["raised"])
             if ck not in self.neutral_cache:
                 self.neutral_cache[ck] = neutral_cover(28, radius, self.scheme["raised"], self.scheme["sub"])
@@ -9084,6 +10218,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
 
     def eventFilter(self, obj, event):
         etype = event.type()
+        if etype == QEvent.Type.Show and isinstance(obj, QWidget) and is_accent_target(obj):
+            self.sync_accent(obj)        # shown after the album-art accent changed (pages, menus, dialogs)
         if etype == QEvent.Type.Resize and obj is getattr(self, "lyrics_list", None):
             QTimer.singleShot(0, self.resize_lyric_spacers)
         elif etype == QEvent.Type.Wheel and obj is getattr(self, "lyrics_viewport", None):
@@ -9434,8 +10570,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
     def reset_inline_soul(self):
         if self.inline_soul_worker is not None:
             self.inline_soul_worker.stop()
-            for sig in (self.inline_soul_worker.results, self.inline_soul_worker.failed,
-                        self.inline_soul_worker.finished_search):
+            for sig in (self.inline_soul_worker.results, self.inline_soul_worker.progress,
+                        self.inline_soul_worker.failed, self.inline_soul_worker.finished_search):
                 try:
                     sig.disconnect()
                 except Exception:
@@ -9458,20 +10594,26 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                 return
         self.reset_inline_soul()
         self.inline_soul_text = text
-        self.search_soul_status.setText("Searching Soulseek... (about 30 seconds)")
+        self.search_soul_status.setText(searching_text(0))
         w = SearchWorker(self.client(), text)
         w.results.connect(self.show_inline_soul)
+        w.progress.connect(self.on_inline_soul_progress)
         w.failed.connect(lambda m: self.search_soul_status.setText(f"Soulseek error: {m}"))
         w.finished_search.connect(lambda: self.search_soul_status.setText(
             f"{len(self.inline_soul_view)} albums found" if self.inline_soul_view else "Nothing found on Soulseek."))
         self.inline_soul_worker = w
         self.keep(w)
 
+    def on_inline_soul_progress(self, answered):
+        if not self.inline_soul_view:
+            self.search_soul_status.setText(searching_text(answered))
+
     def show_inline_soul(self, rows):
         self.inline_soul_raw = rows
         rows = [r for r in rows if passes_filters(r, self.cfg["soul_quality"], bool(self.cfg["soul_free_only"]))]
         self.inline_soul_view = group_by_folder(rows)[:40]
         table = self.search_soul_table
+        table.setRowCount(0)   # refilling old rows re-measures every row for each cell
         table.setRowCount(len(self.inline_soul_view))
         for r, group in enumerate(self.inline_soul_view):
             top = group[0]
@@ -9573,10 +10715,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         v = self.volume.value()
         kind = "vol_mute" if (self.audio.isMuted() or v == 0) else ("vol_low" if v < 50 else "vol_high")
         fs.vol_btn.setIcon(make_icon(kind, "#ffffff"))
-        if (self.cfg["fs_motion"] or self.cfg["fs_fluid"]) and not fs.motion_timer.isActive():
-            fs.motion_timer.start()
-        elif not (self.cfg["fs_motion"] or self.cfg["fs_fluid"]):
-            fs.motion_timer.stop()
+        fs.sync_motion()
         self.setup_visualizer()
         fs.show_next_card("")
 
@@ -9700,13 +10839,31 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         p.mediaStatusChanged.connect(self.on_status)
         p.playbackStateChanged.connect(self.on_state)
         p.errorOccurred.connect(self.on_player_error)
-        if isinstance(p, VlcEngine):
+        if hasattr(p, "failed"):
             p.failed.connect(self.on_engine_failed)
+        if hasattr(p, "advanced"):
+            p.advanced.connect(self.on_engine_advanced)
         self.buf_out = None
         self.setup_visualizer()
+        self.apply_audio_options()
+
+    def apply_audio_options(self):
+        if hasattr(self.player, "set_audio_options"):
+            self.player.set_audio_options(self.cfg["replaygain"], self.cfg["audio_device"],
+                                          bool(self.cfg["audio_exclusive"]))
 
     def on_player_error(self, _err, msg):
-        self.statusBar().showMessage(f"Can't play this file: {msg}")
+        """Skip a song that can't be played (moved, deleted, unplugged drive, broken file),
+        but stop after a few in a row so a missing folder doesn't spin through the whole list."""
+        self.fail_streak += 1
+        limit = min(5, max(1, len(self.ctx_paths) + len(self.up_next)))
+        if self.fail_streak >= limit:
+            self.fail_streak = 0
+            self.player.stop()
+            self.statusBar().showMessage(f"Stopped: {limit} song(s) in a row couldn't be played ({msg})", 15000)
+            return
+        self.statusBar().showMessage(f"Skipped a song that can't be played: {msg}", 8000)
+        QTimer.singleShot(0, lambda: self.next_track(auto=True))
 
     def on_engine_failed(self, why):
         if self.engine_name != "VLC":
@@ -9714,7 +10871,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.vlc_error = why
         self.switch_engine(
             "Qt (built-in)",
-            notice=f"VLC couldn't play ({why}). Switched to the built-in engine - the equalizer needs VLC.",
+            notice=f"VLC couldn't play ({why}). Switched to the built-in engine - the equalizer needs mpv or VLC.",
             force_play=True)
 
     def switch_engine(self, choice, notice="", force_play=False):
@@ -9723,6 +10880,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         src = old.source()
         pos = old.position() if not src.isEmpty() else 0
         playing = old.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        muted = self.audio.isMuted()
         for sig in (old.positionChanged, old.durationChanged, old.mediaStatusChanged,
                     old.playbackStateChanged, old.errorOccurred):
             try:
@@ -9730,16 +10888,18 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             except Exception:
                 pass
         try:
-            if isinstance(old, VlcEngine):
-                old.failed.disconnect()
+            if hasattr(old, "shutdown"):
+                if hasattr(old, "failed"):
+                    old.failed.disconnect()
                 old.shutdown()
             else:
                 old.stop()
         except Exception:
             pass
         old.deleteLater()
-        self.player, self.audio, self.engine_name = create_engine(choice)
+        self.player, self.audio, self.engine_name = create_engine(choice, self.cfg["mpv_dir"])
         self.audio.setVolume(self.volume.value() / 100)
+        self.audio.setMuted(muted)          # don't let a muted song suddenly play out loud
         self.connect_engine()
         self.apply_equalizer()
         if not src.isEmpty():
@@ -9747,9 +10907,12 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             self.player.setSource(src)
             if playing or force_play:
                 self.player.play()
+            self.line_up_next()
         self.refresh_icons()
         if not notice:
-            if self.engine_name == "VLC":
+            if self.engine_name == "mpv":
+                notice = "Now playing through mpv - the equalizer is available."
+            elif self.engine_name == "VLC":
                 notice = "Now playing through VLC - the equalizer is available."
             else:
                 why = ENGINE_ERROR or ("" if vlc is not None else VLC_STATUS)
@@ -9773,6 +10936,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if self.fs_active:
             self.exit_fullscreen()
         if self.mini is not None:
+            self.remember_mini_pos()        # before hiding it, or closing can't see where it was
             self.mini.hide()
         self.close()
         QApplication.instance().quit()
@@ -9800,7 +10964,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         new = self.accent_for_key(key)
         if new != self.album_accent:
             self.album_accent = new
-            self.refresh_colors()
+            self.refresh_colors(accent_only=True)
 
     # ----- favorites
     def update_heart(self):
@@ -9854,11 +11018,20 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         length_ms = hit[0]["length"] * 1000 if hit and hit[0]["length"] else 60000
         if ms >= min(30000, length_ms * 0.5):
             record_play(self.stats, path, ms / 1000)
-            save_stats(self.stats)
+            self.stats_dirty = True
+            if not self.stats_timer.isActive():   # the whole file (~10 MB) took ~60 ms per song
+                self.stats_timer.start()
             if hit and hit[1] == self.current_album and self.current_album in self.albums:
                 for r, t in enumerate(self.albums[self.current_album]["tracks"]):
                     if t["path"] == path and self.track_table.item(r, 3) is not None:
                         self.track_table.item(r, 3).setText(str(self.stats["plays"][path]["count"]))
+
+    def flush_stats(self):
+        """Write the listening stats now if a write is waiting (timer, close, log-off)."""
+        self.stats_timer.stop()
+        if self.stats_dirty:
+            self.stats_dirty = False
+            save_stats(self.stats)
 
     def make_stats_table(self, headers):
         table = QTableWidget(0, len(headers))
@@ -9875,6 +11048,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
 
     @staticmethod
     def fill_table(table, rows):
+        table.setRowCount(0)   # refilling old rows re-measures every row for each cell
         table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             for c, val in enumerate(row):
@@ -9987,18 +11161,24 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.update_mini()
         self.mini.set_icons(self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState)
         pos = self.cfg.get("mini_pos") or []
-        if len(pos) == 2:
+        size = self.mini.sizeHint() if self.mini.width() < 50 else self.mini.size()
+        if len(pos) == 2 and QApplication.screenAt(QPoint(int(pos[0]) + size.width() // 2,
+                                                          int(pos[1]) + size.height() // 2)) is not None:
             self.mini.move(int(pos[0]), int(pos[1]))
-        else:
+        else:   # first time, or the monitor it was on isn't there any more
             area = QApplication.primaryScreen().availableGeometry()
             self.mini.move(area.right() - self.mini.width() - 24, area.bottom() - self.mini.height() - 24)
         self.mini.setWindowOpacity(max(0.3, int(self.cfg["mini_opacity"]) / 100))
         self.mini.show()
         self.hide()
 
+    def remember_mini_pos(self):
+        if self.mini is not None and self.mini.isVisible():
+            self.cfg["mini_pos"] = [self.mini.x(), self.mini.y()]
+
     def exit_mini(self):
         if self.mini is not None:
-            self.cfg["mini_pos"] = [self.mini.x(), self.mini.y()]
+            self.remember_mini_pos()
             save_config(self.cfg)
             self.mini.hide()
         self.show()
@@ -10027,6 +11207,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.update_mini_next()
 
     def update_mini_next(self):
+        """Called whenever what plays next may have changed (queue, shuffle, repeat...)."""
+        self.line_up_next()                  # first: it makes shuffle's pick, shown below
         if self.mini is not None:
             self.mini.set_next(self.peek_next())
 
@@ -10038,6 +11220,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             path = self.fwd[-1]
         elif self.up_next:
             path = self.up_next[0]
+        elif self.shuffle.isChecked() and self.shuffle_pick:
+            path = self.shuffle_pick
         elif self.shuffle.isChecked():
             return "Next: a random song (shuffle is on)"
         else:
@@ -10203,16 +11387,18 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             return
         if self.disco_worker is not None:
             self.disco_worker.stop()
-            for sig in (self.disco_worker.results, self.disco_worker.failed,
+            for sig in (self.disco_worker.results, self.disco_worker.progress, self.disco_worker.failed,
                         self.disco_worker.finished_search):
                 try:
                     sig.disconnect()
                 except Exception:
                     pass
         self.disco_rows = []
-        self.statusBar().showMessage(f"Searching Soulseek for everything by {artist}... (about 30 seconds)", 35000)
+        self.statusBar().showMessage(f"Searching Soulseek for everything by {artist}... (up to two minutes)")
         w = SearchWorker(self.client(), artist)
         w.results.connect(lambda rows: setattr(self, "disco_rows", rows))
+        w.progress.connect(lambda n: self.statusBar().showMessage(
+            f"Searching Soulseek for everything by {artist}... {answered_text(n)}"))
         w.failed.connect(lambda m: self.statusBar().showMessage(f"Soulseek error: {m}"))
         w.finished_search.connect(lambda: self.show_discography(artist))
         self.disco_worker = w
@@ -10223,8 +11409,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if not picks:
             self.statusBar().showMessage(f"Couldn't find albums by {artist} on Soulseek right now.")
             return
-        a = _norm(artist)
-        owned = {album_key(alb["album"], artist) for alb in self.albums.values() if _norm(alb["artist"]) == a}
+        a = _words(artist)
+        owned = {album_key(alb["album"], artist) for alb in self.albums.values() if _words(alb["artist"]) == a}
         dlg = DiscographyDialog(self, artist, picks, owned)
         if dlg.exec():
             files = [f for pk in dlg.selected() for f in pk["files"]]
@@ -10233,7 +11419,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
 
     # ----- equalizer
     def apply_equalizer(self):
-        if self.engine_name != "VLC":
+        if not hasattr(self.player, "set_equalizer"):
             return
         try:
             self.player.set_equalizer(
@@ -10396,6 +11582,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if item is None:
             return
         name = item.data(KEY_ROLE)
+        if name == self.current_playlist and self.stack.currentIndex() == 5:
+            return   # a click fires two signals; the list is already on screen
         if name in self.playlists or name in SMART_PLAYLISTS:
             self.show_playlist(name)
 
@@ -10416,6 +11604,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.pl_del_btn.setEnabled(name not in SMART_PLAYLISTS)
         self.pl_sub.setText(sub)
         self.pl_table.clearSelection()
+        self.pl_table.setRowCount(0)   # refilling old rows re-measures every row for each cell
         self.pl_table.setRowCount(len(tracks))
         for r, (t, _key) in enumerate(tracks):
             vals = (str(r + 1), t["title"], t["artist"], t["album"], fmt_time(t["length"] * 1000))
@@ -10773,7 +11962,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                 return
         if self.search_worker is not None:
             self.search_worker.stop()
-            for sig in (self.search_worker.results, self.search_worker.failed,
+            for sig in (self.search_worker.results, self.search_worker.progress, self.search_worker.failed,
                         self.search_worker.finished_search):
                 try:
                     sig.disconnect()
@@ -10786,8 +11975,10 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.soul_status.setText(f'Searching Soulseek for "{text}"...')
         self.stack.setCurrentIndex(1)
         self.nav_note(("soulseek",))
+        self.soul_answered = 0
         w = SearchWorker(self.client(), text)
         w.results.connect(self.show_soul_results)
+        w.progress.connect(self.on_soul_progress)
         w.failed.connect(self.on_search_failed)
         w.finished_search.connect(self.on_search_finished)
         self.search_worker = w
@@ -10807,10 +11998,15 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.soul_raw = rows
         self.render_soul()
 
+    def on_soul_progress(self, answered):
+        self.soul_answered = answered
+        if not self.soul_raw:
+            self.update_soul_status()
+
     def update_soul_status(self):
         if not self.soul_raw:
             self.soul_status.setText(
-                "Searching Soulseek..." if self.searching else "No results found on Soulseek."
+                searching_text(self.soul_answered) if self.searching else "No results found on Soulseek."
             )
             return
         prefix = "Searching... " if self.searching else ""
@@ -10831,11 +12027,11 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                 selected.add((g[0]["username"], g[0]["filename"]))
 
         if albums_mode:
-            self.soul_view = group_by_folder(rows)
+            self.soul_view = group_by_folder(rows)[:SOUL_ROWS_SHOWN]
             headers = ["Album folder", "Location", "User", "Quality", "Size", "Slot / speed"]
             unit = "albums"
         else:
-            self.soul_view = [[r] for r in rows]
+            self.soul_view = [[r] for r in rows[:SOUL_ROWS_SHOWN]]
             headers = ["File", "Folder", "User", "Quality", "Size", "Slot / speed"]
             unit = "files"
         self.soul_count_text = (
@@ -10895,22 +12091,10 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.enqueue_downloads(files)
 
     def enqueue_downloads(self, files):
-        by_user = {}
-        for f in files:
-            by_user.setdefault(f["username"], []).append({"filename": f["filename"], "size": f["size"]})
-        count = len(files)
         client = self.client()
-
-        def job():
-            for user, items in by_user.items():
-                client.call("POST", f"/transfers/downloads/{urllib.parse.quote(user, safe='')}", items)
-            return count
-
-        self.run_job(
-            job,
-            "Queued {n} file(s). Watch them on the Downloads page - finished files "
-            "appear in your library by themselves.",
-        )
+        ok_msg = ("Queued {n} file(s). Watch them on the Downloads page - finished files "
+                  "appear in your library by themselves.")
+        self.run_job(lambda: enqueue_report(*enqueue_files(client, files), ok_msg), "{n}")
 
     # ----- downloads manager
     def poll_downloads(self):
@@ -10920,11 +12104,23 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         client = self.client()
         w = Worker(lambda: client.call("GET", "/transfers/downloads", timeout=8))
         w.ok.connect(self.on_downloads)
-        w.fail.connect(lambda _m: None)
+        w.fail.connect(self.on_poll_failed)
         w.finished.connect(lambda: setattr(self, "poll_busy", False))
         self.keep(w)
 
+    def on_poll_failed(self, _msg):
+        # slskd is off: ask less and less often (up to once a minute) and say so
+        self.poll_fails += 1
+        wait = min(POLL_MS * 2 ** self.poll_fails, 60000)
+        self.poll_timer.setInterval(wait)
+        self.dl_status.setText(f"Can't reach slskd - is it running? Trying again in {wait // 1000} s.")
+        if self.poll_fails == 1:
+            self.statusBar().showMessage("Can't reach slskd, so downloads aren't being watched right now.", 8000)
+
     def on_downloads(self, data):
+        if self.poll_fails:
+            self.poll_fails = 0
+            self.poll_timer.setInterval(POLL_MS)
         rows = []
         for user in data or []:
             uname = user.get("username", "")
@@ -10961,7 +12157,11 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.update_downloads_badge()
         if active:
             self.statusBar().showMessage(f"Soulseek: {active} downloading, {done} finished")
-        if self.last_done is not None and done > self.last_done:
+        if self.last_done is None:
+            # first answer since eozMP started: sort what finished while it was closed
+            if self.cfg["organize_downloads"] and self.cfg["downloads_dir"]:
+                self.organize_now(quiet=True, startup=True)
+        elif done > self.last_done:
             self.after_downloads_finished()
         self.last_done = done
 
@@ -11009,13 +12209,9 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                     client.call("DELETE", f"/transfers/downloads/{u}/{r['id']}?remove=true")
                 except Exception:
                     pass
-                client.call(
-                    "POST", f"/transfers/downloads/{u}",
-                    [{"filename": r["filename"], "size": r["size"]}],
-                )
-            return len(failed)
+            return enqueue_report(*enqueue_files(client, failed), "Retrying {n} download(s).")
 
-        self.run_job(job, "Retrying {n} download(s).")
+        self.run_job(job, "{n}")
 
     def remove_downloads(self, targets, message):
         if not targets:
