@@ -958,15 +958,57 @@ def build_qss(sc):
     return qss
 
 
-def apply_look(app, theme, accent_name, system_dark, tokens=None):
+def look_scheme(theme, accent_name, system_dark, tokens=None):
     dark = theme == "Dark" or (theme == "System" and system_dark)
     accent = accent_name if str(accent_name).startswith("#") else ACCENTS.get(accent_name, ACCENTS["Blue"])
     sc = make_scheme(dark, accent)
     sc.update(tokens or {})
     sc.update(chevron_tokens(sc["sub"]))
+    return sc
+
+
+def apply_look(app, theme, accent_name, system_dark, tokens=None):
+    sc = look_scheme(theme, accent_name, system_dark, tokens)
     app.setPalette(palette_from_scheme(sc))
     app.setStyleSheet(build_qss(sc))
     return sc
+
+
+ACCENT_TOKENS = ("@accent@", "@accent_hover@", "@on_accent@")
+ACCENT_MARK = "/* accent */ "
+
+
+def _accent_rules():
+    """The accent-coloured declarations of QSS_TEMPLATE as (selector, declarations), and the
+    (widget class, object name) pairs those rules can colour."""
+    rules, targets = [], set()
+    for line in QSS_TEMPLATE.splitlines():
+        if "{" not in line or not any(t in line for t in ACCENT_TOKENS):
+            continue
+        sel, body = line.split("{", 1)
+        decls = [d.strip() for d in body.rsplit("}", 1)[0].split(";") if any(t in d for t in ACCENT_TOKENS)]
+        rules.append((sel.strip(), "; ".join(decls)))
+        for part in sel.split(","):
+            m = re.match(r"\s*(\w+)(?:#(\w+))?", part)   # the first widget in the selector carries the sheet
+            targets.add((m.group(1), m.group(2)))
+    return rules, frozenset(targets)
+
+
+ACCENT_RULES, ACCENT_TARGETS = _accent_rules()
+
+
+def accent_qss(sc):
+    """Only the accent colours, for the few widgets that show them. A widget's own sheet beats the
+    app's, so they follow the album-art accent without restyling every widget in the app."""
+    qss = ACCENT_MARK + " ".join(f"{sel} {{ {decls}; }}" for sel, decls in ACCENT_RULES)
+    for key in ("accent_hover", "on_accent", "accent"):
+        qss = qss.replace(f"@{key}@", sc[key])
+    return qss
+
+
+def is_accent_target(w):
+    name = w.objectName()
+    return any(w.inherits(cls) and (obj is None or obj == name) for cls, obj in ACCENT_TARGETS)
 
 
 def rounded_pixmap(pix, size, radius):
@@ -4794,6 +4836,8 @@ class Player(QMainWindow):
         self.viz_timer.setInterval(33)
         self.viz_timer.timeout.connect(self.tick_visualizers)
         QShortcut(QKeySequence("Escape"), self, activated=self.on_escape)
+        self.app_accent = None    # the accent baked into the app stylesheet
+        self.accent_sheet = ""    # small sheet for accent widgets when the accent has moved on since
         QApplication.instance().installEventFilter(self)
         self.system_dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
         self.scheme = make_scheme(True, ACCENTS["Blue"])
@@ -6506,17 +6550,26 @@ class Player(QMainWindow):
         if self.current_album in self.albums:
             self.show_album(self.current_album, switch=False)
 
-    def refresh_colors(self):
-        """Re-colour everything (theme, accent, icons, covers). Runs on song change in album-art mode."""
+    def refresh_colors(self, accent_only=False):
+        """Re-colour everything (theme, accent, icons, covers). Runs on song change in album-art mode;
+        then only the accent moved, so the app stylesheet stays and the accent widgets get a small
+        sheet of their own (restyling all ~450 widgets took 0.3-0.5 s per song)."""
         app = QApplication.instance()
-        self.scheme = apply_look(
-            app, self.cfg["theme"], self.accent_hex(), self.system_dark,
-            style_tokens(self.cfg, self.display_family),
-        )
+        args = (self.cfg["theme"], self.accent_hex(), self.system_dark, style_tokens(self.cfg, self.display_family))
+        if accent_only and self.app_accent is not None:
+            self.scheme = look_scheme(*args)
+            app.setPalette(palette_from_scheme(self.scheme))
+        else:
+            self.scheme = apply_look(app, *args)
+            self.app_accent = self.scheme["accent"]
+        self.accent_sheet = accent_qss(self.scheme) if self.scheme["accent"] != self.app_accent else ""
+        for w in app.allWidgets():
+            if w.isVisible() and is_accent_target(w):
+                self.sync_accent(w)      # hidden ones catch up when shown (see eventFilter)
         self.apply_lyrics_look()
         self.refresh_icons()
-        self.album_header.setStyleSheet(header_qss(self.scheme))
-        self.artist_header.setStyleSheet(header_qss(self.scheme))
+        self.set_sheet(self.album_header, header_qss(self.scheme))
+        self.set_sheet(self.artist_header, header_qss(self.scheme))
         if self.list_covers():
             for k, item in self.tree_albums.items():
                 if self.thumb_cache.get(k) is None:
@@ -6536,6 +6589,32 @@ class Player(QMainWindow):
         elif self.cover_for(self.current_album) is None:   # placeholder uses the accent
             self.set_cover(self.cover_label, self.current_album, self.cover_px, self.radius(14))
         self.update_mini()
+
+    def sync_accent(self, w):
+        """Give an accent widget the current accent sheet, or take it away again. Not under a parent
+        with a sheet of its own (lyrics page, cover headers): that sheet must keep beating the accent."""
+        sheet = w.styleSheet()
+        if sheet and not sheet.startswith(ACCENT_MARK):
+            return
+        want = self.accent_sheet
+        up = w
+        while up is not self:
+            up = up.parentWidget()
+            if up is None:
+                return           # not one of ours (the mini player draws its own accent)
+            above = up.styleSheet()
+            if above and not above.startswith(ACCENT_MARK):
+                want = ""
+        if sheet != want:
+            w.setStyleSheet(want)
+
+    def set_sheet(self, widget, qss):
+        """Set a container's own sheet (skipped when unchanged: it restyles everything inside)."""
+        if widget.styleSheet() != qss:
+            widget.setStyleSheet(qss)
+            for w in widget.findChildren(QWidget):
+                if is_accent_target(w):
+                    self.sync_accent(w)
 
     def refresh_icons(self):
         self.icon_fg = "#ffffff" if self.scheme.get("dark", True) else self.scheme["text"]
@@ -6591,7 +6670,7 @@ class Player(QMainWindow):
         self.lyrics_list.setFont(base)
         self.lyrics_list.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff if immersive else Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.ly_page.setStyleSheet(lyrics_page_qss(apple, immersive))
+        self.set_sheet(self.ly_page, lyrics_page_qss(apple, immersive))
         self.lyric_pad = (28, 10) if apple else (14, 8)
         self.set_lyrics_fade(bool(self.cfg["lyrics_fade"]))
         if getattr(self, "ly_viz", None) is not None:
@@ -7244,6 +7323,8 @@ class Player(QMainWindow):
 
     def eventFilter(self, obj, event):
         etype = event.type()
+        if etype == QEvent.Type.Show and isinstance(obj, QWidget) and is_accent_target(obj):
+            self.sync_accent(obj)        # shown after the album-art accent changed (pages, menus, dialogs)
         if etype == QEvent.Type.Resize and obj is getattr(self, "lyrics_list", None):
             QTimer.singleShot(0, self.resize_lyric_spacers)
         elif etype == QEvent.Type.Wheel and obj is getattr(self, "lyrics_viewport", None):
@@ -7983,7 +8064,7 @@ class Player(QMainWindow):
         new = self.accent_for_key(key)
         if new != self.album_accent:
             self.album_accent = new
-            self.refresh_colors()
+            self.refresh_colors(accent_only=True)
 
     # ----- favorites
     def update_heart(self):
