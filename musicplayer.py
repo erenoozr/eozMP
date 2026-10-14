@@ -3133,6 +3133,27 @@ class MpvAudio:
         self.engine.mp.mute = self._muted
 
 
+class _Nothing:
+    """Any call returns None and the value counts as empty."""
+
+    def __call__(self, *_args, **_kwargs):
+        return None
+
+    def __bool__(self):
+        return False
+
+
+class _ClosedMpv:
+    """Takes mpv's place after shutdown(). mpv's events reach the GUI thread through a queue, so one
+    can still arrive after mpv is closed; touching the closed mpv then crashed the whole app."""
+
+    def __getattr__(self, _name):
+        return _Nothing()
+
+    def __setattr__(self, _name, _value):
+        pass
+
+
 class MpvEngine(QObject):
     """Wraps libmpv so it behaves like QMediaPlayer for the rest of eozMP."""
     positionChanged = pyqtSignal(int)
@@ -3291,6 +3312,7 @@ class MpvEngine(QObject):
             self.mp.terminate()
         except Exception:
             pass
+        self.mp = _ClosedMpv()
 
     def position(self):
         if self._pending is not None:
@@ -7091,7 +7113,10 @@ class Player(QMainWindow):
         except Exception:
             pass
         try:
-            self.player.stop()
+            if hasattr(self.player, "shutdown"):
+                self.player.shutdown()   # mpv: end its event thread before the window goes away
+            else:
+                self.player.stop()
         except Exception:
             pass
         try:

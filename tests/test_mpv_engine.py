@@ -135,6 +135,19 @@ class MpvEngineTest(TempDirTest):
         self.assertEqual(self.engine.playbackState(), State.StoppedState)
         self.assertEqual(self.engine.position(), 0)
 
+    def test_events_left_over_after_shutdown_are_ignored(self):
+        # mpv events reach the GUI thread through a queue, so one can arrive after shutdown();
+        # touching the closed mpv then crashed the whole app (seen when switching engines)
+        self.load()
+        self.engine.setPosition(500)                 # a seek waiting for "file-loaded"
+        self.engine.shutdown()
+        self.engine._from_mpv.emit("start-file", {})
+        self.engine._from_mpv.emit("file-loaded", {})
+        self.engine._from_mpv.emit("end-file", {"reason": "eof"})
+        self.engine._poll()
+        self.engine.stop()
+        self.assertEqual(self.engine.position(), 0)
+
     def two_songs(self):
         second = self.tmp / "second.wav"
         tone(second, 1.0)
