@@ -6734,8 +6734,9 @@ class Player(QMainWindow):
             for ak, item in self.tree_artists.items():
                 item.setIcon(0, self.artist_icon(ak, 28))
         self.refresh_album_hearts()
-        self.tree_px.clear()
-        self.neutral_cache.clear()
+        if not accent_only:   # small covers don't use the accent; dropped ones would be read again
+            self.tree_px.clear()
+            self.neutral_cache.clear()
         self.tree.viewport().update()
         key = self.current_key()
         self.set_cover(self.np_cover, key, 56, self.radius(8))

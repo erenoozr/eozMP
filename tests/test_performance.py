@@ -16,7 +16,16 @@ from PyQt6.QtWidgets import QApplication, QMenu
 
 from test_core import TempDirTest
 from test_mpv_engine import APP, tone, wait_for
-from test_player import PlayerHarness, mp
+from test_player import PlayerHarness as BaseHarness, mp
+
+
+class PlayerHarness(BaseHarness):
+    def close_player(self):
+        """Really delete the window: a closed one left behind (with its app-wide event filter and
+        widgets) would make every later test here slower, and these tests time things."""
+        super().close_player()
+        from PyQt6.QtCore import QCoreApplication, QEvent
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
 
 
 def jpeg(width, height):
