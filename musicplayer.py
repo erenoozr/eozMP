@@ -681,7 +681,10 @@ def flatten_responses(responses):
                 "queue": r.get("queueLength", 0) or 0,
             })
     rows.sort(key=lambda x: (not x["free"], -x["speed"]))
-    return rows[:2000]
+    return rows   # capped only after filtering, or "Lossless only" could find nothing
+
+
+SOUL_ROWS_SHOWN = 2000   # a longer results table gets slow to draw
 
 
 def passes_filters(row, fmt, free_only):
@@ -9067,11 +9070,11 @@ class Player(QMainWindow):
                 selected.add((g[0]["username"], g[0]["filename"]))
 
         if albums_mode:
-            self.soul_view = group_by_folder(rows)
+            self.soul_view = group_by_folder(rows)[:SOUL_ROWS_SHOWN]
             headers = ["Album folder", "Location", "User", "Quality", "Size", "Slot / speed"]
             unit = "albums"
         else:
-            self.soul_view = [[r] for r in rows]
+            self.soul_view = [[r] for r in rows[:SOUL_ROWS_SHOWN]]
             headers = ["File", "Folder", "User", "Quality", "Size", "Slot / speed"]
             unit = "files"
         self.soul_count_text = (
