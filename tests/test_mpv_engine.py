@@ -185,6 +185,26 @@ class MpvEngineTest(TempDirTest):
         self.assertEqual(len(advanced), 1)
         self.assertNotIn(("status", Status.EndOfMedia), self.events)
 
+    def test_lists_output_devices_with_automatic_first(self):
+        devices = self.engine.output_devices()
+        self.assertEqual(devices[0][0], "auto")
+        self.assertTrue(all(isinstance(n, str) and isinstance(d, str) for n, d in devices))
+
+    def test_audio_options_reach_mpv(self):
+        self.engine.set_audio_options(replaygain="Album", device="auto", exclusive=True)
+        self.assertEqual(self.engine.mp.replaygain, "album")
+        self.assertTrue(self.engine.mp.audio_exclusive)
+        self.engine.set_audio_options(replaygain="Off", device="auto", exclusive=False)
+        self.assertIn(self.engine.mp.replaygain, ("no", False))   # python-mpv turns "no" into False
+        self.assertFalse(self.engine.mp.audio_exclusive)
+
+    def test_a_device_that_is_gone_falls_back_to_automatic(self):
+        self.engine.set_audio_options(replaygain="Off", device="wasapi/{not-plugged-in}", exclusive=False)
+        self.assertEqual(self.engine.mp.audio_device, "auto")
+        self.load()
+        self.engine.play()
+        self.assertTrue(wait_for(lambda: self.engine.position() > 200))
+
     def test_volume_and_mute_look_like_qaudiooutput(self):
         audio = self.engine.audio
         audio.setVolume(0.4)

@@ -131,6 +131,9 @@ DEFAULT_CFG = {
     "cfg_version": 1,
     "audio_engine": "Automatic (mpv, then VLC)",
     "mpv_dir": "",
+    "replaygain": "Off",          # Off / Track / Album (mpv only)
+    "audio_device": "auto",       # mpv's device name; "auto" = the Windows default
+    "audio_exclusive": False,     # WASAPI exclusive mode (mpv only)
     "eq_enabled": False,
     "eq_preamp": 0.0,
     "eq_bands": [],
@@ -1958,6 +1961,33 @@ class PreferencesDialog(QDialog):
         eq_open.clicked.connect(lambda: self.player.open_equalizer())
         uf.addRow("Audio engine", self.engine)
         uf.addRow("mpv folder", mpv_row)
+        engine = getattr(parent, "player", None)
+        has_mpv = hasattr(engine, "output_devices")
+        self.replaygain = QComboBox()
+        self.replaygain.addItems(["Off", "Track", "Album"])
+        self.replaygain.setCurrentText(cfg["replaygain"] if cfg["replaygain"] in ("Off", "Track", "Album") else "Off")
+        self.replaygain.setToolTip("Evens out loudness between songs using their ReplayGain tags.\n"
+                                   "Album keeps the loud and quiet songs of an album as they were mastered.")
+        self.audio_device = QComboBox()
+        devices = engine.output_devices() if has_mpv else [("auto", "Windows default")]
+        if cfg["audio_device"] not in {n for n, _d in devices}:
+            devices.append((cfg["audio_device"], "Last used device (not connected now)"))
+        for name, desc in devices:
+            self.audio_device.addItem(desc, name)
+        self.audio_device.setCurrentIndex(max(0, self.audio_device.findData(cfg["audio_device"])))
+        self.exclusive = QCheckBox("Exclusive mode: eozMP alone uses the device, the sound goes out untouched.\n"
+                                   "Other apps are silent while eozMP plays.")
+        self.exclusive.setChecked(bool(cfg["audio_exclusive"]))
+        for w in (self.replaygain, self.audio_device, self.exclusive):
+            w.setEnabled(has_mpv)
+        uf.addRow("ReplayGain", self.replaygain)
+        uf.addRow("Output device", self.audio_device)
+        uf.addRow(self.exclusive)
+        if not has_mpv:
+            mpv_note = QLabel("ReplayGain, the output device and exclusive mode need the mpv engine.")
+            mpv_note.setWordWrap(True)
+            mpv_note.setObjectName("sub")
+            uf.addRow(mpv_note)
         self.viz_style = QComboBox()
         self.viz_style.addItems(["Off", "Bars", "Wave"])
         self.viz_style.setCurrentText(cfg["visualizer"])
@@ -2111,6 +2141,9 @@ class PreferencesDialog(QDialog):
             "covers_to_folder": self.covers_folder.isChecked(),
             "audio_engine": self.engine.currentText(),
             "mpv_dir": self.mpv_dir.text().strip(),
+            "replaygain": self.replaygain.currentText(),
+            "audio_device": self.audio_device.currentData() or "auto",
+            "audio_exclusive": self.exclusive.isChecked(),
             "accent_custom": self.custom_value(),
             "mini_opacity": self.mini_opacity.value(),
             "close_to_tray": self.close_tray.isChecked(),
@@ -2928,6 +2961,29 @@ class MpvEngine(QObject):
         self.timer.stop()
         self._set_state(QMediaPlayer.PlaybackState.StoppedState)
         self.positionChanged.emit(0)
+
+    def output_devices(self):
+        """[(mpv device name, description)], "auto" (the Windows default) first."""
+        out = [("auto", "Windows default")]
+        try:
+            for d in self.mp.audio_device_list or []:
+                name, desc = str(d.get("name", "")), str(d.get("description", "") or d.get("name", ""))
+                if name and name != "auto":
+                    out.append((name, desc))
+        except Exception:
+            pass
+        return out
+
+    def set_audio_options(self, replaygain="Off", device="auto", exclusive=False):
+        self.mp.replaygain = {"Track": "track", "Album": "album"}.get(replaygain, "no")
+        # a device that isn't plugged in would leave mpv with no sound at all
+        if device not in {n for n, _d in self.output_devices()}:
+            device = "auto"
+        changed = self.mp.audio_device != device or bool(self.mp.audio_exclusive) != bool(exclusive)
+        self.mp.audio_device = device
+        self.mp.audio_exclusive = bool(exclusive)
+        if changed and self._loaded:
+            self.mp.command("ao-reload")   # switch the running song over to the new output
 
     def shutdown(self):
         self.timer.stop()
@@ -6344,6 +6400,8 @@ class Player(QMainWindow):
         if (not old["lyrics_online"] and self.cfg["lyrics_online"]
                 and 0 <= self.index < len(self.queue) and not self.lyric_lines):
             self.load_lyrics(self.queue[self.index][0])
+        if any(old[k] != self.cfg[k] for k in ("replaygain", "audio_device", "audio_exclusive")):
+            self.apply_audio_options()
         self.line_up_next()   # "play the next song" may have changed
 
     def radius(self, r):
@@ -7718,6 +7776,12 @@ class Player(QMainWindow):
             p.advanced.connect(self.on_engine_advanced)
         self.buf_out = None
         self.setup_visualizer()
+        self.apply_audio_options()
+
+    def apply_audio_options(self):
+        if hasattr(self.player, "set_audio_options"):
+            self.player.set_audio_options(self.cfg["replaygain"], self.cfg["audio_device"],
+                                          bool(self.cfg["audio_exclusive"]))
 
     def on_player_error(self, _err, msg):
         """Skip a song that can't be played (moved, deleted, unplugged drive, broken file),

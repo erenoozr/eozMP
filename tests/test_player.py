@@ -167,6 +167,24 @@ class MpvPlayerTest(PlayerTest):
         self.make_player(["One"])
         self.assertEqual(self.player.engine_name, "mpv")
 
+    def test_audio_settings_reach_mpv_and_follow_changes(self):
+        self.make_player(["One"], replaygain="Album", audio_exclusive=False)
+        mpv_ = self.player.player.mp
+        self.assertEqual(mpv_.replaygain, "album")
+        self.player.apply_prefs({"replaygain": "Track"})
+        self.assertEqual(mpv_.replaygain, "track")
+        self.player.switch_engine("mpv")          # a new engine gets the same settings
+        self.assertEqual(self.player.player.mp.replaygain, "track")
+
+    def test_settings_window_lists_output_devices(self):
+        self.make_player(["One"])
+        dlg = mp.PreferencesDialog(self.player.cfg, self.player)
+        names = [dlg.audio_device.itemData(i) for i in range(dlg.audio_device.count())]
+        self.assertEqual(names[0], "auto")
+        self.assertEqual(dlg.values()["audio_device"], "auto")
+        self.assertEqual(dlg.values()["replaygain"], "Off")
+        dlg.deleteLater()
+
     def count_loads(self):
         loads = []
         real = self.player.player.setSource
