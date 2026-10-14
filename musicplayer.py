@@ -29,6 +29,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import uuid
 import random
 import filecmp
@@ -3415,20 +3416,41 @@ QUALITY_RE = re.compile(
     r"web|webrip|cd|cdrip|vinyl|lossless|hi res|hires|remaster|remastered)\b")
 
 
+YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+NAME_SEP_RE = re.compile(r"\s+[-\u2013\u2014]+\s+|_+-_+")
+
+
+def _words(text):
+    """Lower-case words of any script, accents dropped: 'Björk' -> 'bjork', 'Кино' stays 'кино'."""
+    text = unicodedata.normalize("NFKD", str(text))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"[\W_]+", " ", text.casefold()).strip()
+
+
+def has_words(text, words):
+    """'muse' is in 'muse absolution' but not in 'museum'."""
+    return bool(words) and f" {words} " in f" {text} "
+
+
 def album_key(name, artist):
-    """'Artist - Album (2009) [FLAC]' -> 'album', so different uploads of one album match."""
-    n = _norm(name)
-    a = _norm(artist)
-    if a:
-        n = n.replace(a, " ")
-    n = re.sub(r"\b(19|20)\d{2}\b", " ", n)
-    n = QUALITY_RE.sub(" ", n)
-    return re.sub(r"\s+", " ", n).strip()
+    """'Artist - Album (2009) [FLAC]' -> 'album', so different uploads of one album match.
+    A self-titled album keys to the artist's name, an album called '1989' to '1989'."""
+    a = _words(artist)
+    name = re.sub(r"[(\[]\s*(?:19|20)\d{2}\s*[)\]]", " ", str(name))   # '(2009)': the release year
+    parts = [x for x in NAME_SEP_RE.split(name) if x.strip()]
+    if len(parts) > 1 and _words(parts[0]) == a:
+        parts = parts[1:]                                       # 'Artist - ...'
+    n = QUALITY_RE.sub(" ", _words(" ".join(parts)))
+    rest = re.sub(r"\s+", " ", YEAR_RE.sub(" ", n)).strip()
+    if rest:
+        return rest
+    years = YEAR_RE.findall(n)
+    return years[-1] if years else a
 
 
 def pick_discography(rows, artist):
     """From raw Soulseek results, pick the best folder for every album by this artist."""
-    a = _norm(artist)
+    a = _words(artist)
     best = {}
     for group in group_by_folder(rows):
         if len(group) < 3:
@@ -3437,12 +3459,13 @@ def pick_discography(rows, artist):
         parts = [x for x in folder.split("/") if x]
         if not parts:
             continue
-        if a and a not in _norm(folder) and not any(a in _norm(f["filename"]) for f in group):
+        if a and not has_words(_words(folder), a) and not any(has_words(_words(f["filename"]), a)
+                                                              for f in group):
             continue
         name = parts[-1]
         disc = ""
-        if DISC_RE.match(_norm(name)) and len(parts) > 1:
-            disc, name = _norm(parts[-1]), parts[-2]
+        if DISC_RE.match(_words(name)) and len(parts) > 1:
+            disc, name = _words(parts[-1]), parts[-2]
         key = album_key(name, artist)
         if not key:
             continue
@@ -8486,8 +8509,8 @@ class Player(QMainWindow):
         if not picks:
             self.statusBar().showMessage(f"Couldn't find albums by {artist} on Soulseek right now.")
             return
-        a = _norm(artist)
-        owned = {album_key(alb["album"], artist) for alb in self.albums.values() if _norm(alb["artist"]) == a}
+        a = _words(artist)
+        owned = {album_key(alb["album"], artist) for alb in self.albums.values() if _words(alb["artist"]) == a}
         dlg = DiscographyDialog(self, artist, picks, owned)
         if dlg.exec():
             files = [f for pk in dlg.selected() for f in pk["files"]]
