@@ -686,6 +686,7 @@ def flatten_responses(responses):
 
 
 SOUL_ROWS_SHOWN = 2000   # a longer results table gets slow to draw
+POLL_MS = 3000           # how often the downloads list is checked while slskd answers
 
 
 def enqueue_files(client, files):
@@ -4794,6 +4795,7 @@ class Player(QMainWindow):
         self.search_worker = None
         self.last_done = None
         self.poll_busy = False
+        self.poll_fails = 0     # polls in a row slskd didn't answer
         self.all_tracks = []
         self.scanning = False
         self.rescan_pending = False
@@ -4929,7 +4931,7 @@ class Player(QMainWindow):
 
         self.poll_timer = QTimer(self)
         self.poll_timer.timeout.connect(self.poll_downloads)
-        self.poll_timer.start(3000)
+        self.poll_timer.start(POLL_MS)
 
         # show the cached library instantly, then refresh it in the background
         cached = load_cache()
@@ -6575,6 +6577,8 @@ class Player(QMainWindow):
             self.switch_engine(self.cfg["audio_engine"])
         if any(old[k] != self.cfg[k] for k in ("slskd_url", "slskd_key", "downloads_dir")):
             self.last_done = None
+            self.poll_fails = 0
+            self.poll_timer.setInterval(POLL_MS)
         if old["folders"] != self.cfg["folders"] or old["downloads_dir"] != self.cfg["downloads_dir"]:
             self.rescan()
         elif (old["group_featured"] != self.cfg["group_featured"]
@@ -7221,7 +7225,7 @@ class Player(QMainWindow):
             return
         self.organize_now(quiet=True)
 
-    def organize_now(self, quiet=False):
+    def organize_now(self, quiet=False, startup=False):
         src = self.cfg["downloads_dir"]
         dest = self.organize_target()
         if not src or not os.path.isdir(src):
@@ -7236,7 +7240,8 @@ class Player(QMainWindow):
         def done(n):
             if n or not quiet:
                 self.statusBar().showMessage(f"Organized {n} song(s) into Artist / Album folders.", 8000)
-            self.rescan()
+            if n or not startup:
+                self.rescan()
 
         w.ok.connect(done)
         w.fail.connect(lambda m: (self.statusBar().showMessage(f"Couldn't organize downloads: {m}"), self.rescan()))
@@ -9223,11 +9228,23 @@ class Player(QMainWindow):
         client = self.client()
         w = Worker(lambda: client.call("GET", "/transfers/downloads", timeout=8))
         w.ok.connect(self.on_downloads)
-        w.fail.connect(lambda _m: None)
+        w.fail.connect(self.on_poll_failed)
         w.finished.connect(lambda: setattr(self, "poll_busy", False))
         self.keep(w)
 
+    def on_poll_failed(self, _msg):
+        # slskd is off: ask less and less often (up to once a minute) and say so
+        self.poll_fails += 1
+        wait = min(POLL_MS * 2 ** self.poll_fails, 60000)
+        self.poll_timer.setInterval(wait)
+        self.dl_status.setText(f"Can't reach slskd - is it running? Trying again in {wait // 1000} s.")
+        if self.poll_fails == 1:
+            self.statusBar().showMessage("Can't reach slskd, so downloads aren't being watched right now.", 8000)
+
     def on_downloads(self, data):
+        if self.poll_fails:
+            self.poll_fails = 0
+            self.poll_timer.setInterval(POLL_MS)
         rows = []
         for user in data or []:
             uname = user.get("username", "")
@@ -9263,7 +9280,11 @@ class Player(QMainWindow):
         self.update_downloads_badge()
         if active:
             self.statusBar().showMessage(f"Soulseek: {active} downloading, {done} finished")
-        if self.last_done is not None and done > self.last_done:
+        if self.last_done is None:
+            # first answer since eozMP started: sort what finished while it was closed
+            if self.cfg["organize_downloads"] and self.cfg["downloads_dir"]:
+                self.organize_now(quiet=True, startup=True)
+        elif done > self.last_done:
             self.after_downloads_finished()
         self.last_done = done
 
