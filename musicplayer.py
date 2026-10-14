@@ -755,10 +755,22 @@ class Worker(QThread):
             self.fail.emit(str(e))
 
 
+def answered_text(n):
+    return f"{n} {'person has' if n == 1 else 'people have'} answered so far." if n else "No answers yet."
+
+
+def searching_text(answered):
+    """Status while slskd searches: it only hands over the results at the end."""
+    return f"Searching Soulseek... {answered_text(answered)} Results show up when the search is done."
+
+
 class SearchWorker(QThread):
     results = pyqtSignal(list)
+    progress = pyqtSignal(int)      # how many people have answered so far
     failed = pyqtSignal(str)
     finished_search = pyqtSignal()
+    LONGEST = 90     # seconds before we ask slskd to wrap the search up
+    WRAP_UP = 20     # and how long slskd then gets to hand over what it found
 
     def __init__(self, client, text):
         super().__init__()
@@ -773,15 +785,32 @@ class SearchWorker(QThread):
         sid = str(uuid.uuid4())
         try:
             self.client.call("POST", "/searches", {"id": sid, "searchText": self.text})
-            deadline = time.time() + 30
-            while time.time() < deadline and not self._stop:
+            # slskd keeps the answers to itself until the search is over, so watch the count
+            # and fetch them once it's done (or as soon as a newer slskd hands them out early)
+            start = time.time()
+            stopped_at = None
+            shown = 0
+            while not self._stop:
                 time.sleep(2)
                 state = self.client.call("GET", f"/searches/{sid}") or {}
-                resp = self.client.call("GET", f"/searches/{sid}/responses") or []
+                count = int(state.get("responseCount") or 0)
+                done = bool(state.get("isComplete"))
                 if not self._stop:
-                    self.results.emit(flatten_responses(resp))
-                if state.get("isComplete"):
+                    self.progress.emit(count)
+                if done or count > shown:
+                    resp = self.client.call("GET", f"/searches/{sid}/responses") or []
+                    if resp and not self._stop:
+                        shown = len(resp)
+                        self.results.emit(flatten_responses(resp))
+                if done:
                     break
+                if stopped_at is None and time.time() - start > self.LONGEST:
+                    stopped_at = time.time()
+                    self.client.call("PUT", f"/searches/{sid}")
+                elif stopped_at is not None and time.time() - stopped_at > self.WRAP_UP:
+                    break
+            if not shown and not self._stop:
+                self.results.emit([])
             try:
                 self.client.call("DELETE", f"/searches/{sid}")
             except Exception:
@@ -4686,6 +4715,7 @@ class Player(QMainWindow):
         self.soul_raw = []      # every file found by the current Soulseek search
         self.soul_view = []     # rows currently shown (each row = list of files)
         self.soul_count_text = ""
+        self.soul_answered = 0
         self.searching = False
         self.search_failed = False
         self.dl_rows = []
@@ -7592,8 +7622,8 @@ class Player(QMainWindow):
     def reset_inline_soul(self):
         if self.inline_soul_worker is not None:
             self.inline_soul_worker.stop()
-            for sig in (self.inline_soul_worker.results, self.inline_soul_worker.failed,
-                        self.inline_soul_worker.finished_search):
+            for sig in (self.inline_soul_worker.results, self.inline_soul_worker.progress,
+                        self.inline_soul_worker.failed, self.inline_soul_worker.finished_search):
                 try:
                     sig.disconnect()
                 except Exception:
@@ -7616,14 +7646,19 @@ class Player(QMainWindow):
                 return
         self.reset_inline_soul()
         self.inline_soul_text = text
-        self.search_soul_status.setText("Searching Soulseek... (about 30 seconds)")
+        self.search_soul_status.setText(searching_text(0))
         w = SearchWorker(self.client(), text)
         w.results.connect(self.show_inline_soul)
+        w.progress.connect(self.on_inline_soul_progress)
         w.failed.connect(lambda m: self.search_soul_status.setText(f"Soulseek error: {m}"))
         w.finished_search.connect(lambda: self.search_soul_status.setText(
             f"{len(self.inline_soul_view)} albums found" if self.inline_soul_view else "Nothing found on Soulseek."))
         self.inline_soul_worker = w
         self.keep(w)
+
+    def on_inline_soul_progress(self, answered):
+        if not self.inline_soul_view:
+            self.search_soul_status.setText(searching_text(answered))
 
     def show_inline_soul(self, rows):
         self.inline_soul_raw = rows
@@ -8396,16 +8431,18 @@ class Player(QMainWindow):
             return
         if self.disco_worker is not None:
             self.disco_worker.stop()
-            for sig in (self.disco_worker.results, self.disco_worker.failed,
+            for sig in (self.disco_worker.results, self.disco_worker.progress, self.disco_worker.failed,
                         self.disco_worker.finished_search):
                 try:
                     sig.disconnect()
                 except Exception:
                     pass
         self.disco_rows = []
-        self.statusBar().showMessage(f"Searching Soulseek for everything by {artist}... (about 30 seconds)", 35000)
+        self.statusBar().showMessage(f"Searching Soulseek for everything by {artist}... (up to two minutes)")
         w = SearchWorker(self.client(), artist)
         w.results.connect(lambda rows: setattr(self, "disco_rows", rows))
+        w.progress.connect(lambda n: self.statusBar().showMessage(
+            f"Searching Soulseek for everything by {artist}... {answered_text(n)}"))
         w.failed.connect(lambda m: self.statusBar().showMessage(f"Soulseek error: {m}"))
         w.finished_search.connect(lambda: self.show_discography(artist))
         self.disco_worker = w
@@ -8965,7 +9002,7 @@ class Player(QMainWindow):
                 return
         if self.search_worker is not None:
             self.search_worker.stop()
-            for sig in (self.search_worker.results, self.search_worker.failed,
+            for sig in (self.search_worker.results, self.search_worker.progress, self.search_worker.failed,
                         self.search_worker.finished_search):
                 try:
                     sig.disconnect()
@@ -8978,8 +9015,10 @@ class Player(QMainWindow):
         self.soul_status.setText(f'Searching Soulseek for "{text}"...')
         self.stack.setCurrentIndex(1)
         self.nav_note(("soulseek",))
+        self.soul_answered = 0
         w = SearchWorker(self.client(), text)
         w.results.connect(self.show_soul_results)
+        w.progress.connect(self.on_soul_progress)
         w.failed.connect(self.on_search_failed)
         w.finished_search.connect(self.on_search_finished)
         self.search_worker = w
@@ -8999,10 +9038,15 @@ class Player(QMainWindow):
         self.soul_raw = rows
         self.render_soul()
 
+    def on_soul_progress(self, answered):
+        self.soul_answered = answered
+        if not self.soul_raw:
+            self.update_soul_status()
+
     def update_soul_status(self):
         if not self.soul_raw:
             self.soul_status.setText(
-                "Searching Soulseek..." if self.searching else "No results found on Soulseek."
+                searching_text(self.soul_answered) if self.searching else "No results found on Soulseek."
             )
             return
         prefix = "Searching... " if self.searching else ""
