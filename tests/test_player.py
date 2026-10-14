@@ -39,7 +39,8 @@ class PlayerHarness(TempDirTest):
             self.songs.append(path)
         settings = {"folders": [str(self.tmp / "music")], "audio_engine": self.engine, "volume": 0,
                     "media_keys": False, "lyrics_online": False, "covers_auto": False, "resume": False,
-                    "close_to_tray": False, "mpv_dir": os.environ.get("EOZMP_LIBMPV", "")}
+                    "close_to_tray": False, "mpv_dir": os.environ.get("EOZMP_LIBMPV", ""),
+                    "update_check": False}
         settings.update(cfg)
         mp.CONFIG_FILE.write_text(json.dumps(settings), encoding="utf-8")
         self.player = mp.Player()

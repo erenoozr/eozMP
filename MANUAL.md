@@ -42,7 +42,7 @@ A Soulseek account is free. slskd creates it for you the first time it connects 
    tick **Add Python to PATH**, then click **Install Now**.
 2. On this repository's page, click the green **Code** button → **Download ZIP**, and extract it.
 3. Double-click **build_exe.bat**. A black window installs everything eozMP uses (PyQt6, mutagen, numpy,
-   PyInstaller and python-vlc), then builds the app. The first time takes a few minutes.
+   PyInstaller, python-mpv and python-vlc), then builds the app. The first time takes a few minutes.
 4. When it says **Done!**, `eozMP.exe` is on your Desktop (and in the `dist` folder).
 
 To run it straight from the source instead: open the extracted folder, click the address bar, type `cmd`,
@@ -56,8 +56,12 @@ python musicplayer.py
 The build command `build_exe.bat` runs, if you ever want to type it yourself:
 
 ```
-python -m PyInstaller --noconfirm --onefile --windowed --name eozMP --icon eozMP.ico musicplayer.py
+python -m PyInstaller --noconfirm --onefile --windowed --name eozMP --icon eozMP.ico --hidden-import mpv --hidden-import vlc musicplayer.py
 ```
+
+**Publishing a new version:** raise `APP_VERSION` near the top of `musicplayer.py` (for example to `"1.2"`),
+build the exe, and publish a GitHub release whose tag is `v` plus that number (`v1.2`). eozMP compares its own
+`APP_VERSION` with the newest release tag to tell people a new version is out.
 
 ## First start: adding your music
 
@@ -254,7 +258,7 @@ Click **Preferences** in the top menu (or press Ctrl+,). **Apply** shows a chang
 
 | Tab | What you can change |
 | --- | --- |
-| General | Reopen on the song where you stopped, keep playing the next song, show the current lyric line under the song title, keep playing in the tray when you close the window, use the keyboard's media keys |
+| General | Reopen on the song where you stopped, keep playing the next song, show the current lyric line under the song title, keep playing in the tray when you close the window, use the keyboard's media keys, tell me when a new version is out |
 | Appearance | Theme (System, Dark, Light), accent color (presets, colors from each album cover, or any custom color by hex code or color picker), corners, spacing, album cover size, how albums look in the left list, fade between pages, app font (Times New Roman, the system font or any font) and text size, mini player opacity |
 | Library | Music folders, group featured artists, put collaborations under the first artist, names that should never be split (such as Simon & Garfunkel), ignore "The" when sorting, find missing covers online, save found covers into album folders |
 | Lyrics | Style (Album art or Classic), alignment, font, weight, size, brightness of the other lines, fade at the edges, smooth line changes, soft shadow, online lookup, save found lyrics next to songs |
@@ -285,8 +289,11 @@ These are optional; eozMP works fully without them.
 
 - **Back up:** **Library → Back up eozMP...** saves your settings, playlists, favorites, listening stats and saved
   lyrics into one `.zip` file. **Library → Restore from backup...** loads them back, for example on a new PC.
-- **Updating:** download the newest `eozMP.exe` from the [releases](../../releases) and replace the old one
-  (or download the new source and run `build_exe.bat` again). Your settings, playlists and stats are kept.
+- **Updating:** eozMP asks GitHub once a day whether a new version is out and, if so, offers to open the
+  download page (**Help → Check for updates...** asks right away; turn it off in **Preferences → General**).
+  Only the public releases page is read; nothing about you or your music is sent. Download the newest
+  `eozMP.exe` from the [releases](../../releases) and replace the old one (or download the new source and run
+  `build_exe.bat` again). Your settings, playlists and stats are kept.
 - **Your music files** are never changed, except when you allow it: organizing Soulseek downloads, saving lyrics
   next to songs, or saving found covers into album folders.
 

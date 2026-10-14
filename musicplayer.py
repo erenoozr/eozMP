@@ -153,6 +153,9 @@ DEFAULT_CFG = {
     "soul_view": "Albums",
     "soul_quality": "Any format",
     "soul_free_only": False,
+    "update_check": True,         # look for a new eozMP version on GitHub, at most once a day
+    "update_last_check": 0.0,
+    "update_skip": "",            # a version the user chose to skip
     "last_path": "",
     "queue": [],
     "last_pos": 0,
@@ -211,6 +214,33 @@ def read_json(path, kind, quarantine=True):
         except OSError:
             LOAD_PROBLEMS.append(f"{path.name}: {problem}")
     return None
+
+
+APP_VERSION = "1.1"            # raise it with every release; the release tag is "v" + this
+UPDATE_REPO = "erenoozr/eozMP"
+
+
+def version_tuple(text):
+    """'v1.2 - Bugfix' -> (1, 2); None when there is no version number at the start."""
+    m = re.match(r"\s*v?(\d+(?:\.\d+)*)", text or "")
+    return tuple(int(x) for x in m.group(1).split(".")) if m else None
+
+
+def is_newer(tag, current):
+    a, b = version_tuple(tag), version_tuple(current)
+    if not a or not b:
+        return False
+    n = max(len(a), len(b))
+    return a + (0,) * (n - len(a)) > b + (0,) * (n - len(b))
+
+
+def latest_release():
+    """The newest published release on GitHub (only its public page is read; nothing is sent)."""
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest",
+        headers={"Accept": "application/vnd.github+json", "User-Agent": f"eozMP/{APP_VERSION}"})
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        return json.loads(resp.read())
 
 
 def same_kind(default, value):
@@ -2054,8 +2084,11 @@ class PreferencesDialog(QDialog):
         self.close_tray.setChecked(bool(cfg["close_to_tray"]))
         self.media_keys = QCheckBox("Use the keyboard's media keys (play/pause, next, previous)")
         self.media_keys.setChecked(bool(cfg["media_keys"]))
+        self.update_check = QCheckBox("Tell me when a new version of eozMP is out (asks GitHub once a day)")
+        self.update_check.setChecked(bool(cfg["update_check"]))
         gf.addRow(self.close_tray)
         gf.addRow(self.media_keys)
+        gf.addRow(self.update_check)
         self.tabs.addTab(gen, "General")
 
         # --- Appearance
@@ -2420,6 +2453,7 @@ class PreferencesDialog(QDialog):
             "mini_opacity": self.mini_opacity.value(),
             "close_to_tray": self.close_tray.isChecked(),
             "media_keys": self.media_keys.isChecked(),
+            "update_check": self.update_check.isChecked(),
         }
 
     @staticmethod
@@ -5163,6 +5197,59 @@ class Player(QMainWindow):
             self.register_media_keys()
         if LOAD_PROBLEMS:
             QTimer.singleShot(0, self.show_load_problems)
+        QTimer.singleShot(3000, self.auto_check_updates)   # after start-up, so it never slows it down
+
+    # ----- new versions
+    def auto_check_updates(self):
+        if not self.cfg["update_check"] or self.quitting:
+            return
+        if time.time() - float(self.cfg.get("update_last_check") or 0) < 24 * 3600:
+            return
+        self.check_updates(manual=False)
+
+    def check_updates_now(self):
+        self.check_updates(manual=True)
+
+    def check_updates(self, manual):
+        w = Worker(lambda: latest_release())
+        w.ok.connect(lambda rel: self.on_release_info(rel, manual))
+        w.fail.connect(lambda msg: self.on_release_error(msg, manual))
+        self.keep(w)
+
+    def on_release_info(self, rel, manual):
+        self.cfg["update_last_check"] = time.time()
+        save_config(self.cfg)
+        tag = str((rel or {}).get("tag_name") or "")
+        if is_newer(tag, APP_VERSION) and (manual or tag != self.cfg.get("update_skip")):
+            self.offer_update(rel)
+        elif manual:
+            QMessageBox.information(self, "eozMP", f"You have the newest version of eozMP (v{APP_VERSION}).")
+
+    def on_release_error(self, msg, manual):
+        # no internet on start-up isn't worth a message; it simply asks again next time
+        if manual:
+            QMessageBox.warning(self, "eozMP", f"Couldn't check for a new version.\n\n{msg}")
+
+    def offer_update(self, rel):
+        tag = str(rel.get("tag_name") or "")
+        url = str(rel.get("html_url") or "")
+        if not url.startswith(f"https://github.com/{UPDATE_REPO}/"):
+            url = f"https://github.com/{UPDATE_REPO}/releases/latest"
+        box = QMessageBox(self)
+        box.setWindowTitle("A new version of eozMP")
+        box.setText(f"eozMP {tag} is out. You have v{APP_VERSION}.")
+        box.setInformativeText("Download the new eozMP.exe and put it in place of the old one. "
+                               "Your settings, playlists and stats are kept.")
+        download = box.addButton("Download", QMessageBox.ButtonRole.AcceptRole)
+        skip = box.addButton("Skip this version", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("Later", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(download)
+        box.exec()
+        if box.clickedButton() is download:
+            QDesktopServices.openUrl(QUrl(url))
+        elif box.clickedButton() is skip:
+            self.cfg["update_skip"] = tag
+            save_config(self.cfg)
 
     # ----- helpers
     def show_load_problems(self):
@@ -6044,9 +6131,12 @@ class Player(QMainWindow):
         act.setShortcut("F1")
         act.triggered.connect(lambda: self.show_shortcuts())
         hlp.addAction(act)
+        act = QAction("Check for updates...", self)
+        act.triggered.connect(lambda: self.check_updates_now())
+        hlp.addAction(act)
         act = QAction("About eozMP", self)
         act.triggered.connect(lambda: QMessageBox.about(
-            self, "eozMP", "eozMP - eren's definitely (not) sketchy music player, customize and enjoy your music.\n\n"
+            self, "eozMP", f"eozMP v{APP_VERSION} - eren's definitely (not) sketchy music player, customize and enjoy your music.\n\n"
             "Copyright (C) 2026 Eren. Free software under the GNU General Public License v3."))
         hlp.addAction(act)
 
