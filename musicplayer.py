@@ -1679,6 +1679,30 @@ def same_file(a, b):
     return os.path.getsize(a) == os.path.getsize(b) and filecmp.cmp(a, b, shallow=False)
 
 
+def names_from_folder(folder, src_root):
+    """For untagged downloads: 'Artist - Album (2009) [FLAC]' -> ('Artist', 'Album'),
+    'Album' -> ('', 'Album'). A disc folder ('CD2') uses the folder above it."""
+    try:
+        parts = Path(os.path.relpath(folder, src_root)).parts
+    except ValueError:
+        return "", ""
+    parts = [x for x in parts if x not in (".", "..")]
+    if len(parts) > 1 and DISC_RE.match(_words(parts[-1])):
+        parts = parts[:-1]
+    if not parts:
+        return "", ""
+    name = parts[-1]
+    while True:   # drop '(2009)', '[FLAC 24bit]' and the like from the end
+        m = re.search(r"\s*[(\[]([^()\[\]]*)[)\]]\s*$", name)
+        if not m or not (YEAR_RE.fullmatch(m.group(1).strip()) or QUALITY_RE.search(m.group(1).lower())):
+            break
+        name = name[:m.start()]
+    bits = [b.strip() for b in NAME_SEP_RE.split(name) if b.strip() and not YEAR_RE.fullmatch(b.strip())]
+    if len(bits) > 1:
+        return bits[0], " - ".join(bits[1:])
+    return "", (bits[0] if bits else "")
+
+
 def organize_downloads(src_root, dest_root, group_featured=True, split_collabs=True, keep=()):
     """Move finished downloads to dest_root/Artist/Album/NN - Title.ext (runs in a background thread).
     If another organize is still running, does nothing and returns 0."""
@@ -1704,10 +1728,15 @@ def _organize_downloads(src_root, dest_root, group_featured, split_collabs, keep
             try:
                 t = read_track(src)
                 raw = t.get("artist_raw") or ""
+                album = t["album"]
+                if not raw.strip() or album == "Unknown Album":   # untagged: the folder name tells
+                    f_artist, f_album = names_from_folder(root, src_root)
+                    raw = raw if raw.strip() else f_artist
+                    album = f_album if album == "Unknown Album" and f_album else album
                 artist = (main_artist(raw, split_collabs, keep) if group_featured
                           else (raw.strip() or "Unknown Artist"))
                 folder = os.path.join(dest_root, safe_name(artist, "Unknown Artist"),
-                                      safe_name(t["album"], "Unknown Album"))
+                                      safe_name(album, "Unknown Album"))
                 base = safe_name(t["title"], Path(name).stem)
                 if t["num"] != 9999:
                     base = f"{t['num']:02d} - {base}"

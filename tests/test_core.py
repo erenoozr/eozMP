@@ -79,13 +79,13 @@ class SaveSurvivesCrashTest(TempDirTest):
 
 
 class OrganizeDownloadsTest(TempDirTest):
-    """Untagged files land in Unknown Artist/Unknown Album/<file name>."""
+    """Untagged files land in Unknown Artist/<download folder name>/<file name>."""
 
     def setUp(self):
         super().setUp()
         self.src = self.tmp / "downloads"
         self.dest = self.tmp / "library"
-        self.album = self.dest / "Unknown Artist" / "Unknown Album"
+        self.album = self.dest / "Unknown Artist" / "some user folder"
         (self.src / "some user folder").mkdir(parents=True)
         self.album.mkdir(parents=True)
 
