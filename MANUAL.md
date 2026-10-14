@@ -194,14 +194,15 @@ directories:
   downloads: C:\Users\YOURNAME\Music\Soulseek
 
 web:
+  ip_address: 127.0.0.1
   authentication:
     username: slskd
-    password: slskd
+    password: PickAnotherPassword456
     api_keys:
       eozmp:
         key: PUT-ANY-LONG-RANDOM-TEXT-HERE-1234
         role: readwrite
-        cidr: 0.0.0.0/0,::/0
+        cidr: 127.0.0.1/32,::1/128
 ```
 
 - **username / password (under soulseek):** make up a Soulseek name with some random numbers so nobody else has
@@ -210,6 +211,10 @@ web:
 - **downloads:** the folder where downloaded music should go. Replace `YOURNAME` with your Windows user name.
 - **key:** type 20 or more random letters and numbers, like a password. eozMP needs this same text later, so copy
   it somewhere.
+- **password (under web):** the password for the slskd page in your browser. Change it from the default `slskd`;
+  from now on you log in to `localhost:5030` with `slskd` and this password.
+- **ip_address and cidr:** these keep slskd to this PC only. Without them, anyone on the same Wi-Fi (a dorm,
+  a café) could open your slskd page and use the key. Leave them as they are unless you know you need otherwise.
 - Use spaces, never the Tab key, and keep the spacing exactly as shown. The words `soulseek:`, `directories:` and
   `web:` must each appear only once without a `#` in front.
 

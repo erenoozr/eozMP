@@ -155,6 +155,8 @@ DEFAULT_CFG = {
     "last_path": "",
     "queue": [],
     "last_pos": 0,
+    "ctx_kind": "",               # the playlist/album you were playing from ("" = the whole library)
+    "ctx_paths": [],
     "win_size": [1100, 700],
 }
 
@@ -616,11 +618,19 @@ def get_lyrics(track, online, save_files, force=False):
 
 
 # ---------------------------------------------------------------- slskd
+def slskd_address(text):
+    """'localhost:5030' -> 'http://localhost:5030' (urllib can't open an address without http://)."""
+    text = (text or "").strip().rstrip("/")
+    if text and "://" not in text:
+        text = "http://" + text
+    return text
+
+
 class Slskd:
     """Tiny client for the slskd REST API (https://github.com/slskd/slskd)."""
 
     def __init__(self, url, key):
-        self.base = url.rstrip("/") + "/api/v0"
+        self.base = slskd_address(url) + "/api/v0"
         self.key = key
 
     def call(self, method, path, body=None, timeout=20):
@@ -637,6 +647,19 @@ class Slskd:
         except urllib.error.URLError as e:
             raise RuntimeError(f"Can't reach slskd ({e.reason}). Is it running?")
         return json.loads(raw) if raw else None
+
+
+def check_slskd(client):
+    """(all good, message) for the Test connection button: slskd answering isn't enough,
+    it also has to be logged in to Soulseek. Raises RuntimeError when slskd can't be reached."""
+    state = client.call("GET", "/server", timeout=8) or {}
+    if state.get("isLoggedIn"):
+        return True, "Connected to slskd, and slskd is logged in to Soulseek."
+    if state.get("isConnected"):
+        return False, ("slskd works, but it isn't logged in to Soulseek. Check the username and password "
+                       "under soulseek: in slskd.yml (the name may be taken), then restart slskd.")
+    return False, ("slskd works, but it isn't connected to Soulseek yet. Wait a moment and test again; "
+                   "if it stays like this, check slskd's black window for the reason.")
 
 
 def flatten_responses(responses):
@@ -2092,8 +2115,8 @@ class PreferencesDialog(QDialog):
     def test_connection(self):
         client = Slskd(self.url.text().strip(), self.key.text().strip())
         self.test_label.setText("Testing...")
-        w = Worker(lambda: client.call("GET", "/searches", timeout=8))
-        w.ok.connect(lambda _r: self.set_test_text("Connected to slskd."))
+        w = Worker(lambda: check_slskd(client))
+        w.ok.connect(lambda r: self.set_test_text(r[1]))
         w.fail.connect(lambda m: self.set_test_text(m))
         self.player.keep(w)
 
@@ -2129,7 +2152,7 @@ class PreferencesDialog(QDialog):
             "lyrics_dim": self.ly_dim.value(),
             "lyrics_online": self.ly_online.isChecked(),
             "lyrics_save_lrc": self.ly_save.isChecked(),
-            "slskd_url": self.url.text().strip(),
+            "slskd_url": slskd_address(self.url.text()),
             "slskd_key": self.key.text().strip(),
             "downloads_dir": self.dl.text().strip(),
             "soul_view": self.soul_view.currentText(),
@@ -4616,6 +4639,9 @@ class Player(QMainWindow):
     def __init__(self):
         super().__init__()
         make_labels_plain()
+        app = QApplication.instance()
+        app.commitDataRequest.connect(self.save_session)   # Windows is logging off / shutting down
+        app.aboutToQuit.connect(self.save_session)
         self.setWindowTitle("eozMP")
         self.cfg = load_config()
         if int(self.cfg.get("cfg_version", 1)) < 2:
@@ -6062,15 +6088,15 @@ class Player(QMainWindow):
         """What "next" would do, without changing anything: a dict for apply_next(), or None.
         Shuffle's random pick is remembered so the song lined up in advance is the one that plays."""
         plan = {"fwd_keep": 0, "drop": len(self.up_next)}
-        # 0) after going back, "next" walks forward through what you already heard
-        for i in range(len(self.fwd) - 1, -1, -1):
-            if self.fwd[i] in self.qindex:
-                return dict(plan, kind="fwd", path=self.fwd[i], fwd_keep=i, drop=0)
-        # 1) songs you queued always go first
+        # 1) songs you queued always go first (playing one starts a new forward history)
         for j, path in enumerate(self.up_next):
             if path in self.qindex:
                 return dict(plan, kind="queue", path=path, drop=j + 1)
-        # 2) then the library / playlist you were playing from
+        # 2) after going back, "next" walks forward through what you already heard
+        for i in range(len(self.fwd) - 1, -1, -1):
+            if self.fwd[i] in self.qindex:
+                return dict(plan, kind="fwd", path=self.fwd[i], fwd_keep=i)
+        # 3) then the library / playlist you were playing from
         self.ensure_context()
         n = len(self.ctx_paths)
         if n == 0:
@@ -6080,6 +6106,8 @@ class Player(QMainWindow):
             played = set(self.shuffle_played)
             if current:
                 played.add(current)
+            if auto and self.cfg["repeat_mode"] != "all" and played.issuperset(self.ctx_paths):
+                return dict(plan, kind="stop")   # every song has had its turn
             pick = self.shuffle_pick
             if pick in self.ctx_paths and pick != current and pick in self.qindex:
                 pos = self.ctx_paths.index(pick)
@@ -6150,6 +6178,15 @@ class Player(QMainWindow):
         if self.player.position() > 3000:
             self.player.setPosition(0)
             return
+        if self.history and self.history[-1] != self.current_path():
+            # the song playing now left the library in a rescan: the last song in the history is
+            # the one before it, so go there instead of dropping it as if it were the current one
+            path = self.history[-1]
+            if path in self.qindex:
+                if path in self.ctx_paths:
+                    self.ctx_pos = self.ctx_paths.index(path)
+                self.play_index(self.qindex[path], record=False)
+                return
         if len(self.history) >= 2:
             current = self.history.pop()
             path = self.history[-1]
@@ -6642,7 +6679,26 @@ class Player(QMainWindow):
             item.parent().setExpanded(True)
             self.tree.setCurrentItem(item)
         self.set_library_context(idx)
+        kind, paths = self.cfg.get("ctx_kind") or "", [p for p in self.cfg.get("ctx_paths", []) if p in self.qindex]
+        if kind and self.cfg["last_path"] in paths:
+            self.ctx_paths, self.ctx_kind = paths, kind
+            self.ctx_pos = paths.index(self.cfg["last_path"])
         self.play_index(idx, autoplay=False, start_pos=int(self.cfg.get("last_pos", 0)))
+
+    def save_session(self, *_args):
+        """Remember the song, the spot in it, the queue and where it was playing from. Runs on close,
+        and also when Windows logs off or shuts down (closeEvent doesn't always come then)."""
+        if getattr(self, "session_closed", False):
+            return   # saved on close already; the player is stopped now, so position() would say 0
+        if 0 <= self.index < len(self.queue):
+            self.cfg["last_path"] = self.queue[self.index][0]["path"]
+            self.cfg["last_pos"] = int(self.player.position())
+        self.cfg["ctx_kind"] = self.ctx_kind
+        self.cfg["ctx_paths"] = list(self.ctx_paths) if self.ctx_kind else []   # the library needs no list
+        self.cfg["win_size"] = [self.width(), self.height()]
+        self.cfg["queue"] = list(self.up_next)
+        self.remember_mini_pos()
+        save_config(self.cfg)
 
     def closeEvent(self, event):
         if (self.cfg["close_to_tray"] and not self.quitting and self.tray is not None
@@ -6657,16 +6713,10 @@ class Player(QMainWindow):
                                       app_icon(), 4000)
             return
         try:
-            if 0 <= self.index < len(self.queue):
-                self.cfg["last_path"] = self.queue[self.index][0]["path"]
-                self.cfg["last_pos"] = int(self.player.position())
-            self.cfg["win_size"] = [self.width(), self.height()]
-            self.cfg["queue"] = list(self.up_next)
+            self.save_session()
+            self.session_closed = True
             if self.mini is not None:
-                if self.mini.isVisible():
-                    self.cfg["mini_pos"] = [self.mini.x(), self.mini.y()]
                 self.mini.close()
-            save_config(self.cfg)
             self.finalize_listen()
             if self.cover_batch is not None:
                 self.cover_batch.stop()
@@ -7905,6 +7955,7 @@ class Player(QMainWindow):
         if self.fs_active:
             self.exit_fullscreen()
         if self.mini is not None:
+            self.remember_mini_pos()        # before hiding it, or closing can't see where it was
             self.mini.hide()
         self.close()
         QApplication.instance().quit()
@@ -8119,18 +8170,24 @@ class Player(QMainWindow):
         self.update_mini()
         self.mini.set_icons(self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState)
         pos = self.cfg.get("mini_pos") or []
-        if len(pos) == 2:
+        size = self.mini.sizeHint() if self.mini.width() < 50 else self.mini.size()
+        if len(pos) == 2 and QApplication.screenAt(QPoint(int(pos[0]) + size.width() // 2,
+                                                          int(pos[1]) + size.height() // 2)) is not None:
             self.mini.move(int(pos[0]), int(pos[1]))
-        else:
+        else:   # first time, or the monitor it was on isn't there any more
             area = QApplication.primaryScreen().availableGeometry()
             self.mini.move(area.right() - self.mini.width() - 24, area.bottom() - self.mini.height() - 24)
         self.mini.setWindowOpacity(max(0.3, int(self.cfg["mini_opacity"]) / 100))
         self.mini.show()
         self.hide()
 
+    def remember_mini_pos(self):
+        if self.mini is not None and self.mini.isVisible():
+            self.cfg["mini_pos"] = [self.mini.x(), self.mini.y()]
+
     def exit_mini(self):
         if self.mini is not None:
-            self.cfg["mini_pos"] = [self.mini.x(), self.mini.y()]
+            self.remember_mini_pos()
             save_config(self.cfg)
             self.mini.hide()
         self.show()

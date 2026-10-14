@@ -142,6 +142,87 @@ class PlayerTest(PlayerHarness):
         self.assertEqual(self.title(), "Three")
         self.assertEqual(self.player.fwd, [])
 
+    def test_previous_after_a_rescan_goes_one_song_back(self):          # B9
+        self.make_player(["One", "Two", "Three"], seconds=4)
+        self.start("One")
+        self.player.next_track()
+        self.player.next_track()
+        p = self.player
+        # a rescan where the song playing now (Three) is gone: moved, deleted, drive unplugged
+        p.build_library([t for t in p.all_tracks if t["path"] != str(self.songs[2])])
+        p.player.setPosition(0)
+        p.prev_track()
+        self.assertEqual(self.title(), "Two")
+        p.prev_track()
+        self.assertEqual(self.title(), "One")
+
+    def test_shuffle_without_repeat_stops_after_every_song_played(self):   # B10
+        self.make_player(["One", "Two", "Three"], seconds=4, shuffle_on=True)
+        self.start("One")
+        for _ in range(2):
+            self.player.next_track(auto=True)
+        self.assertEqual(sorted(self.played), ["One", "Three", "Two"])
+        self.player.next_track(auto=True)                        # the list is done
+        self.assertEqual(len(self.played), 3)
+        self.assertNotEqual(self.player.player.playbackState(), QMediaPlayer.PlaybackState.PlayingState)
+
+    def test_shuffle_with_repeat_all_keeps_going(self):
+        self.make_player(["One", "Two"], seconds=4, shuffle_on=True, repeat_mode="all")
+        self.start("One")
+        for _ in range(3):
+            self.player.next_track(auto=True)
+        self.assertEqual(len(self.played), 4)
+
+    def test_queued_song_comes_before_the_forward_history(self):          # B11
+        self.make_player(["One", "Two", "Three"], seconds=4)
+        self.start("One")
+        self.player.next_track()
+        self.player.prev_track()                                  # back on One, Two is "forward"
+        self.player.queue_add([str(self.songs[2])], play_next=True)
+        self.player.next_track()
+        self.assertEqual(self.title(), "Three")
+
+    def test_reopening_continues_the_playlist_you_were_in(self):           # B15
+        self.make_player(["One", "Two", "Three", "Four"], seconds=4, resume=True)
+        p = self.player
+        p.play_paths([str(self.songs[3]), str(self.songs[1])], "Mix", start=1)   # Four, Two: on Two
+        self.assertTrue(wait_for(lambda: p.player.position() > 200))
+        p.save_session()
+        saved = json.loads(mp.CONFIG_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(saved["ctx_kind"], "Mix")
+        self.close_player()
+        again = mp.Player()
+        self.addCleanup(lambda: (setattr(again, "quitting", True), again.close(), again.deleteLater()))
+        self.assertTrue(wait_for(lambda: again.qindex and again.index >= 0, 8))
+        self.assertEqual(again.ctx_kind, "Mix")
+        self.assertEqual(again.ctx_paths, [str(self.songs[3]), str(self.songs[1])])
+        self.assertEqual(again.ctx_pos, 1)
+        self.assertGreater(saved["last_pos"], 0)
+
+    def test_quitting_after_close_keeps_the_saved_spot(self):              # B6
+        self.make_player(["One"], seconds=4, resume=True)
+        p = self.player
+        self.start("One")
+        self.assertTrue(wait_for(lambda: p.player.position() > 500))
+        self.close_player()                  # saves, then stops the song
+        p.save_session()                     # what aboutToQuit does right after
+        self.assertGreater(json.loads(mp.CONFIG_FILE.read_text(encoding="utf-8"))["last_pos"], 400)
+
+    def test_mini_player_saved_off_screen_opens_on_screen(self):           # B7
+        self.make_player(["One"], mini_pos=[-40000, -40000])          # its monitor was unplugged
+        self.player.enter_mini()
+        mini = self.player.mini
+        self.assertIsNotNone(mp.QApplication.screenAt(mini.frameGeometry().center()))
+
+    def test_quitting_from_the_mini_player_remembers_where_it_was(self):   # B16
+        self.make_player(["One"])
+        p = self.player
+        p.enter_mini()
+        p.mini.move(100, 120)
+        with mock.patch.object(mp.QApplication.instance(), "quit"):
+            p.quit_app()
+        self.assertEqual(json.loads(mp.CONFIG_FILE.read_text(encoding="utf-8"))["mini_pos"], [100, 120])
+
     def test_skipping_ahead_does_not_count_as_listening(self):
         self.make_player(["One"], seconds=4)
         self.start("One")
