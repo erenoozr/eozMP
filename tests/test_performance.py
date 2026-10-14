@@ -86,6 +86,8 @@ class AlbumAccentTest(PlayerHarness):
         p = self.accent_player()
         p.np_timer.stop()                   # the now-playing animation would differ between grabs
         p.setFixedSize(1700, 900)           # offscreen, restyles nudge the window's size otherwise
+        if APP.focusWidget() is not None:
+            APP.focusWidget().clearFocus()  # a blinking text cursor would differ between grabs
         p.refresh_colors()
         APP.processEvents()
         self.set_album_accent("#d02020")    # quick path: small sheets on the accent widgets
@@ -180,6 +182,91 @@ class CoverThumbTest(PlayerHarness):
         self.assertEqual(decode.call_count, 0)
         self.assertEqual(p.thumb_cache.get(("artist", "album 5")).width(), 160)
         self.assertLess(took, 0.3)
+
+
+
+class ThumbCacheTest(unittest.TestCase):
+    """thumb_cache keeps only the most recently used covers (825 covers were 80 MB)."""
+
+    def pix(self):
+        return QPixmap(4, 4)
+
+    def test_keeps_only_the_newest_covers(self):
+        cache = mp.ThumbCache(limit=3)
+        for k in "abcd":
+            cache[k] = self.pix()
+        self.assertNotIn("a", cache)
+        self.assertEqual(len(cache), 3)
+        cache.get("b")                      # used: now the newest
+        cache["e"] = self.pix()
+        self.assertIn("b", cache)
+        self.assertNotIn("c", cache)
+
+    def test_no_cover_is_remembered_and_costs_nothing(self):
+        cache = mp.ThumbCache(limit=2)
+        cache["none"] = None
+        for k in "abc":
+            cache[k] = self.pix()
+        self.assertIn("none", cache)        # known to have no cover: not read again
+        self.assertIsNone(cache.get("none"))
+        self.assertEqual(len(cache), 2)
+
+    def test_dropped_covers_are_still_known_to_exist(self):
+        cache = mp.ThumbCache(limit=1)
+        cache["a"] = self.pix()
+        cache["b"] = self.pix()
+        self.assertNotIn("a", cache)
+        self.assertTrue(cache.has_cover("a"))
+        self.assertTrue(cache.known("a"))
+        cache.pop("a", None)
+        self.assertFalse(cache.known("a"))
+
+
+class BoundedCoversTest(PlayerHarness):
+    def fake_albums(self, n):
+        p = self.player
+        for i in range(n):
+            t = {"path": str(self.tmp / f"s{i}.mp3"), "title": f"S{i}", "artist": "Band", "album": f"A{i}",
+                 "length": 200, "num": 1, "disc": 1, "year": 2000 + i % 20}
+            p.albums[("band", f"a{i}")] = {"artist": "Band", "album": f"A{i}", "tracks": [t], "year": t["year"]}
+
+    def test_cache_stays_bounded_with_a_big_library(self):
+        self.make_player(["One"])
+        p = self.player
+        img = QImage(160, 160, QImage.Format.Format_RGB32)
+        for i in range(1000):
+            p.on_thumb_loaded(("band", f"a{i}"), img)
+        self.assertLessEqual(len(p.thumb_cache), mp.THUMB_CACHE_SIZE)
+        mb = len(p.thumb_cache) * 160 * 160 * 4 / 2 ** 20
+        print(f" 1000 covers kept: {len(p.thumb_cache)} ({mb:.0f} MB)", end=" ")
+        self.assertLess(mb, 40)
+
+    def test_library_row_asks_again_for_a_dropped_cover_once(self):
+        self.make_player(["One"])
+        p = self.player
+        self.fake_albums(3)
+        p.thumb_cache = mp.ThumbCache(limit=1)
+        img = QImage(160, 160, QImage.Format.Format_RGB32)
+        p.on_thumb_loaded(("band", "a0"), img)
+        p.on_thumb_loaded(("band", "a1"), img)          # a0 dropped
+        p.tree_px.clear()
+        with mock.patch.object(p.thumbs, "add") as ask:
+            for _ in range(5):                          # painted again and again
+                p.tree_thumb(("band", "a0"))
+        self.assertEqual(ask.call_count, 1)
+        p.on_thumb_loaded(("band", "a0"), img)
+        self.assertEqual(p.tree_thumb(("band", "a0")).width(), 28)
+
+    def test_artist_picture_still_uses_an_album_with_a_cover(self):
+        self.make_player(["One"])
+        p = self.player
+        self.fake_albums(3)
+        p.thumb_cache = mp.ThumbCache(limit=1)
+        img = QImage(160, 160, QImage.Format.Format_RGB32)
+        p.on_thumb_loaded(("band", "a0"), None)
+        p.on_thumb_loaded(("band", "a1"), img)
+        p.on_thumb_loaded(("band", "a2"), img)          # a1 dropped, but it has a cover
+        self.assertEqual(p.artist_cover_key("band"), ("band", "a1"))
 
 
 if __name__ == "__main__":

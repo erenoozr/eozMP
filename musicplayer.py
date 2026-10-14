@@ -34,7 +34,7 @@ import random
 import filecmp
 import shutil
 import zipfile
-from collections import deque
+from collections import OrderedDict, deque
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1621,6 +1621,57 @@ def load_thumb(paths, artist, album):
     if not data:
         data = read_cached_cover(artist, album)
     return thumb_image(data) if data else None
+
+
+THUMB_CACHE_SIZE = 256   # ~100 KB each, so ~25 MB (every cover of a big library was 80 MB+)
+
+
+class ThumbCache:
+    """Library covers by album key, keeping only the most recently used ones. "No cover" is
+    remembered for every album (it costs nothing), and so is which albums have one, even after
+    their picture was dropped: a dropped cover is simply read again when it's needed."""
+
+    def __init__(self, limit=THUMB_CACHE_SIZE):
+        self.limit = limit
+        self.pix = OrderedDict()
+        self.covered, self.bare = set(), set()
+
+    def __contains__(self, key):    # loaded (or known to have no cover)
+        return key in self.pix or key in self.bare
+
+    def __len__(self):
+        return len(self.pix)
+
+    def __getitem__(self, key):
+        if key in self.bare:
+            return None
+        self.pix.move_to_end(key)
+        return self.pix[key]
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+    def __setitem__(self, key, pix):
+        self.pop(key)
+        if pix is None:
+            self.bare.add(key)
+            return
+        self.pix[key] = pix
+        self.covered.add(key)
+        while len(self.pix) > self.limit:
+            self.pix.popitem(last=False)
+
+    def pop(self, key, default=None):
+        """Forget the album completely (its cover changed)."""
+        self.covered.discard(key)
+        self.bare.discard(key)
+        return self.pix.pop(key, default)
+
+    def has_cover(self, key):
+        return key in self.covered
+
+    def known(self, key):
+        return key in self.covered or key in self.bare
 
 
 class ThumbLoader(QThread):
@@ -4318,7 +4369,11 @@ class SongInfoDialog(QDialog):
         top = QHBoxLayout()
         top.setSpacing(16)
         cover = QLabel()
-        cover.setPixmap(main.thumb_pixmap(key, 120, main.radius(10)))
+        pix = main.thumb_cache.get(key)
+        if pix is None and main.thumb_cache.has_cover(key):
+            pix = main.cover_for(key)    # dropped from the small cache; one cover is quick to read
+        cover.setPixmap(rounded_pixmap(pix, 120, main.radius(10)) if pix is not None
+                        else main.thumb_pixmap(key, 120, main.radius(10)))
         names = QVBoxLayout()
         title = QLabel(t["title"])
         title.setObjectName("heading2")
@@ -4806,7 +4861,8 @@ class Player(QMainWindow):
         self.lyric_wait_path = None
         self.disco_worker = None
         self.disco_rows = []
-        self.thumb_cache = {}       # album key -> 160px square cover (None = no cover)
+        self.thumb_cache = ThumbCache()   # album key -> 160px square cover (None = no cover)
+        self.thumb_asked = set()          # covers asked for and not back yet
         self.ph_cache = {}          # placeholder pixmaps
         self.backdrop_cache = {}
         self.tree_artists = {}
@@ -5941,8 +5997,9 @@ class Player(QMainWindow):
         if self.list_covers():
             for akey, a_item in self.tree_artists.items():
                 a_item.setIcon(0, self.artist_icon(akey, 28))
-        missing = [k for k in self.albums if k not in self.thumb_cache]
+        missing = [k for k in self.albums if not self.thumb_cache.known(k)]
         self.thumbs.clear()
+        self.thumb_asked.clear()
         self.thumbs.add([self.thumb_job(k) for k in missing])
         self.refresh_context()
         if self.current_album in self.tree_albums:
@@ -6869,9 +6926,15 @@ class Player(QMainWindow):
         if key in self.thumb_cache:
             pix = self.thumb_cache[key]
             return rounded_pixmap(pix, size, radius) if pix is not None else self.placeholder(size, radius)
-        if request and key in self.albums:
-            self.thumbs.add([self.thumb_job(key)], front=True)
+        if request:
+            self.ask_thumb(key)
         return self.placeholder(size, radius)
+
+    def ask_thumb(self, key):
+        """Read this cover next (once; a library row asks on every paint)."""
+        if key in self.albums and key not in self.thumb_asked:
+            self.thumb_asked.add(key)
+            self.thumbs.add([self.thumb_job(key)], front=True)
 
     def thumb_icon(self, key, size, radius, request=True):
         return static_icon(self.thumb_pixmap(key, size, radius, request))
@@ -6892,14 +6955,17 @@ class Player(QMainWindow):
         keys = [k for k in self.albums if k[0] == akey]
         keys.sort(key=lambda k: (self.albums[k]["year"] or 9999, k[1]))
         for k in keys:
-            if self.thumb_cache.get(k) is not None:
+            if self.thumb_cache.has_cover(k):
                 return k
         return keys[0] if keys else None
 
     def artist_pixmap(self, akey, size):
         key = self.artist_cover_key(akey)
-        if key is not None and self.thumb_cache.get(key) is not None:
-            return rounded_pixmap(self.thumb_cache[key], size, size // 2)
+        pix = self.thumb_cache.get(key) if key is not None else None
+        if pix is not None:
+            return rounded_pixmap(pix, size, size // 2)
+        if key is not None and self.thumb_cache.has_cover(key):
+            self.ask_thumb(key)          # dropped from the cache; the view updates when it's back
         return avatar_pixmap(self.artists.get(akey, "?"), size, self.scheme["raised"], self.scheme["text"])
 
     def artist_icon(self, akey, size):
@@ -6907,6 +6973,7 @@ class Player(QMainWindow):
 
     def on_thumb_loaded(self, key, img):
         pix = QPixmap.fromImage(img) if img is not None else None   # decoded and shrunk by ThumbLoader
+        self.thumb_asked.discard(key)
         self.thumb_cache[key] = pix
         self.tree_px.pop(key, None)
         if key in self.tree_albums:
@@ -7002,7 +7069,7 @@ class Player(QMainWindow):
             if key is not None:
                 self.view_targets[view].setdefault(key, []).append((item, size, r, True))
                 if key not in self.thumb_cache:
-                    self.thumbs.add([self.thumb_job(key)], front=True)
+                    self.ask_thumb(key)
         else:
             key = value if kind == "album" else self.track_by_path[value][1]
             item.setIcon(self.thumb_icon(key, size, r))
@@ -7243,6 +7310,8 @@ class Player(QMainWindow):
         pix = self.thumb_cache.get(key)
         radius = max(2, self.radius(6))
         if pix is None:
+            if key not in self.thumb_cache:
+                self.ask_thumb(key)      # dropped from the cache (or not read yet)
             ck = (28, radius, self.scheme["raised"])
             if ck not in self.neutral_cache:
                 self.neutral_cache[ck] = neutral_cover(28, radius, self.scheme["raised"], self.scheme["sub"])
