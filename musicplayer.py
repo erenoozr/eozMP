@@ -4953,6 +4953,11 @@ class Player(QMainWindow):
         self.np_timer.setInterval(140)
         self.np_timer.timeout.connect(self.tick_now_playing)
         self.np_timer.start()
+        self.stats_timer = QTimer(self)   # listening stats are written at most every 30 s
+        self.stats_timer.setSingleShot(True)
+        self.stats_timer.setInterval(30000)
+        self.stats_timer.timeout.connect(self.flush_stats)
+        self.stats_dirty = False
         self.viz_timer = QTimer(self)
         self.viz_timer.setInterval(33)
         self.viz_timer.timeout.connect(self.tick_visualizers)
@@ -6895,6 +6900,7 @@ class Player(QMainWindow):
     def save_session(self, *_args):
         """Remember the song, the spot in it, the queue and where it was playing from. Runs on close,
         and also when Windows logs off or shuts down (closeEvent doesn't always come then)."""
+        self.flush_stats()
         if getattr(self, "session_closed", False):
             return   # saved on close already; the player is stopped now, so position() would say 0
         if 0 <= self.index < len(self.queue):
@@ -6925,6 +6931,7 @@ class Player(QMainWindow):
             if self.mini is not None:
                 self.mini.close()
             self.finalize_listen()
+            self.flush_stats()
             if self.cover_batch is not None:
                 self.cover_batch.stop()
                 self.cover_batch.wait(2000)
@@ -8250,11 +8257,20 @@ class Player(QMainWindow):
         length_ms = hit[0]["length"] * 1000 if hit and hit[0]["length"] else 60000
         if ms >= min(30000, length_ms * 0.5):
             record_play(self.stats, path, ms / 1000)
-            save_stats(self.stats)
+            self.stats_dirty = True
+            if not self.stats_timer.isActive():   # the whole file (~10 MB) took ~60 ms per song
+                self.stats_timer.start()
             if hit and hit[1] == self.current_album and self.current_album in self.albums:
                 for r, t in enumerate(self.albums[self.current_album]["tracks"]):
                     if t["path"] == path and self.track_table.item(r, 3) is not None:
                         self.track_table.item(r, 3).setText(str(self.stats["plays"][path]["count"]))
+
+    def flush_stats(self):
+        """Write the listening stats now if a write is waiting (timer, close, log-off)."""
+        self.stats_timer.stop()
+        if self.stats_dirty:
+            self.stats_dirty = False
+            save_stats(self.stats)
 
     def make_stats_table(self, headers):
         table = QTableWidget(0, len(headers))

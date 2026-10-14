@@ -7,6 +7,7 @@ import os
 import shutil
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from PyQt6.QtCore import QBuffer, QByteArray, QIODevice
@@ -373,6 +374,57 @@ class CacheWriteTest(PlayerHarness):
             self.assertTrue(wait_for(lambda: not p.scanning))
             self.assertEqual(save.call_count, 1)
         self.assertEqual(len(mp.load_cache()), 3)
+
+
+
+class StatsSaveTest(PlayerHarness):
+    """Listening stats used to be rewritten (~10 MB, ~60 ms on the GUI thread) after every song."""
+
+    def listen(self, times):
+        p = self.player
+        for _ in range(times):
+            p.listen_path, p.listen_ms = str(self.songs[0]), 40000
+            p.finalize_listen()
+
+    def stats_writes(self):
+        real = mp.write_json_atomic
+        writes = []
+
+        def counting(path, data):
+            if Path(path) == mp.STATS_FILE:
+                writes.append(len(data["events"]))
+            return real(path, data)
+        return writes, mock.patch.object(mp, "write_json_atomic", counting)
+
+    def test_songs_in_a_row_write_the_stats_once(self):
+        self.make_player(["One"])
+        p = self.player
+        writes, patch = self.stats_writes()
+        with patch:
+            self.listen(5)
+            self.assertEqual(writes, [])
+            self.assertTrue(p.stats_timer.isActive())
+            self.assertGreaterEqual(p.stats_timer.interval(), 10000)
+            p.stats_timer.timeout.emit()         # the timer runs out
+            self.listen(2)
+        self.assertEqual(writes, [5])
+        self.assertEqual(len(mp.load_stats()["events"]), 5)
+
+    def test_closing_saves_what_is_pending(self):
+        self.make_player(["One"])
+        writes, patch = self.stats_writes()
+        with patch:
+            self.listen(3)
+            self.player.quitting = True
+            self.player.close()
+        self.assertEqual(writes, [3])
+        self.assertEqual(len(mp.load_stats()["events"]), 3)
+
+    def test_logging_off_saves_what_is_pending(self):
+        self.make_player(["One"])
+        self.listen(2)
+        self.player.save_session()               # what Windows' log-off / shutdown request calls
+        self.assertEqual(len(mp.load_stats()["events"]), 2)
 
 
 if __name__ == "__main__":
