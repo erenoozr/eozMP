@@ -20,7 +20,8 @@ assert APP is not None   # the shared QApplication
 HOME_PATHS = ("CONFIG_FILE", "CACHE_FILE", "PLAYLIST_FILE", "LYRICS_DIR", "UI_DIR", "STATS_FILE", "COVERS_DIR")
 
 
-class PlayerTest(TempDirTest):
+class PlayerHarness(TempDirTest):
+    """Starts the real Player on a small fake library; no tests of its own."""
     engine = "Qt (built-in)"
 
     def make_player(self, names, seconds=1.0, **cfg):
@@ -85,6 +86,9 @@ class PlayerTest(TempDirTest):
             wait_for(lambda: False, 0.2)
         return calls
 
+
+
+class PlayerTest(PlayerHarness):
     def test_dragging_the_seek_bar_seeks_once_when_let_go(self):
         self.make_player(["One"], seconds=4)
         self.start("One")

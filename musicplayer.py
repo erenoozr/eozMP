@@ -5803,6 +5803,7 @@ class Player(QMainWindow):
             + html.escape(f"{len(alb['tracks'])} tracks - {fmt_time(total * 1000)}")
         )
         self.album_header.set_backdrop(self.backdrop_for(key))
+        self.track_table.setRowCount(0)   # refilling old rows re-measures every row for each cell
         self.track_table.setRowCount(len(alb["tracks"]))
         plays = self.stats["plays"]
         for r, t in enumerate(alb["tracks"]):
@@ -6715,6 +6716,7 @@ class Player(QMainWindow):
         if not top:
             top = self.artist_paths[:10]
         self.artist_top_paths = top
+        self.artist_top.setRowCount(0)   # refilling old rows re-measures every row for each cell
         self.artist_top.setRowCount(len(top))
         for r, path in enumerate(top):
             t = self.track_by_path[path][0]
@@ -6812,6 +6814,7 @@ class Player(QMainWindow):
         lab.setVisible(bool(albums))
         lst.setVisible(bool(albums))
         self.search_paths = songs
+        self.search_songs.setRowCount(0)   # refilling old rows re-measures every row for each cell
         self.search_songs.setRowCount(len(songs))
         for r, path in enumerate(songs):
             t = self.track_by_path[path][0]
@@ -7369,6 +7372,7 @@ class Player(QMainWindow):
         rows = [r for r in rows if passes_filters(r, self.cfg["soul_quality"], bool(self.cfg["soul_free_only"]))]
         self.inline_soul_view = group_by_folder(rows)[:40]
         table = self.search_soul_table
+        table.setRowCount(0)   # refilling old rows re-measures every row for each cell
         table.setRowCount(len(self.inline_soul_view))
         for r, group in enumerate(self.inline_soul_view):
             top = group[0]
@@ -7783,6 +7787,7 @@ class Player(QMainWindow):
 
     @staticmethod
     def fill_table(table, rows):
+        table.setRowCount(0)   # refilling old rows re-measures every row for each cell
         table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             for c, val in enumerate(row):
@@ -8301,6 +8306,8 @@ class Player(QMainWindow):
         if item is None:
             return
         name = item.data(KEY_ROLE)
+        if name == self.current_playlist and self.stack.currentIndex() == 5:
+            return   # a click fires two signals; the list is already on screen
         if name in self.playlists or name in SMART_PLAYLISTS:
             self.show_playlist(name)
 
@@ -8321,6 +8328,7 @@ class Player(QMainWindow):
         self.pl_del_btn.setEnabled(name not in SMART_PLAYLISTS)
         self.pl_sub.setText(sub)
         self.pl_table.clearSelection()
+        self.pl_table.setRowCount(0)   # refilling old rows re-measures every row for each cell
         self.pl_table.setRowCount(len(tracks))
         for r, (t, _key) in enumerate(tracks):
             vals = (str(r + 1), t["title"], t["artist"], t["album"], fmt_time(t["length"] * 1000))
