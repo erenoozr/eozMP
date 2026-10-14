@@ -343,6 +343,12 @@ def save_cache(tracks):
         pass
 
 
+def same_tracks(new, old):
+    """True when a scan found exactly the songs it was given (it hands back the very same dicts
+    for files that didn't change), so the library and its cache needn't be rebuilt."""
+    return len(new) == len(old) and all(a is b for a, b in zip(new, old))
+
+
 def norm_path(path):
     """One spelling per file: 'D:/Music' and 'd:\\music' are the same place on Windows."""
     return os.path.normcase(os.path.abspath(path))
@@ -4796,6 +4802,7 @@ class Player(QMainWindow):
 
         self.workers = set()
         self.albums = {}        # (artist_key, album_key) -> album dict
+        self.by_artist = {}     # artist_key -> its album keys, oldest first
         self.artists = {}       # artist_key -> display name
         self.tree_albums = {}   # key -> tree item
         self.queue = []         # [(track, album_key)]
@@ -4807,6 +4814,7 @@ class Player(QMainWindow):
         self.last_done = None
         self.poll_busy = False
         self.all_tracks = []
+        self.built_tracks = []   # what the library on screen was last built from (completely)
         self.scanning = False
         self.rescan_pending = False
         self.soul_raw = []      # every file found by the current Soulseek search
@@ -5882,7 +5890,11 @@ class Player(QMainWindow):
 
     def on_scan_done(self, tracks):
         self.scanning = False
-        self.build_library(tracks)
+        if tracks and same_tracks(tracks, self.built_tracks):
+            self.cover_cache = {}    # cover files may have been added; songs are as they were
+            self.statusBar().showMessage(f"{len(tracks)} tracks - {len(self.artists)} artists - {len(self.albums)} albums")
+        else:
+            self.build_library(tracks)
         if self.rescan_pending:
             self.rescan_pending = False
             self.rescan()
@@ -5901,7 +5913,7 @@ class Player(QMainWindow):
             for i in range(self.tree.topLevelItemCount())
             if self.tree.topLevelItem(i).isExpanded()
         }
-        self.albums, self.artists, self.cover_cache = {}, {}, {}
+        self.albums, self.artists, self.cover_cache, self.by_artist = {}, {}, {}, {}
         group = bool(self.cfg["group_featured"])
         split = bool(self.cfg["split_collabs"])
         keep = {k.strip().lower() for k in self.cfg["keep_together"] if k.strip()}
@@ -5912,10 +5924,10 @@ class Player(QMainWindow):
                                else (raw.strip() or "Unknown Artist"))
             akey, alkey = t["artist"].lower(), t["album"].lower()
             self.artists.setdefault(akey, t["artist"])
-            alb = self.albums.setdefault(
-                (akey, alkey),
-                {"artist": self.artists[akey], "album": t["album"], "tracks": []},
-            )
+            alb = self.albums.get((akey, alkey))
+            if alb is None:
+                alb = self.albums[(akey, alkey)] = {"artist": self.artists[akey], "album": t["album"], "tracks": []}
+                self.by_artist.setdefault(akey, []).append((akey, alkey))
             alb["tracks"].append(t)
 
         for alb in self.albums.values():
@@ -5938,6 +5950,8 @@ class Player(QMainWindow):
                     entry["albums"].append(key)
             if alb["year"]:
                 self.decades.setdefault(f"{alb['year'] // 10 * 10}s", []).append(key)
+        for keys in self.by_artist.values():
+            keys.sort(key=lambda k: (self.albums[k]["year"] or 9999, k[1]))
 
         ignore_the = bool(self.cfg["ignore_the"])
 
@@ -5971,9 +5985,7 @@ class Player(QMainWindow):
             bold.setBold(True)
             a_item.setFont(0, bold)
             self.tree.addTopLevelItem(a_item)
-            keys = [k for k in self.albums if k[0] == akey]
-            keys.sort(key=lambda k: (self.albums[k]["year"] or 9999, k[1]))
-            for number, key in enumerate(keys, start=1):
+            for number, key in enumerate(self.by_artist[akey], start=1):
                 alb = self.albums[key]
                 al_item = QTreeWidgetItem([alb["album"]])
                 al_item.setData(0, NUM_ROLE, number)
@@ -6032,6 +6044,7 @@ class Player(QMainWindow):
         elif idx == 7 and self.current_artist in self.artists:
             self.show_artist(self.current_artist, switch=False)
         self.refresh_queue_view()
+        self.built_tracks = tracks
 
     def visible_album_count(self):
         n = 0
@@ -6952,8 +6965,7 @@ class Player(QMainWindow):
         return False   # covers in the library list are drawn by TreeRowDelegate
 
     def artist_cover_key(self, akey):
-        keys = [k for k in self.albums if k[0] == akey]
-        keys.sort(key=lambda k: (self.albums[k]["year"] or 9999, k[1]))
+        keys = self.by_artist.get(akey, [])
         for k in keys:
             if self.thumb_cache.has_cover(k):
                 return k
@@ -7115,9 +7127,7 @@ class Player(QMainWindow):
 
     # ----- artist page
     def artist_album_keys(self, akey):
-        keys = [k for k in self.albums if k[0] == akey]
-        keys.sort(key=lambda k: (self.albums[k]["year"] or 9999, k[1]))
-        return keys
+        return list(self.by_artist.get(akey, []))
 
     def show_artist(self, akey, switch=True):
         self.current_artist = akey

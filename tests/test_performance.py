@@ -222,13 +222,22 @@ class ThumbCacheTest(unittest.TestCase):
         self.assertFalse(cache.known("a"))
 
 
+def fake_tracks(folder, n, artists, albums_each):
+    """n songs spread over artists x albums_each albums, as a scan would return them."""
+    out = []
+    for i in range(n):
+        a = i % artists
+        out.append({"path": str(folder / f"s{i}.mp3"), "title": f"Song {i}", "artist": f"Artist {a}",
+                    "album": f"Album {a}-{i // artists % albums_each}", "length": 200, "num": i % 12 + 1,
+                    "disc": 1, "year": 1990 + i % 30, "genre": "Rock", "mtime": 1.0, "size": 1})
+    return out
+
+
 class BoundedCoversTest(PlayerHarness):
     def fake_albums(self, n):
         p = self.player
-        for i in range(n):
-            t = {"path": str(self.tmp / f"s{i}.mp3"), "title": f"S{i}", "artist": "Band", "album": f"A{i}",
-                 "length": 200, "num": 1, "disc": 1, "year": 2000 + i % 20}
-            p.albums[("band", f"a{i}")] = {"artist": "Band", "album": f"A{i}", "tracks": [t], "year": t["year"]}
+        p.build_library(fake_tracks(self.tmp, n, 1, n))
+        p.thumbs.clear()
 
     def test_cache_stays_bounded_with_a_big_library(self):
         self.make_player(["One"])
@@ -247,15 +256,15 @@ class BoundedCoversTest(PlayerHarness):
         self.fake_albums(3)
         p.thumb_cache = mp.ThumbCache(limit=1)
         img = QImage(160, 160, QImage.Format.Format_RGB32)
-        p.on_thumb_loaded(("band", "a0"), img)
-        p.on_thumb_loaded(("band", "a1"), img)          # a0 dropped
+        p.on_thumb_loaded(("artist 0", "album 0-0"), img)
+        p.on_thumb_loaded(("artist 0", "album 0-1"), img)          # a0 dropped
         p.tree_px.clear()
         with mock.patch.object(p.thumbs, "add") as ask:
             for _ in range(5):                          # painted again and again
-                p.tree_thumb(("band", "a0"))
+                p.tree_thumb(("artist 0", "album 0-0"))
         self.assertEqual(ask.call_count, 1)
-        p.on_thumb_loaded(("band", "a0"), img)
-        self.assertEqual(p.tree_thumb(("band", "a0")).width(), 28)
+        p.on_thumb_loaded(("artist 0", "album 0-0"), img)
+        self.assertEqual(p.tree_thumb(("artist 0", "album 0-0")).width(), 28)
 
     def test_artist_picture_still_uses_an_album_with_a_cover(self):
         self.make_player(["One"])
@@ -263,10 +272,38 @@ class BoundedCoversTest(PlayerHarness):
         self.fake_albums(3)
         p.thumb_cache = mp.ThumbCache(limit=1)
         img = QImage(160, 160, QImage.Format.Format_RGB32)
-        p.on_thumb_loaded(("band", "a0"), None)
-        p.on_thumb_loaded(("band", "a1"), img)
-        p.on_thumb_loaded(("band", "a2"), img)          # a1 dropped, but it has a cover
-        self.assertEqual(p.artist_cover_key("band"), ("band", "a1"))
+        p.on_thumb_loaded(("artist 0", "album 0-0"), None)
+        p.on_thumb_loaded(("artist 0", "album 0-1"), img)
+        p.on_thumb_loaded(("artist 0", "album 0-2"), img)          # a1 dropped, but it has a cover
+        self.assertEqual(p.artist_cover_key("artist 0"), ("artist 0", "album 0-1"))
+
+
+
+class LibraryBuildTest(PlayerHarness):
+    def test_many_artists_build_quickly(self):
+        """Albums used to be found by scanning every album for every artist (artists x albums)."""
+        self.make_player(["One"])
+        tracks = fake_tracks(self.tmp, 18000, 3000, 2)      # 6000 albums
+        started = time.perf_counter()
+        self.player.build_library(tracks)
+        took = time.perf_counter() - started
+        print(f" 18k songs / 6000 albums: {took:.2f} s", end=" ")
+        self.assertEqual(len(self.player.albums), 6000)
+        self.assertEqual(self.player.artist_album_keys("artist 7"), [("artist 7", "album 7-0"), ("artist 7", "album 7-1")])
+        self.assertLess(took, 1.5)
+
+    def test_rescan_without_changes_does_not_rebuild(self):
+        self.make_player(["One", "Two"])
+        p = self.player
+        with mock.patch.object(p, "build_library", wraps=p.build_library) as build:
+            p.rescan()
+            self.assertTrue(wait_for(lambda: not p.scanning))
+            self.assertEqual(build.call_count, 0)
+            (self.tmp / "music" / "Band" / "Alb" / "01 - One.wav").unlink()
+            p.rescan()
+            self.assertTrue(wait_for(lambda: not p.scanning))
+            self.assertEqual(build.call_count, 1)
+        self.assertEqual(len(p.all_tracks), 1)
 
 
 if __name__ == "__main__":
