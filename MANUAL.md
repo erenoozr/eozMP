@@ -231,13 +231,15 @@ web:
 1. In eozMP, open **Preferences → Soulseek**.
 2. Fill in: slskd address `http://localhost:5030`, the **API key** (the long text from the file) and the
    **downloads folder** (the same folder as in the file).
-3. Click **Test connection**. "Connected to slskd." means it works. Click **OK**.
+3. Click **Test connection**. "Connected to slskd, and slskd is logged in to Soulseek." means it works. Click
+   **OK**. If it says slskd isn't logged in, check the username and password under `soulseek:` in `slskd.yml`.
 
 ### 4. Finding and downloading music
 
-- **From the search box:** type an artist or album and press **Enter**. Under your library results, a
-  **From Soulseek** section fills in after about 30 seconds, grouped by album with quality and size. Double-click a
-  row, or select rows and click **Download selected**.
+- **From the search box:** type an artist or album and press **Enter**; this searches your own library. To look
+  on Soulseek too, press **Search Soulseek too** under the results. A **From Soulseek** section shows how many
+  people have answered and fills in when the search is done (usually within a minute or two), grouped by album
+  with quality and size. Double-click a row, or select rows and click **Download selected**.
 - **The Soulseek page:** click the Soulseek search icon next to the search box for a full results page with
   filters: Albums or Files, quality (lossless only, MP3 320k+), and free slots only.
 - **Whole discography:** on the Soulseek page, click **Whole discography...** and type an artist. eozMP picks the
