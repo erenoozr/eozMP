@@ -4686,6 +4686,7 @@ class Player(QMainWindow):
         self.shuffle_played = set()
         self.listen_ms = 0
         self.last_pos = None
+        self.last_tick = 0.0
         self.fail_streak = 0      # songs in a row that couldn't be played
         self.shuffle_pick = None  # shuffle's next song, picked early so it can be lined up
         self._planning_off = False
@@ -6339,11 +6340,14 @@ class Player(QMainWindow):
         if playing and pos >= 1000:
             self.fail_streak = 0      # this one plays fine
         # listening stats: count only time actually played (seeking doesn't count)
+        now = time.monotonic()
         if playing and self.last_pos is not None:
             step = pos - self.last_pos
             if 0 < step < 2000:
-                self.listen_ms += step
-        self.last_pos = pos
+                # no more than the time that really went by: short jumps forward aren't listening
+                self.listen_ms += min(step, int((now - self.last_tick) * 1250) + 20)
+        if pos != self.last_pos:          # VLC moves in coarse steps; time the steps, not the polls
+            self.last_pos, self.last_tick = pos, now
         if self.mini is not None and self.mini.isVisible():
             dur = self.seek.maximum()
             self.mini.set_progress(pos / dur if dur else 0)
@@ -7845,6 +7849,7 @@ class Player(QMainWindow):
         src = old.source()
         pos = old.position() if not src.isEmpty() else 0
         playing = old.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        muted = self.audio.isMuted()
         for sig in (old.positionChanged, old.durationChanged, old.mediaStatusChanged,
                     old.playbackStateChanged, old.errorOccurred):
             try:
@@ -7863,6 +7868,7 @@ class Player(QMainWindow):
         old.deleteLater()
         self.player, self.audio, self.engine_name = create_engine(choice, self.cfg["mpv_dir"])
         self.audio.setVolume(self.volume.value() / 100)
+        self.audio.setMuted(muted)          # don't let a muted song suddenly play out loud
         self.connect_engine()
         self.apply_equalizer()
         if not src.isEmpty():

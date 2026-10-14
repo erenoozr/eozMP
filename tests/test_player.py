@@ -142,6 +142,33 @@ class PlayerTest(PlayerHarness):
         self.assertEqual(self.title(), "Three")
         self.assertEqual(self.player.fwd, [])
 
+    def test_skipping_ahead_does_not_count_as_listening(self):
+        self.make_player(["One"], seconds=4)
+        self.start("One")
+        p = self.player
+        self.assertTrue(wait_for(lambda: p.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState))
+        p.listen_ms, p.last_pos = 0, None
+        for pos in range(0, 18001, 900):     # twenty small jumps in no time at all
+            p.on_position(pos)
+        self.assertLess(p.listen_ms, 1000)
+
+    def test_listening_time_is_counted(self):
+        self.make_player(["One"], seconds=4)
+        self.start("One")
+        p = self.player
+        self.assertTrue(wait_for(lambda: p.player.position() > 300))
+        start_ms, start_pos = p.listen_ms, p.player.position()
+        wait_for(lambda: False, 2)
+        heard = p.player.position() - start_pos
+        self.assertGreater(p.listen_ms - start_ms, heard * 0.8)
+
+    def test_mute_survives_an_engine_switch(self):
+        self.make_player(["One"], seconds=4)
+        self.start("One")
+        self.player.toggle_mute()
+        self.player.switch_engine("Qt (built-in)")
+        self.assertTrue(self.player.audio.isMuted())
+
     def test_a_missing_song_is_skipped(self):
         self.make_player(["One", "Two", "Three"])
         self.delete(self.songs[1])
