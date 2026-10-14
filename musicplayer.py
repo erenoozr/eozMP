@@ -3732,6 +3732,33 @@ def song_tech_info(path):
     return out
 
 
+def plain_tip(text):
+    """A tooltip that shows song tags as text (Qt would render '<b>...' in a tag as HTML)."""
+    return f"<qt>{html.escape(text)}</qt>"
+
+
+class PlainLabels(QObject):
+    """Song tags come from downloaded files, so a label must never guess they are HTML: a title like
+    '<img src="file://...">' would load a network file. Labels that really use links set RichText
+    themselves and escape the tags; every other label is switched to plain text before it is shown."""
+
+    def eventFilter(self, obj, event):
+        if (event.type() == QEvent.Type.Polish and isinstance(obj, QLabel)
+                and obj.textFormat() == Qt.TextFormat.AutoText):
+            obj.setTextFormat(Qt.TextFormat.PlainText)
+        return False
+
+
+PLAIN_LABELS = None
+
+
+def make_labels_plain():
+    global PLAIN_LABELS
+    if PLAIN_LABELS is None:
+        PLAIN_LABELS = PlainLabels()
+        QApplication.instance().installEventFilter(PLAIN_LABELS)
+
+
 class SongTable(QTableWidget):
     """A song list you can drag songs out of (onto playlists or the queue)."""
 
@@ -4469,6 +4496,7 @@ class FullPlayer(QWidget):
 class Player(QMainWindow):
     def __init__(self):
         super().__init__()
+        make_labels_plain()
         self.setWindowTitle("eozMP")
         self.cfg = load_config()
         if int(self.cfg.get("cfg_version", 1)) < 2:
@@ -5673,7 +5701,7 @@ class Player(QMainWindow):
                 al_item = QTreeWidgetItem([alb["album"]])
                 al_item.setData(0, NUM_ROLE, number)
                 al_item.setData(0, YEAR_ROLE, alb["year"] or 0)
-                al_item.setToolTip(0, f"{alb['album']} ({alb['year']})" if alb["year"] else alb["album"])
+                al_item.setToolTip(0, plain_tip(f"{alb['album']} ({alb['year']})" if alb["year"] else alb["album"]))
                 al_item.setData(0, KEY_ROLE, key)
                 a_item.addChild(al_item)
                 self.tree_albums[key] = al_item
@@ -6632,7 +6660,7 @@ class Player(QMainWindow):
         item = QListWidgetItem(text)
         item.setData(KEY_ROLE, (kind, value))
         item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        item.setToolTip(text.replace("\n", " - "))
+        item.setToolTip(plain_tip(text.replace("\n", " - ")))
         r = self.radius(10) if radius is None else radius
         if kind == "artist":
             item.setIcon(self.artist_icon(value, size))
