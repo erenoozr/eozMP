@@ -1,0 +1,197 @@
+eozMP - SOULSEEK (slskd) REHBERİ
+================================
+
+eozMP, Soulseek ağında müzik bulup indirmek için slskd adlı küçük bir program
+kullanır. eozMP kurulumu bunların hepsini senin yerine ayarlayabilir. Bu
+rehber neyin kurulduğunu, nasıl kullanılacağını ve sorunların nasıl
+çözüleceğini anlatır.
+
+Soulseek bir dosya paylaşım ağıdır. Sadece sahip olmaya hakkın olan müziği indir.
+
+
+1. KURULUM NE YAPTI
+-------------------
+
+Kurulumda "Soulseek desteği (slskd)" seçiliyse:
+
+  - slskd, eozMP klasörüne kopyalandı:
+        %LOCALAPPDATA%\Programs\eozMP\slskd\slskd.exe
+  - Bir Soulseek kullanıcı adı ve şifre yazdıysan, kurulum slskd'nin ayar
+    dosyasını senin için yazdı:
+        %LOCALAPPDATA%\slskd\slskd.yml
+    İçinde kullanıcı adın, şifren, bir indirme klasörü ve eozMP'nin slskd ile
+    konuşmasını sağlayan gizli bir "API anahtarı" var.
+  - eozMP'ye de aynı API anahtarı verildi, yani otomatik olarak bağlı.
+
+Daha önce slskd'yi kendin kurduysan, kurulum ayarlarına dokunmadı. eozMP'yi
+bağlamak için 7. bölüme bak.
+
+
+2. BAŞLATMA
+-----------
+
+Hiçbir şey yapman gerekmiyor: eozMP açılınca slskd'yi arka planda sessizce
+başlatır (siyah pencere çıkmaz), eozMP'den çıkınca da kapatır.
+
+İlk seferde Windows, slskd.exe'nin ağı kullanmasına izin verilsin mi diye
+sorabilir. "Erişime izin ver"e tıkla. İzin vermezsen indirmeler yavaş olur
+ya da hiç başlamaz.
+
+Soulseek hesabın, slskd ilk kez giriş yaptığında otomatik oluşturulur. Ayrıca
+kayıt olman gerekmez.
+
+
+3. ÇALIŞIP ÇALIŞMADIĞINI KONTROL ETMEK
+--------------------------------------
+
+1. eozMP'yi aç, Preferences > Soulseek'e gir.
+2. "Test connection"a tıkla. "Connected to slskd." yazıyorsa her şey tamam.
+
+slskd'nin kendi web sayfasına da bakabilirsin:
+
+1. Tarayıcıda şu adrese git:  http://localhost:5030
+2. Kullanıcı adı  slskd  ve şifre  slskd  ile giriş yap.
+3. En üstte Soulseek sunucusuna bağlı olduğun yazmalı.
+
+
+4. MÜZİK BULMA VE İNDİRME
+-------------------------
+
+- eozMP'nin arama kutusuna sanatçı ya da albüm yaz ve Enter'a bas. Yaklaşık
+  30 saniye sonra kütüphane sonuçlarının altında "From Soulseek" bölümü
+  dolar. Bir satıra çift tıkla ya da satırları seçip "Download selected"a bas.
+- Arama kutusunun yanındaki Soulseek simgesi, filtreli tam sonuç sayfasını
+  açar: Albümler ya da Dosyalar, sadece kayıpsız (lossless), MP3 320k+,
+  sadece boş slot.
+- O sayfadaki "Whole discography..." bir sanatçının her albümünün en iyi
+  kopyasını seçer. Zaten sahip olduğun albümler işaretsiz gelir.
+- İndirmeler simgesi ilerlemeyi gösterir. Biten indirmeler müzik klasörüne
+  Sanatçı / Albüm / 01 - Şarkı  düzeninde taşınır ve kütüphanede görünür.
+
+İyi indirme için ipuçları:
+- "Free slot" yazan sonuçları seç: hemen başlarlar.
+- Kullanıcı adının önündeki yıldız (*), o kişiden daha önce başarıyla
+  indirdiğin anlamına gelir. Uyarı işareti sık başarısız olduğunu gösterir.
+- En iyi kalite kayıpsızdır (FLAC). "Library > Check audio quality..."
+  yüksek kaliteymiş gibi görünüp aslında olmayan dosyaları bulur.
+
+
+5. İSTEK LİSTESİ (WISHLIST)
+---------------------------
+
+Bir şeyi bulamadın mı? Soulseek sonuç sayfasında "Add to wishlist"e tıkla
+(ya da Soulseek > Wishlist...). eozMP açık olduğu sürece istek listeni 20
+dakikada bir arar ve bulunca bildirim gösterir.
+
+
+6. PAYLAŞMA (İSTEĞE BAĞLI AMA KİBAR)
+------------------------------------
+
+Soulseek, insanlar paylaştığı için çalışır. Bazı kullanıcılar sadece bir
+şey paylaşanlara dosya gönderir. Bir klasörü paylaşmak için slskd.yml'yi aç
+(8. bölüm) ve en sona şunu ekle:
+
+    shares:
+      directories:
+        - C:\Users\KULLANICIADIN\Music
+
+Dosyayı kaydet ve eozMP'yi yeniden başlat. Sadece paylaşmaya hakkın olan
+müziği paylaş.
+
+
+7. eozMP'Yİ ELLE BAĞLAMAK
+-------------------------
+
+Sadece slskd'yi kendin kurduysan ya da kurulumda hesap adımını atladıysan
+gerekir.
+
+1. Windows tuşu + R'ye bas,  %LOCALAPPDATA%\slskd  yaz ve Enter'a bas.
+2. slskd.yml'ye sağ tıkla > Birlikte aç > Not Defteri.
+3. Şu bölümlerin her biri tam bir kez (başında # olmadan) bulunsun.
+   BÜYÜK HARFLE yazılan değerleri değiştir:
+
+    soulseek:
+      username: "SOULSEEK_KULLANICI_ADIN"
+      password: "SIFREN"
+
+    directories:
+      downloads: C:\Users\KULLANICIADIN\Music\Soulseek
+
+    web:
+      authentication:
+        username: slskd
+        password: slskd
+        api_keys:
+          eozmp:
+            key: EN-AZ-20-KARAKTERLIK-RASTGELE-UZUN-BIR-METIN
+            role: readwrite
+            cidr: 0.0.0.0/0,::/0
+
+   Kurallar: Tab tuşunu asla kullanma, sadece boşluk kullan ve girintileri
+   tam gösterildiği gibi bırak. Şifrede sadece harf ve rakam kullan.
+4. Kaydet (Ctrl+S) ve eozMP'yi (ya da slskd'yi) yeniden başlat.
+5. eozMP'de Preferences > Soulseek'i aç ve doldur:
+     slskd address:     http://localhost:5030
+     API key:           "key:" satırındaki aynı uzun metin
+     Downloads folder:  "downloads:" satırındaki aynı klasör
+6. "Test connection"a tıkla.
+
+
+8. NEYİN NEREDE OLDUĞU
+----------------------
+
+  slskd programı          %LOCALAPPDATA%\Programs\eozMP\slskd\
+  slskd ayarları          %LOCALAPPDATA%\slskd\slskd.yml
+  slskd verileri, kayıtlar %LOCALAPPDATA%\slskd\
+  İndirmeler (varsayılan) %USERPROFILE%\Music\Soulseek\
+  slskd web sayfası       http://localhost:5030  (kullanıcı slskd, şifre slskd)
+
+Bir klasörü açmak için: Windows tuşu + R, yolu yapıştır, Enter.
+
+
+9. SORUNLAR VE ÇÖZÜMLER
+-----------------------
+
+"Can't reach slskd"
+    eozMP slskd'yi başlatamadı. eozMP klasöründe slskd klasörünün olduğunu
+    kontrol et ya da slskd.exe'yi kendin aç (çift tıkla; siyah bir pencere
+    açılır, açık bırak). Adresin http://localhost:5030 olduğunu kontrol et.
+
+HTTP 401 ya da 403
+    eozMP'deki API anahtarı, slskd.yml'deki "key:" satırıyla aynı değil.
+    Tekrar kopyala (7. bölüm, 5. adım).
+
+"Login rejected" / Soulseek sunucusuna bağlanamıyor
+    O kullanıcı adı başkasına ait ya da şifre yanlış. slskd.yml'de kullanıcı
+    adını değiştir (içinde rakam olan sıra dışı bir ad seç), kaydet ve
+    eozMP'yi yeniden başlat.
+
+Arama hiçbir şey bulmuyor ya da indirmeler hiç başlamıyor
+    - Windows slskd.exe için sorarsa "Erişime izin ver"e tıkla.
+    - Boş slotu olan sonuçları seç.
+    - Bazı modemler gelen bağlantıları engeller. İleri seviye: modeminde
+      50300 numaralı portu (TCP) bu bilgisayara yönlendir.
+
+İndirmeler kütüphanede görünmüyor
+    Preferences > Soulseek'teki indirme klasörünü kontrol et, sonra
+    Library > Organize downloads now'ı kullan.
+
+slskd.yml'de hata var ve slskd açılmıyor
+    slskd.yml'nin adını slskd.old.yml yap ve eozMP kurulumunu tekrar çalıştır
+    (Soulseek desteğini seç): yeni bir dosya yazar.
+
+slskd'nin eozMP ile başlamasını istemiyorum
+    eozMP'yi kapat,  %USERPROFILE%\.simple_music_player.json  dosyasını Not
+    Defteri ile aç,  "slskd_autostart": true  yazan yeri  false  yap ve kaydet.
+
+
+10. KALDIRMA
+------------
+
+eozMP'yi kaldırmak (Ayarlar > Uygulamalar) slskd'nin program dosyalarını
+siler. slskd ayarların, Soulseek hesabın ve indirdiğin müzikler kalır.
+Ayarları da silmek için  %LOCALAPPDATA%\slskd  klasörünü sil.
+
+slskd, slskd ekibinin özgür yazılımıdır (https://github.com/slskd/slskd) ve
+GNU Affero General Public License v3 ile lisanslıdır. Lisansı slskd
+klasöründe bulunur.

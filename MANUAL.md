@@ -8,6 +8,7 @@ step by step.
 [Finding your way around](#finding-your-way-around) · [Playing music](#playing-music) ·
 [Lyrics, mini player and fullscreen](#lyrics-mini-player-and-fullscreen) ·
 [Playlists, Browse, Search, Home and Stats](#playlists-browse-search-home-and-stats) ·
+[New in 1.2](#new-in-12) ·
 [Soulseek](#soulseek-logging-in-and-downloading) · [Preferences](#making-it-yours-preferences) ·
 [Optional extras](#optional-extras-vlc-equalizer-and-visualizer) · [Backups and updates](#backups-updates-and-your-data) ·
 [Troubleshooting](#troubleshooting) · [Shortcuts](#keyboard-and-mouse-shortcuts)
@@ -17,23 +18,34 @@ step by step.
 | Item | Needed? | Where it comes from |
 | --- | --- | --- |
 | A Windows 10 or 11 PC | Yes | |
-| `eozMP.exe` | Yes | The [latest release](../../releases/latest) of this repository |
+| `eozMP-Setup-1.2.exe` | Yes | The [latest release](../../releases/latest) of this repository |
 | Your music files (mp3, flac, m4a, wav, ogg and more) | Yes | Your own folders |
 | An internet connection | For lyrics and covers | |
 | Python 3 | Only to build eozMP yourself | [python.org/downloads](https://www.python.org/downloads/) |
-| slskd (a small Soulseek program) | Only for Soulseek | [github.com/slskd/slskd](https://github.com/slskd/slskd/releases) |
-| VLC | Only for the equalizer | [videolan.org](https://www.videolan.org/) |
+| slskd (a small Soulseek program) | Only for Soulseek | Included in the installer |
+| VLC | Only for the equalizer | The installer can download it, or [videolan.org](https://www.videolan.org/) |
 
 A Soulseek account is free. slskd creates it for you the first time it connects (see the Soulseek section).
 
 ## Installing eozMP
 
-### The easy way: download the exe
+### The easy way: the installer
 
-1. Open the [latest release](../../releases/latest) and download **eozMP.exe** under *Assets*.
-2. Put it wherever you like (for example on your Desktop) and double-click it.
-3. If Windows shows a blue **Windows protected your PC** box, click **More info**, then **Run anyway**.
-   This happens because the app is new and unsigned.
+1. Open the [latest release](../../releases/latest) and download **eozMP-Setup-1.2.exe** under *Assets*.
+2. Double-click it. If Windows shows a blue **Windows protected your PC** box, click **More info**, then
+   **Run anyway**. This happens because the app is new and unsigned.
+3. Pick a language (English or Türkçe). Setup then asks, step by step, what to install:
+   - **eozMP** (always)
+   - **Soulseek support (slskd)**: ticked by default
+   - **VLC**: only needed for the equalizer; it is downloaded during setup (about 45 MB)
+   - a **desktop shortcut**
+4. If you chose Soulseek, type a Soulseek user name and password and pick a downloads folder. Setup writes all of
+   slskd's settings and connects eozMP to it, so the manual Soulseek steps further down are already done for you.
+   (If slskd was already set up on this PC, setup leaves its settings alone.)
+5. Click **Finish**. eozMP starts slskd by itself, quietly in the background, whenever it runs.
+
+No Python is needed. **Soulseek Guide.txt** (and the Turkish **Soulseek Rehberi.txt**) in the Start menu explain
+Soulseek in detail. Uninstall eozMP from **Settings → Apps**; your music, settings and Soulseek account are kept.
 
 ### Building it yourself
 
@@ -43,6 +55,8 @@ A Soulseek account is free. slskd creates it for you the first time it connects 
 3. Double-click **build_exe.bat**. A black window installs everything eozMP uses (PyQt6, mutagen, numpy,
    PyInstaller and python-vlc), then builds the app. The first time takes a few minutes.
 4. When it says **Done!**, `eozMP.exe` is on your Desktop (and in the `dist` folder).
+5. To build the installer as well, install [Inno Setup 6](https://jrsoftware.org/isdl.php) and double-click
+   **build_setup.bat**: it downloads slskd and fpcalc once and writes `installer\Output\eozMP-Setup-x.y.exe`.
 
 To run it straight from the source instead: open the extracted folder, click the address bar, type `cmd`,
 press Enter, then run:
@@ -240,6 +254,72 @@ web:
 
 Soulseek is a file-sharing network. Only download music you're allowed to have.
 
+## New in 1.2
+
+### Your language
+
+eozMP speaks **English, Türkçe, Español, Deutsch, Français, Português, Русский, العربية, 中文, हिन्दी, 日本語 and
+Bahasa Indonesia**. It starts in your Windows language; change it in **Preferences → General → Language** (eozMP
+restarts). Arabic switches the whole window to right-to-left. Song, artist and album names are never translated.
+The translations were made by machine (Turkish was checked by hand), so some wording may be a little off.
+
+### Lyrics in your language
+
+On the Lyrics page click **Translate** and pick a language. A smaller translated line appears under every lyric
+line, in the lyrics page and the fullscreen player. Each song is translated once and remembered. **Off** hides it.
+
+### Library tools
+
+- **Missing songs:** right-click an album → **Find missing songs...**. eozMP compares it with MusicBrainz, lists
+  the songs you don't have and searches them (or the whole album) on Soulseek with one click.
+- **Duplicate songs:** **Library → Find duplicate songs...** lists songs you have more than once and keeps the
+  best copy. Ticked copies are moved to a `_eozMP duplicates` folder, never deleted.
+- **Audio quality check:** **Library → Check audio quality...** listens to about 45 seconds of each file and flags
+  MP3s or FLACs that were made from a lower-quality source (for example a "320k" MP3 that is really 128k).
+- **Better copies:** in the quality check, or by right-clicking an album, choose **Find a better copy on
+  Soulseek...**. eozMP searches for a lossless copy; when it arrives it offers to move the old files aside.
+- **Fix tags and cover:** right-click an album → **Fix tags and cover...**. eozMP looks the songs up on
+  MusicBrainz and shows the old and new tags side by side; tick what you want and click **Apply** (this changes
+  your files). With a free **AcoustID** key (**Connect → AcoustID key**, get one at
+  [acoustid.org/new-application](https://acoustid.org/new-application)) it recognises songs by their sound, even
+  files with no tags at all.
+- **Moods:** the Browse tab has **Calm**, **Energetic** and **Night**, picked from genre tags, the BPM tag and
+  (after an audio quality check) how each song sounds.
+
+### Soulseek
+
+- **Wishlist:** can't find something? On the Soulseek page click **Add to wishlist** (or **Soulseek →
+  Wishlist...**). While eozMP runs, it searches your wishlist every 20 minutes and tells you when something shows up.
+- **Trusted users:** users whose downloads finished for you get a ★ and come first among equal results; users
+  whose downloads keep failing get a ⚠.
+- **New releases:** every week eozMP checks MusicBrainz for new albums from the artists you play most. They show on
+  **Home** under *New from your artists*; click one to search it on Soulseek.
+
+### Phone, TV and Windows
+
+- **Phone remote:** **Connect → Phone remote...**, tick *Turn on the phone remote* and scan the QR code with your
+  phone (same Wi-Fi). You get the cover, the current lyric line, play/pause, next, previous, seeking, volume and
+  the heart. **Listen on this phone** plays the music on the phone itself while the PC keeps time silently.
+  The link contains a secret code, so only devices that scanned it can use it.
+- **Play on a TV or speaker:** **Connect → Play on a TV or speaker...** finds smart TVs, Sonos and other DLNA /
+  UPnP speakers on your network. Pick one and click **Play there**; pausing, skipping and seeking follow along.
+  **Stop casting** brings the music back to the PC. (Chromecast and AirPlay are not supported.)
+- **Windows media controls:** the song, the cover and the play/pause/next/previous buttons appear in the Windows
+  volume flyout and on the lock screen, and Bluetooth headset buttons work.
+- **Last.fm:** **Connect → Last.fm...**. Paste a free Last.fm API key and secret
+  ([last.fm/api/account/create](https://www.last.fm/api/account/create)), click **Connect my account**, allow
+  eozMP in the browser and click **I allowed it - finish**. Songs are scrobbled after half of them (or 4 minutes)
+  was heard; if you're offline they're sent later. Artist pages then show **similar artists**.
+
+### Also new
+
+- **Fluid background:** **Preferences → Audio → Fluid colour background** replaces the fullscreen backdrop with soft
+  colours from the cover that move with the music.
+- **Repeat this song:** with repeat set to *this song*, **Next** starts the song again instead of skipping it.
+- **Updates:** **Help → Check for updates...**, plus a quiet check at start-up (turn it off in
+  Preferences → General).
+- The first rescan after updating is slower than usual because eozMP also reads the BPM tag.
+
 ## Making it yours: Preferences
 
 Click **Preferences** in the top menu (or press Ctrl+,). **Apply** shows a change without closing the window.
@@ -283,6 +363,8 @@ eozMP keeps its own data in your user folder (`C:\Users\YOURNAME`):
 | `.simple_music_player_cache.json` | The library list (makes starting fast) |
 | `.simple_music_player_lyrics` | Lyrics found online |
 | `.simple_music_player_covers` | Covers found online |
+| `.simple_music_player_translations` | Translated lyrics |
+| `.simple_music_player_quality.json` | Audio quality check results |
 
 ## Troubleshooting
 

@@ -26,7 +26,7 @@ if not exist "musicplayer.py" (
 rem --- 2. Install / update everything eozMP uses
 echo  [1/3] Installing what eozMP needs (this can take a few minutes the first time)...
 python -m pip install --upgrade pip
-python -m pip install --upgrade PyQt6 mutagen numpy pyinstaller
+python -m pip install --upgrade PyQt6 mutagen numpy pyinstaller segno winrt-runtime winrt-Windows.Foundation winrt-Windows.Foundation.Collections winrt-Windows.Media winrt-Windows.Media.Playback winrt-Windows.Storage winrt-Windows.Storage.Streams
 rem Optional: lets eozMP use VLC (needed for the equalizer). Harmless if VLC isn't installed.
 python -m pip install --upgrade python-vlc
 if errorlevel 1 (
@@ -40,7 +40,7 @@ echo.
 echo  [2/3] Building eozMP.exe ...
 if exist build rmdir /s /q build
 if exist "eozMP.ico" (
-    python -m PyInstaller --noconfirm --onefile --windowed --name eozMP --icon eozMP.ico musicplayer.py
+    python -m PyInstaller --noconfirm --onefile --windowed --name eozMP --icon eozMP.ico --collect-all winrt musicplayer.py
 ) else (
     echo  (eozMP.ico not found - building without the icon)
     python -m PyInstaller --noconfirm --onefile --windowed --name eozMP musicplayer.py

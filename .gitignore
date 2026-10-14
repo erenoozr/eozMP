@@ -7,3 +7,6 @@ __pycache__/
 # never upload personal settings or keys
 slskd.yml
 .simple_music_player*
+# installer build output and downloaded programs (build_setup.bat fetches them)
+installer/Output/
+installer/vendor/

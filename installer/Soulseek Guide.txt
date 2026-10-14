@@ -1,0 +1,192 @@
+eozMP - SOULSEEK (slskd) GUIDE
+==============================
+
+eozMP finds and downloads music from the Soulseek network through a small
+program called slskd. The eozMP installer can set all of this up for you.
+This guide explains what was set up, how to use it, and how to fix problems.
+
+Soulseek is a file-sharing network. Only download music you're allowed to have.
+
+
+1. WHAT THE INSTALLER DID
+-------------------------
+
+If you ticked "Soulseek support (slskd)" during setup:
+
+  - slskd was copied into the eozMP folder:
+        %LOCALAPPDATA%\Programs\eozMP\slskd\slskd.exe
+  - If you typed a Soulseek user name and password, the installer wrote
+    slskd's settings file for you:
+        %LOCALAPPDATA%\slskd\slskd.yml
+    with your user name, password, a downloads folder and a secret
+    "API key" that lets eozMP talk to slskd.
+  - eozMP was told the same API key, so it is connected automatically.
+
+If you already had slskd set up before, the installer left your settings
+alone. See section 7 to connect eozMP to it.
+
+
+2. STARTING IT
+--------------
+
+You don't have to do anything: when eozMP opens, it starts slskd quietly in
+the background (no black window), and stops it again when you quit eozMP.
+
+The first time, Windows may ask whether slskd.exe may use the network.
+Click "Allow access". Without it, downloads are slow or don't start.
+
+Your Soulseek account is created automatically the first time slskd logs in.
+There is no separate sign-up.
+
+
+3. CHECKING THAT IT WORKS
+-------------------------
+
+1. Open eozMP, then Preferences > Soulseek.
+2. Click "Test connection". "Connected to slskd." means everything works.
+
+You can also look at slskd's own web page:
+
+1. Open your browser and go to:  http://localhost:5030
+2. Log in with user name  slskd  and password  slskd
+3. At the top it should say you're connected to the Soulseek server.
+
+
+4. FINDING AND DOWNLOADING MUSIC
+--------------------------------
+
+- Type an artist or album in eozMP's search box and press Enter. After about
+  30 seconds a "From Soulseek" section fills in under your library results.
+  Double-click a row, or select rows and click "Download selected".
+- The Soulseek search icon (next to the search box) opens a full results page
+  with filters: Albums or Files, lossless only, MP3 320k+, free slots only.
+- "Whole discography..." on that page picks the best copy of every album by
+  an artist. Albums you already have start unticked.
+- The Downloads icon shows progress. Finished downloads are moved into your
+  music folder as  Artist / Album / 01 - Title  and appear in your library.
+
+Tips for good downloads:
+- Prefer results that say "Free slot": they start right away.
+- A star (*) before a user name means downloads from that person finished
+  for you before. A warning sign means they often failed.
+- Lossless (FLAC) is the best quality. "Library > Check audio quality..."
+  can spot files that only pretend to be high quality.
+
+
+5. THE WISHLIST
+---------------
+
+Can't find something? On the Soulseek results page click "Add to wishlist"
+(or Soulseek > Wishlist...). While eozMP is running it searches your
+wishlist every 20 minutes and shows a notification when it turns up.
+
+
+6. SHARING (OPTIONAL, BUT POLITE)
+---------------------------------
+
+Soulseek works because people share. Some users only upload to people who
+share something back. To share a folder, open slskd.yml (see section 8) and
+add, at the very end:
+
+    shares:
+      directories:
+        - C:\Users\YOURNAME\Music
+
+Save the file and restart eozMP. Only share music you're allowed to share.
+
+
+7. CONNECTING eozMP BY HAND
+---------------------------
+
+Only needed if you set up slskd yourself, or skipped the account step.
+
+1. Press Windows key + R, type  %LOCALAPPDATA%\slskd  and press Enter.
+2. Right-click slskd.yml > Open with > Notepad.
+3. Make sure these parts exist exactly once (no # in front). Change the
+   values written in CAPITALS:
+
+    soulseek:
+      username: "YOUR_SOULSEEK_NAME"
+      password: "YOURPASSWORD"
+
+    directories:
+      downloads: C:\Users\YOURNAME\Music\Soulseek
+
+    web:
+      authentication:
+        username: slskd
+        password: slskd
+        api_keys:
+          eozmp:
+            key: ANY-LONG-RANDOM-TEXT-20-CHARACTERS-OR-MORE
+            role: readwrite
+            cidr: 0.0.0.0/0,::/0
+
+   Rules: use spaces, never the Tab key, and keep the spacing exactly as
+   shown. Use only letters and numbers in the password.
+4. Save (Ctrl+S) and restart eozMP (or slskd).
+5. In eozMP open Preferences > Soulseek and fill in:
+     slskd address:     http://localhost:5030
+     API key:           the same long text as after "key:"
+     Downloads folder:  the same folder as after "downloads:"
+6. Click "Test connection".
+
+
+8. WHERE THINGS ARE
+-------------------
+
+  slskd program          %LOCALAPPDATA%\Programs\eozMP\slskd\
+  slskd settings         %LOCALAPPDATA%\slskd\slskd.yml
+  slskd data and logs    %LOCALAPPDATA%\slskd\
+  Downloads (default)    %USERPROFILE%\Music\Soulseek\
+  slskd web page         http://localhost:5030  (user slskd, password slskd)
+
+To open a folder: Windows key + R, paste the path, press Enter.
+
+
+9. PROBLEMS AND FIXES
+---------------------
+
+"Can't reach slskd"
+    eozMP couldn't start slskd. Check that the slskd folder exists in the
+    eozMP folder, or start slskd.exe yourself (double-click it; a black
+    window opens, leave it open). Check the address is http://localhost:5030.
+
+HTTP 401 or 403
+    The API key in eozMP doesn't match the "key:" line in slskd.yml. Copy it
+    again (section 7, step 5).
+
+"Login rejected" / can't connect to the Soulseek server
+    That user name is taken by someone else, or the password is wrong.
+    Change the user name in slskd.yml (pick something unusual with numbers),
+    save, and restart eozMP.
+
+Searches find nothing or downloads never start
+    - Click "Allow access" if Windows asks about slskd.exe.
+    - Choose results with a free slot.
+    - Some routers block incoming connections. Advanced: forward port 50300
+      (TCP) on your router to this PC.
+
+Downloads don't show up in the library
+    Check the downloads folder in Preferences > Soulseek, then use
+    Library > Organize downloads now.
+
+slskd.yml has a mistake and slskd won't start
+    Rename slskd.yml to slskd.old.yml and run the eozMP installer again
+    (choose Soulseek support): it writes a fresh file.
+
+I don't want slskd to start with eozMP
+    Close eozMP, open  %USERPROFILE%\.simple_music_player.json  in Notepad,
+    change  "slskd_autostart": true  to  false  and save.
+
+
+10. REMOVING IT
+---------------
+
+Uninstalling eozMP (Settings > Apps) removes slskd's program files. Your
+slskd settings, your Soulseek account and your downloaded music are kept.
+To remove the settings too, delete the folder  %LOCALAPPDATA%\slskd .
+
+slskd is free software by the slskd team (https://github.com/slskd/slskd),
+licensed under the GNU Affero General Public License v3. Its license is in
+the slskd folder.

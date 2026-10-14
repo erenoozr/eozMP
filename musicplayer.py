@@ -48,9 +48,13 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QAction, QBrush, QColor, QCursor, QGradient, QImage, QKeySequence, QShortcut, QDesktopServices, QFont, QFontDatabase, QFontMetrics, QIcon, QLinearGradient, QPainter,
-    QPainterPath, QPalette, QPen, QPixmap,
+    QPainterPath, QPalette, QPen, QPixmap, QRadialGradient,
 )
 from PyQt6.QtMultimedia import QAudioFormat, QAudioOutput, QMediaPlayer
+try:   # decodes files for the audio quality check
+    from PyQt6.QtMultimedia import QAudioDecoder
+except ImportError:
+    QAudioDecoder = None
 try:   # Qt 6.8+: lets us read the audio for the visualizer
     from PyQt6.QtMultimedia import QAudioBufferOutput
 except ImportError:
@@ -73,13 +77,187 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+# ---------------------------------------------------------------- interface language
+# Every text the app shows passes through _t() at the Qt boundary (labels, buttons, menus, dialogs, status
+# bar...), so the code itself stays in English. The translations live in eozmp_lang.py, which is generated
+# by tools/make_translations.py.
+import functools
+
+UI_LANGS = {"English": "en", "Türkçe": "tr", "Español": "es", "Deutsch": "de",
+            "Français": "fr", "Português": "pt", "Русский": "ru",
+            "العربية": "ar", "中文": "zh-CN",
+            "हिन्दी": "hi", "日本語": "ja", "Bahasa Indonesia": "id"}
+UI_LANG_AUTO = "Automatic (Windows language)"
+_TR = {}             # English text -> translation
+_TR_PATTERNS = []    # (regex, translation) for texts with changing parts, like "Moved {0} file(s)"
+
+
+class _Raw(str):
+    """Song, artist, album and playlist names: shown as they are, never translated."""
+
+
+def _raw(text):
+    return _Raw(text)
+
+
+@functools.lru_cache(maxsize=8192, typed=True)
+def _t(text):
+    if not _TR or not isinstance(text, str) or isinstance(text, _Raw) or not text or text in UI_LANGS:
+        return text
+    hit = _TR.get(text)
+    if hit is not None:
+        return hit
+    for rx, tpl in _TR_PATTERNS:
+        m = rx.match(text)
+        if m:
+            return re.sub(r"\{(\d+)\}", lambda k: m.group(int(k.group(1)) + 1), tpl)
+    return text
+
+
+def _template_regex(tpl):
+    parts = re.split(r"(\{\d+\})", tpl.replace("{{", "{").replace("}}", "}"))
+    body = "".join(f"(?P<g{p[1:-1]}>.*?)" if re.fullmatch(r"\{\d+\}", p) else re.escape(p) for p in parts)
+    rx = re.compile("^" + body + "$", re.S)
+    order = [int(n) for n in re.findall(r"\{(\d+)\}", tpl)]
+    return rx, order
+
+
+def set_ui_language(code):
+    _TR.clear()
+    _TR_PATTERNS.clear()
+    _t.cache_clear()
+    if code == "en":
+        return
+    try:
+        from eozmp_lang import LANG
+    except ImportError:
+        return
+    for k, v in LANG.get(code, {}).items():
+        if re.search(r"\{\d+\}", k):
+            rx, order = _template_regex(k)
+            # map placeholder numbers to regex groups, so the translation may reorder them
+            tpl = re.sub(r"\{(\d+)\}", lambda m: "{%d}" % order.index(int(m.group(1))) if int(m.group(1)) in order
+                         else m.group(0), v.replace("{{", "{").replace("}}", "}"))
+            _TR_PATTERNS.append((rx, tpl))
+        else:
+            _TR[k] = v
+    _TR_PATTERNS.sort(key=lambda p: -len(p[0].pattern))
+
+
+def system_ui_language():
+    from PyQt6.QtCore import QLocale
+    name = QLocale.system().name()          # "tr_TR", "zh_CN", "pt_BR"...
+    if name.startswith("zh"):
+        return "zh-CN"
+    code = name.split("_")[0]
+    return code if code in UI_LANGS.values() else "en"
+
+
+def ui_language_code(cfg_value):
+    return UI_LANGS.get(cfg_value) or system_ui_language()
+
+
+def _tr_wrap(fn, idx, static=False):
+    """Translate the str (or list of str) arguments at positions `idx` before calling Qt."""
+    def wrapper(*a, **k):
+        a = list(a)
+        for i in idx:
+            if i < len(a):
+                v = a[i]
+                if isinstance(v, str):
+                    a[i] = _t(v)
+                elif isinstance(v, (list, tuple)) and v and all(isinstance(x, str) for x in v):
+                    a[i] = [_t(x) for x in v]
+        return fn(*a, **k)
+    return staticmethod(wrapper) if static else wrapper
+
+
+def install_ui_translation():
+    """Patch the Qt calls that show text. Done once, before any window is built."""
+    from PyQt6.QtWidgets import QAbstractButton, QMenuBar, QStatusBar
+    for cls, name, idx in (
+        (QLabel, "setText", (1,)), (QAbstractButton, "setText", (1,)), (QAction, "setText", (1,)),
+        (QWidget, "setToolTip", (1,)), (QAction, "setToolTip", (1,)), (QWidget, "setWindowTitle", (1,)),
+        (QLineEdit, "setPlaceholderText", (1,)), (QMenu, "addAction", (1, 2)), (QMenu, "addMenu", (1, 2)),
+        (QMenu, "setTitle", (1,)), (QMenuBar, "addMenu", (1, 2)), (QMenuBar, "addAction", (1,)),
+        (QTabWidget, "addTab", (2, 3)), (QTabWidget, "setTabText", (2,)), (QFormLayout, "addRow", (1,)),
+        (QTableWidget, "setHorizontalHeaderLabels", (1,)), (QTreeWidget, "setHeaderLabels", (1,)),
+        (QStatusBar, "showMessage", (1,)), (QSystemTrayIcon, "showMessage", (1, 2)),
+        (QSystemTrayIcon, "setToolTip", (1,)), (QListWidgetItem, "setText", (1,)),
+    ):
+        setattr(cls, name, _tr_wrap(getattr(cls, name), idx))
+    for name in ("about", "question", "information", "warning", "critical"):
+        setattr(QMessageBox, name, _tr_wrap(getattr(QMessageBox, name), (1, 2), static=True))
+    QInputDialog.getText = _tr_wrap(QInputDialog.getText, (1, 2), static=True)
+    QInputDialog.getItem = _tr_wrap(QInputDialog.getItem, (1, 2), static=True)
+    for name in ("getExistingDirectory", "getOpenFileName", "getSaveFileName"):
+        setattr(QFileDialog, name, _tr_wrap(getattr(QFileDialog, name), (1,), static=True))
+
+
+def _tr_first_strs(a, n=2):
+    """Constructor args: translate the text among the first n arguments (text, or icon then text)."""
+    return tuple(_t(x) if i < n and isinstance(x, str) else x for i, x in enumerate(a))
+
+
+class QLabel(QLabel):
+    def __init__(self, *a, **k):
+        super().__init__(*_tr_first_strs(a, 1), **k)
+
+
+class QPushButton(QPushButton):
+    def __init__(self, *a, **k):
+        super().__init__(*_tr_first_strs(a), **k)
+
+
+class QCheckBox(QCheckBox):
+    def __init__(self, *a, **k):
+        super().__init__(*_tr_first_strs(a, 1), **k)
+
+
+class QAction(QAction):
+    def __init__(self, *a, **k):
+        super().__init__(*_tr_first_strs(a), **k)
+
+
+class QComboBox(QComboBox):
+    """Shows translated items but keeps the English text as the item's data, so the code (and the
+    settings file) keep working with the English values."""
+
+    def addItem(self, *a):
+        if a and isinstance(a[0], str):
+            super().addItem(_t(a[0]), a[1] if len(a) > 1 else a[0])
+        elif len(a) >= 2 and isinstance(a[1], str):
+            super().addItem(a[0], _t(a[1]), a[2] if len(a) > 2 else a[1])
+        else:
+            super().addItem(*a)
+
+    def addItems(self, items):
+        for text in items:
+            self.addItem(text)
+
+    def currentText(self):
+        data = self.currentData()
+        return data if isinstance(data, str) else super().currentText()
+
+    def itemText(self, i):
+        data = self.itemData(i)
+        return data if isinstance(data, str) else super().itemText(i)
+
+    def setCurrentText(self, text):
+        i = self.findData(text)
+        if i >= 0:
+            self.setCurrentIndex(i)
+        else:
+            super().setCurrentText(text)
+
+
 AUDIO_EXTS = {
     ".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".oga", ".opus",
     ".wma", ".aiff", ".aif", ".mp4", ".m4b", ".ape", ".wv", ".mka",
 }
 COVER_NAMES = ("cover", "folder", "front", "album", "albumart")
 COVER_EXTS = (".jpg", ".jpeg", ".png")
-APP_VERSION = "1.1"
+APP_VERSION = "1.2"
 CONFIG_FILE = Path.home() / ".simple_music_player.json"
 CACHE_FILE = Path.home() / ".simple_music_player_cache.json"
 LOSSLESS_EXTS = {"flac", "wav", "aiff", "aif", "ape", "wv"}
@@ -88,6 +266,16 @@ KEY_ROLE = Qt.ItemDataRole.UserRole
 ARTIST_ROLE = Qt.ItemDataRole.UserRole + 2
 NUM_ROLE = Qt.ItemDataRole.UserRole + 3
 YEAR_ROLE = Qt.ItemDataRole.UserRole + 4
+TRANS_ROLE = Qt.ItemDataRole.UserRole + 5     # a lyric line's translation
+TRANSLATE_LANGS = dict(UI_LANGS)     # lyrics can be translated into every interface language
+TRANSLATE_DIR = Path.home() / ".simple_music_player_translations"
+QUALITY_FILE = Path.home() / ".simple_music_player_quality.json"
+REPO_URL = "https://github.com/erenoozr/eozMP"
+# where eozMP.exe lives; the installer puts slskd and the Soulseek guide next to it
+APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+UPDATE_URL = "https://raw.githubusercontent.com/erenoozr/eozMP/main/musicplayer.py"
+SOUL_TRUST = {}       # Soulseek user -> how many of their files finished (minus failed ones)
+CUTOFF_DB = 70        # how far below the mid-range level the music must fall to count as "ended"
 SYSTEM_FONT_TAG = "__system__"
 SYSTEM_FONT_FAMILY = "Segoe UI"
 DEFAULT_CFG = {
@@ -152,6 +340,29 @@ DEFAULT_CFG = {
     "queue": [],
     "last_pos": 0,
     "win_size": [1100, 700],
+    "translate_lang": "",
+    "wishlist": [],
+    "soul_trust": {},
+    "soul_trust_seen": [],
+    "new_releases": {},
+    "new_releases_seen": [],
+    "mb_artist_ids": {},
+    "update_check": True,
+    "fs_fluid": False,
+    "slskd_autostart": True,
+    "ui_lang": "",
+    "remote_on": False,
+    "remote_port": 8765,
+    "remote_token": "",
+    "smtc": True,
+    "acoustid_key": "",
+    "lastfm_key": "",
+    "lastfm_secret": "",
+    "lastfm_session": "",
+    "lastfm_user": "",
+    "lastfm_on": True,
+    "lastfm_queue": [],
+    "upgrades": {},
 }
 
 
@@ -249,7 +460,7 @@ def to_int(text, default=9999):
 
 def read_track(path):
     title = artist = album = genre = ""
-    num, disc, year, length = 9999, 1, 0, 0
+    num, disc, year, length, bpm = 9999, 1, 0, 0, 0
     try:
         audio = MutagenFile(path, easy=True)
         if audio is not None:
@@ -264,6 +475,7 @@ def read_track(path):
                 num = to_int(first(t, "tracknumber"))
                 disc = to_int(first(t, "discnumber"), 1)
                 year = to_int(first(t, "date")[:4], 0)
+                bpm = to_int(first(t, "bpm"), 0)
     except Exception:
         pass
     return {
@@ -277,6 +489,7 @@ def read_track(path):
         "disc": disc,
         "year": year,
         "length": length,
+        "bpm": bpm,
     }
 
 
@@ -316,7 +529,7 @@ def scan_folders(folders, cache=None):
                     continue
                 prev = old.get(path)
                 if (prev and prev.get("mtime") == st.st_mtime and prev.get("size") == st.st_size
-                        and "artist_raw" in prev and "genre" in prev):
+                        and "artist_raw" in prev and "genre" in prev and "bpm" in prev):
                     tracks.append(prev)
                 else:
                     t = read_track(path)
@@ -608,7 +821,7 @@ def group_by_folder(rows):
         _, folder = split_path(r["filename"])
         groups.setdefault((r["username"], folder), []).append(r)
     out = list(groups.values())
-    out.sort(key=lambda g: (not g[0]["free"], -len(g), -g[0]["speed"]))
+    out.sort(key=lambda g: (not g[0]["free"], -len(g), -SOUL_TRUST.get(g[0]["username"], 0), -g[0]["speed"]))
     return out
 
 
@@ -1235,7 +1448,20 @@ class LyricDelegate(QStyledItemDelegate):
         text = index.data(Qt.ItemDataRole.DisplayRole) or " "
         rect = QFontMetrics(font).boundingRect(QRect(0, 0, width, 100000),
                                                _flag(Qt.TextFlag.TextWordWrap), text)
-        return QSize(width + 2 * hpad, rect.height() + 2 * vpad)
+        extra = 0
+        trans = index.data(TRANS_ROLE)
+        if trans:
+            trect = QFontMetrics(self.trans_font(font)).boundingRect(
+                QRect(0, 0, width, 100000), _flag(Qt.TextFlag.TextWordWrap), trans)
+            extra = trect.height() + 4
+        return QSize(width + 2 * hpad, rect.height() + extra + 2 * vpad)
+
+    @staticmethod
+    def trans_font(font):
+        f = QFont(font)
+        f.setPointSizeF(max(8.0, font.pointSizeF() * 0.6) if font.pointSizeF() > 0 else 10.0)
+        f.setWeight(QFont.Weight.Medium)
+        return f
 
     def paint(self, painter, option, index):
         if index.data(KEY_ROLE) == "spacer":
@@ -1255,6 +1481,20 @@ class LyricDelegate(QStyledItemDelegate):
         flags |= _flag(Qt.TextFlag.TextWordWrap)
         hpad, vpad = self.main.lyric_pad
         r = QRect(option.rect).adjusted(hpad, vpad, -hpad, -vpad)
+        trans = index.data(TRANS_ROLE)
+        tr_flags = flags
+        tr_rect = None
+        if trans:   # original on top, translation under it, the pair centred in the row
+            fm = QFontMetrics(font)
+            h1 = fm.boundingRect(QRect(0, 0, r.width(), 100000), _flag(Qt.TextFlag.TextWordWrap), text).height()
+            tfont = self.trans_font(font)
+            h2 = QFontMetrics(tfont).boundingRect(QRect(0, 0, r.width(), 100000),
+                                                  _flag(Qt.TextFlag.TextWordWrap), trans).height()
+            y0 = r.top() + max(0, (r.height() - h1 - h2 - 4) // 2)
+            flags = (flags & ~0xE0) | 0x20            # top-aligned, keep left/centre
+            tr_flags = flags
+            tr_rect = QRect(r.left(), y0 + h1 + 4, r.width(), h2 + 2)
+            r = QRect(r.left(), y0, r.width(), h1 + 2)
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         painter.setFont(font)
@@ -1266,6 +1506,12 @@ class LyricDelegate(QStyledItemDelegate):
             painter.drawText(r.translated(1, 3), flags, text)
         painter.setPen(color)
         painter.drawText(r, flags, text)
+        if tr_rect is not None:
+            soft = QColor(color)
+            soft.setAlphaF(color.alphaF() * 0.72)
+            painter.setFont(self.trans_font(font))
+            painter.setPen(soft)
+            painter.drawText(tr_rect, tr_flags, trans)
         painter.restore()
 
 
@@ -1674,6 +1920,15 @@ class PreferencesDialog(QDialog):
         self.media_keys.setChecked(bool(cfg["media_keys"]))
         gf.addRow(self.close_tray)
         gf.addRow(self.media_keys)
+        self.ui_lang = QComboBox()
+        self.ui_lang.addItem(UI_LANG_AUTO)
+        for name in UI_LANGS:
+            self.ui_lang.addItem(name)
+        self.ui_lang.setCurrentText(cfg["ui_lang"] or UI_LANG_AUTO)
+        gf.addRow("Language", self.ui_lang)
+        self.update_check = QCheckBox("Check for a newer eozMP when it starts")
+        self.update_check.setChecked(bool(cfg["update_check"]))
+        gf.addRow(self.update_check)
         self.tabs.addTab(gen, "General")
 
         # --- Appearance
@@ -1855,6 +2110,9 @@ class PreferencesDialog(QDialog):
         self.fs_motion = QCheckBox("Slowly moving background in the fullscreen player")
         self.fs_motion.setChecked(bool(cfg["fs_motion"]))
         uf.addRow(self.fs_motion)
+        self.fs_fluid = QCheckBox("Fluid colour background in the fullscreen player (moves with the music)")
+        self.fs_fluid.setChecked(bool(cfg["fs_fluid"]))
+        uf.addRow(self.fs_fluid)
         uf.addRow(info)
         uf.addRow(eq_open)
         self.tabs.addTab(au, "Audio")
@@ -1917,7 +2175,7 @@ class PreferencesDialog(QDialog):
 
         if tab:
             for i in range(self.tabs.count()):
-                if self.tabs.tabText(i) == tab:
+                if self.tabs.tabText(i) == _t(tab):
                     self.tabs.setCurrentIndex(i)
 
     def add_folder(self):
@@ -1974,6 +2232,9 @@ class PreferencesDialog(QDialog):
             "lyrics_animate": self.ly_anim.isChecked(),
             "lyrics_shadow": self.ly_shadow.isChecked(),
             "fs_motion": self.fs_motion.isChecked(),
+            "fs_fluid": self.fs_fluid.isChecked(),
+            "update_check": self.update_check.isChecked(),
+            "ui_lang": "" if self.ui_lang.currentText() == UI_LANG_AUTO else self.ui_lang.currentText(),
             "visualizer": self.viz_style.currentText(),
             "split_collabs": self.split_collabs.isChecked(),
             "keep_together": [x.strip() for x in self.keep_together.toPlainText().splitlines() if x.strip()],
@@ -2010,7 +2271,7 @@ class PreferencesDialog(QDialog):
             mode.setCurrentText("Custom")
             picker.setCurrentFont(QFont(current))
         picker.setEnabled(mode.currentText() == "Custom")
-        mode.currentTextChanged.connect(lambda t: picker.setEnabled(t == "Custom"))
+        mode.currentTextChanged.connect(lambda _x: picker.setEnabled(mode.currentText() == "Custom"))
         return mode, picker
 
     @staticmethod
@@ -3131,7 +3392,7 @@ class MiniPlayer(QWidget):
         self.heart.setIcon(make_icon("heart_fill" if fav else "heart", self.accent if fav else "#ffffff"))
 
     def set_track(self, title, artist, cover_pix, backdrop, href=None):
-        self.title.setText(title)
+        self.title.setText(_raw(title))
         short = html.escape(self.artist.fontMetrics().elidedText(artist, Qt.TextElideMode.ElideRight, 230))
         self.artist.setText(f'<a href="{html.escape(href)}" style="color: rgba(255,255,255,190); '
                             f'text-decoration: none;">{short}</a>' if href else short)
@@ -3141,7 +3402,7 @@ class MiniPlayer(QWidget):
         self.update()
 
     def set_lyric(self, text):
-        self.lyric.setText(text)
+        self.lyric.setText(_raw(text))
 
     def set_next(self, text):
         self.next_label.setText(self.next_label.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, 230))
@@ -3669,7 +3930,7 @@ class SongInfoDialog(QDialog):
         cover = QLabel()
         cover.setPixmap(main.thumb_pixmap(key, 120, main.radius(10)))
         names = QVBoxLayout()
-        title = QLabel(t["title"])
+        title = QLabel(_raw(t["title"]))
         title.setObjectName("heading2")
         title.setWordWrap(True)
         sub = QLabel(f"{t['artist']}  ·  {t['album']}")
@@ -3684,7 +3945,7 @@ class SongInfoDialog(QDialog):
         lay.addLayout(top)
         tech = song_tech_info(path)
         play = main.stats["plays"].get(path, {})
-        last = time.strftime("%d %b %Y, %H:%M", time.localtime(play["last"])) if play.get("last") else "Never"
+        last = time.strftime("%d %b %Y, %H:%M", time.localtime(play["last"])) if play.get("last") else _t("Never")
         added = t.get("added", t.get("mtime", 0))
         rows = (
             ("Format", tech["format"]), ("Quality", tech["quality"] or "-"),
@@ -3696,7 +3957,7 @@ class SongInfoDialog(QDialog):
         )
         form = QFormLayout()
         for label, value in rows:
-            v = QLabel(value)
+            v = QLabel(_raw(value))
             v.setWordWrap(True)
             v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             form.addRow(label, v)
@@ -3956,10 +4217,46 @@ class FullPlayer(QWidget):
     def set_backdrop(self, pix):
         self.backdrop = pix
         self._cache = None
+        self._fluid_cols = None
         self.update()
+
+    def paint_fluid(self, p):
+        """Soft colour blobs (taken from the cover) that drift and swell with the music."""
+        if getattr(self, "_fluid_cols", None) is None:
+            img = self.backdrop.scaled(6, 6, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                       Qt.TransformationMode.SmoothTransformation).toImage()
+            cols = []
+            for x, y in ((1, 1), (4, 1), (2, 3), (4, 4), (1, 4)):
+                c = QColor(img.pixel(x, y))
+                h, sat, v, _a = c.getHsv()
+                c.setHsv(max(0, h), min(255, int(sat * 1.3) + 40), max(170, v))
+                cols.append(c)
+            self._fluid_cols = cols
+            self._fluid_lv = 0.0
+        lv = sum(self.viz.levels[:24]) / 24.0
+        self._fluid_lv += (lv - self._fluid_lv) * 0.25
+        t = time.monotonic()
+        w, h = self.width(), self.height()
+        p.fillRect(self.rect(), self._fluid_cols[0].darker(320))
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        for i, c in enumerate(self._fluid_cols):
+            cx = w * (0.5 + 0.38 * math.sin(t * (0.11 + 0.037 * i) + i * 1.7))
+            cy = h * (0.5 + 0.38 * math.cos(t * (0.09 + 0.029 * i) + i * 2.2))
+            g = QRadialGradient(cx, cy, min(w, h) * (0.55 + 0.4 * self._fluid_lv))
+            c1, c2 = QColor(c), QColor(c)
+            c1.setAlpha(200)
+            c2.setAlpha(0)
+            g.setColorAt(0.0, c1)
+            g.setColorAt(1.0, c2)
+            p.fillRect(self.rect(), QBrush(g))
 
     def paintEvent(self, e):
         p = QPainter(self)
+        if self.backdrop is not None and self.main.cfg.get("fs_fluid"):
+            self.paint_fluid(p)
+            p.fillRect(self.rect(), QColor(0, 0, 0, 100))
+            p.end()
+            return
         if self.backdrop is not None:
             motion = bool(self.main.cfg["fs_motion"])
             grow = 1.14 if motion else 1.0
@@ -4003,7 +4300,7 @@ class FullPlayer(QWidget):
         super().showEvent(e)
         self._wake()
         self.idle_timer.start()
-        if self.main.cfg["fs_motion"]:
+        if self.main.cfg["fs_motion"] or self.main.cfg.get("fs_fluid"):
             self.motion_timer.start()
 
     def hideEvent(self, e):
@@ -4054,8 +4351,2170 @@ class FullPlayer(QWidget):
         e.accept()
 
 
+# ---------------------------------------------------------------- v1.2 extras
+# lyric translation, Soulseek wishlist / trust, missing songs, duplicates, audio quality,
+# moods, new releases, update check. Everything here talks to the Player through ExtrasMixin.
+STOP_BG = threading.Event()     # set on quit so background loops stop waiting
+_MB_LOCK = threading.Lock()
+_mb_last = [0.0]
+
+
+def translate_one(text, lang):
+    """One lyric line -> target language. Free Google endpoint first, MyMemory as the backup."""
+    try:
+        data = http_json("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl="
+                         + lang + "&dt=t&q=" + urllib.parse.quote(text))
+        out = "".join(seg[0] for seg in data[0] if seg and seg[0])
+    except Exception:
+        data = http_json("https://api.mymemory.translated.net/get?" + urllib.parse.urlencode(
+            {"q": text, "langpair": f"autodetect|{lang}"}))
+        out = data["responseData"]["translatedText"]
+        if "MYMEMORY WARNING" in out:
+            raise RuntimeError("translation quota used up")
+    return out.strip()
+
+
+def translate_lines(lines, lang):
+    """{original line: translation} for the distinct non-empty lines; cached per song text + language."""
+    uniq = list(dict.fromkeys(l.strip() for l in lines if l and l.strip()))[:400]
+    key = hashlib.sha1((lang + "\n" + "\n".join(uniq)).encode("utf-8", "replace")).hexdigest()[:24]
+    cpath = TRANSLATE_DIR / f"{key}.json"
+    try:
+        return json.loads(cpath.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(text):
+        try:
+            return text, translate_one(text, lang)
+        except Exception:
+            return text, None
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        out = {k: v for k, v in pool.map(one, uniq) if v}
+    if uniq and len(out) < len(uniq) / 2:
+        raise RuntimeError("translation service not reachable")
+    try:
+        TRANSLATE_DIR.mkdir(exist_ok=True)
+        write_json_atomic(cpath, out)
+    except Exception:
+        pass
+    return out
+
+
+def soul_search_sync(client, text, seconds=25):
+    """Blocking Soulseek search for background jobs (wishlist)."""
+    sid = str(uuid.uuid4())
+    client.call("POST", "/searches", {"id": sid, "searchText": text})
+    try:
+        deadline = time.time() + seconds
+        while time.time() < deadline and not STOP_BG.is_set():
+            time.sleep(2)
+            if (client.call("GET", f"/searches/{sid}") or {}).get("isComplete"):
+                break
+        return flatten_responses(client.call("GET", f"/searches/{sid}/responses") or [])
+    finally:
+        try:
+            client.call("DELETE", f"/searches/{sid}")
+        except Exception:
+            pass
+
+
+def wish_match(rows, query, fmt):
+    """Is the wished-for album/song on Soulseek? A folder of 3+ files, or a file name with every word."""
+    rows = [r for r in rows if passes_filters(r, fmt, False)]
+    if any(len(g) >= 3 for g in group_by_folder(rows)):
+        return True
+    words = [w for w in _norm(query).split() if len(w) > 1]
+    return bool(words) and any(all(w in _norm(split_path(r["filename"])[0]) for w in words) for r in rows)
+
+
+def mb_json(path, **params):
+    """MusicBrainz asks for at most one request per second."""
+    params["fmt"] = "json"
+    url = "https://musicbrainz.org/ws/2/" + path + "?" + urllib.parse.urlencode(params)
+    for attempt in range(4):
+        with _MB_LOCK:
+            time.sleep(max(0.0, 1.1 - (time.time() - _mb_last[0])))
+            try:
+                return http_json(url)
+            except urllib.error.HTTPError as e:
+                if e.code != 503 or attempt == 3:    # 503 = "slow down", worth another try
+                    raise
+            finally:
+                _mb_last[0] = time.time()
+        time.sleep(2 + attempt * 2)
+
+
+def _similar_title(a, b):
+    import difflib
+    a, b = _norm(a), _norm(b)
+    if not a or not b:
+        return False
+    return (a == b or (min(len(a), len(b)) >= 5 and (a in b or b in a))
+            or difflib.SequenceMatcher(None, a, b).ratio() >= 0.86)
+
+
+def find_missing_tracks(artist, album, owned_titles):
+    """-> (release title, total tracks, [missing titles]) or None when MusicBrainz has no such album."""
+    q = 'release:"%s" AND artist:"%s"' % (album.replace('"', " "), artist.replace('"', " "))
+    rels = [r for r in mb_json("release", query=q, limit=10).get("releases", []) if r.get("score", 0) >= 80]
+    if not rels:
+        return None
+    n = len(owned_titles)
+
+    def count(r):
+        return sum(m.get("track-count", 0) for m in r.get("media", [])) or r.get("track-count", 0) or 0
+
+    # real albums only (not singles), same title first, then the smallest edition that has every song you own
+    albums = [r for r in rels if (r.get("release-group") or {}).get("primary-type") == "Album"]
+    rels = albums or rels
+    rels.sort(key=lambda r: (_norm(r.get("title", "")) != _norm(album), count(r) < n, count(r)))
+    detail = mb_json(f"release/{rels[0]['id']}", inc="recordings")
+    titles = [t.get("title", "") for m in detail.get("media", []) for t in m.get("tracks", [])]
+    missing = [t for t in titles if t and not any(_similar_title(t, o) for o in owned_titles)]
+    return rels[0].get("title", album), len(titles), missing
+
+
+def track_quality_score(t):
+    """Bigger = better copy. Lossless beats everything, then the approximate bitrate."""
+    ext = os.path.splitext(t["path"])[1].lower().lstrip(".")
+    try:
+        size = t.get("size") or os.path.getsize(t["path"])
+    except OSError:
+        size = 0
+    kbps = size * 8 / max(1.0, t.get("length") or 1.0) / 1000
+    return (10000 if ext in LOSSLESS_EXTS else 0) + kbps, size, kbps
+
+
+def find_duplicates(tracks):
+    """Groups of the same song (same artist + title, lengths within 3 s), best copy first."""
+    by_key = {}
+    for t in tracks:
+        by_key.setdefault((_norm(t["artist"]), _norm(t["title"])), []).append(t)
+    groups = []
+    for same in by_key.values():
+        if len(same) < 2:
+            continue
+        same.sort(key=lambda t: t.get("length") or 0)
+        cluster = [same[0]]
+        for t in same[1:] + [None]:
+            if t is not None and abs((t.get("length") or 0) - (cluster[-1].get("length") or 0)) <= 3:
+                cluster.append(t)
+                continue
+            if len(cluster) > 1:
+                cluster.sort(key=lambda x: track_quality_score(x)[0], reverse=True)
+                groups.append(cluster)
+            cluster = [t] if t is not None else []
+    groups.sort(key=lambda g: (g[0]["artist"].lower(), g[0]["title"].lower()))
+    return groups
+
+
+def analyze_samples(mono, sr):
+    """Mono float samples -> {"cutoff": Hz where the music stops, "rms": dBFS, "centroid": Hz}."""
+    if np is None or len(mono) < 16384:
+        return None
+    n = 4096
+    win = np.hanning(n).astype(np.float32)
+    hop = max(n, (len(mono) - n) // 150)
+    frames = [mono[i:i + n] for i in range(0, len(mono) - n, hop)][:150]
+    spec = np.mean([np.abs(np.fft.rfft(f * win)) ** 2 for f in frames], axis=0)
+    freqs = np.fft.rfftfreq(n, 1.0 / sr)
+    db = 10 * np.log10(spec + 1e-12)
+    sm = np.convolve(db, np.ones(9) / 9, mode="same")
+    ref = float(np.max(sm[(freqs > 200) & (freqs < 4000)]))
+    idx = np.where(freqs > 8000)[0]
+    need = max(3, int(1000 / (sr / n)))          # the signal must stay gone for about 1 kHz
+    below = sm[idx] <= ref - CUTOFF_DB
+    cutoff = float(freqs[-1])
+    for p in range(len(idx) - need):
+        if below[p:p + need].all():
+            cutoff = float(freqs[idx[p]])
+            break
+    rms = 20 * math.log10(float(np.sqrt(np.mean(mono.astype(np.float64) ** 2))) + 1e-9)
+    centroid = float(np.sum(freqs * spec) / (np.sum(spec) + 1e-12))
+    return {"cutoff": round(cutoff), "rms": round(rms, 1), "centroid": round(centroid), "sr": int(sr)}
+
+
+def quality_verdict(t, ana):
+    """-> (is_suspicious, text)"""
+    if not ana or ana.get("sr", 44100) < 40000:
+        return False, "n/a"
+    cut = ana["cutoff"] / 1000
+    origin = ("~128k" if cut < 16.5 else "~160k" if cut < 17.5 else "~192k" if cut < 19 else "~256k")
+    ext = os.path.splitext(t["path"])[1].lower().lstrip(".")
+    _score, _size, kbps = track_quality_score(t)
+    if ext in LOSSLESS_EXTS and cut < 19.5:
+        return True, f"lossless file, music ends at {cut:.1f} kHz - looks transcoded from {origin} lossy"
+    if ext not in LOSSLESS_EXTS and kbps >= 250 and cut < 18.0:
+        return True, f"{kbps:.0f}k file, music ends at {cut:.1f} kHz - looks upscaled from {origin}"
+    return False, f"OK (music reaches {cut:.1f} kHz)"
+
+
+def load_quality():
+    try:
+        data = json.loads(QUALITY_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+MOOD_WORDS = {
+    "Calm": ("ambient", "chill", "acoustic", "folk", "classical", "piano", "instrumental", "jazz", "lounge",
+             "lo-fi", "lofi", "easy listening", "new age", "singer", "bossa", "downtempo", "sleep",
+             "slowcore", "ballad", "soft", "meditation"),
+    "Energetic": ("rock", "metal", "punk", "hardcore", "dance", "edm", "electro", "house", "techno", "trance",
+                  "drum", "dubstep", "hip hop", "hip-hop", "rap", "trap", "grunge", "funk", "disco",
+                  "reggaeton", "ska", "workout", "hard"),
+    "Night": ("ambient", "chill", "downtempo", "trip hop", "trip-hop", "synthwave", "vaporwave", "darkwave",
+              "lo-fi", "lofi", "dream pop", "shoegaze", "r&b", "rnb", "slowcore", "jazz", "soul", "night",
+              "deep house"),
+}
+
+
+def moods_of(t, ana=None):
+    """Which moods a song fits: genre words first, then the BPM tag, then (if analysed) its sound."""
+    g = (t.get("genre") or "").lower()
+    out = {m for m, words in MOOD_WORDS.items() if any(w in g for w in words)}
+    bpm = int(t.get("bpm") or 0)
+    if bpm >= 125:
+        out.add("Energetic")
+    elif 0 < bpm <= 95:
+        out.add("Calm")
+    if not out and ana:
+        c, r = ana.get("centroid", 0), ana.get("rms", -99)
+        if r > -14 and c > 3000:
+            out.add("Energetic")
+        elif r < -21 or c < 1500:
+            out.add("Calm")
+        if c < 1800 and r < -17:
+            out.add("Night")
+    return out
+
+
+def check_new_releases(artists, known_ids, owned, since):
+    """Albums/EPs released after `since` ('YYYY-MM-DD') by these artists that you don't own."""
+    ids, items = dict(known_ids), []
+    for name in artists:
+        if STOP_BG.is_set():
+            break
+        if name not in ids:
+            res = mb_json("artist", query='artist:"%s"' % name.replace('"', " "), limit=3)
+            hit = next((a for a in res.get("artists", [])
+                        if a.get("score", 0) >= 95 and _norm(a.get("name", "")) == _norm(name)), None)
+            ids[name] = hit["id"] if hit else ""
+        if not ids[name]:
+            continue
+        data = mb_json("release-group", artist=ids[name], type="album|ep", limit=100)
+        for g in data.get("release-groups", []):
+            date = g.get("first-release-date") or ""
+            if (date >= since and not g.get("secondary-types")
+                    and _norm(g.get("title", "")) not in owned.get(name, set())):
+                items.append({"artist": name, "title": g.get("title", ""), "date": date})
+    items.sort(key=lambda x: x["date"], reverse=True)
+    return {"ids": ids, "items": items}
+
+
+def fetch_remote_version():
+    req = urllib.request.Request(UPDATE_URL, headers={"User-Agent": f"eozMP/{APP_VERSION}"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        text = resp.read(14000).decode("utf-8", "replace")
+    m = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', text, re.M)
+    if not m:
+        raise RuntimeError("couldn't read the version number")
+    return m.group(1)
+
+
+def slskd_running(url):
+    """True if anything answers at the slskd address."""
+    try:
+        urllib.request.urlopen(url, timeout=3).close()
+    except urllib.error.HTTPError:
+        pass
+    except Exception:
+        return False
+    return True
+
+
+def version_tuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", v))
+
+
+class AudioAnalyzer(QObject):
+    """Decodes ~45 s of each file with Qt's own decoder (no ffmpeg) and measures it. One file at a time."""
+    one_done = pyqtSignal(str, object)
+    all_done = pyqtSignal()
+
+    def __init__(self, paths, parent=None):
+        super().__init__(parent)
+        self.todo = list(paths)
+        self.dec = None
+        self.chunks, self.have, self.sr, self.cur = [], 0, 44100, None
+        self.cancelled = False
+        self.guard = QTimer(self)
+        self.guard.setSingleShot(True)
+        self.guard.timeout.connect(self._finish)
+
+    def start(self):
+        QTimer.singleShot(0, self._next)
+
+    def cancel(self):
+        self.cancelled = True
+
+    def _next(self):
+        if self.cancelled or not self.todo:
+            self.all_done.emit()
+            return
+        self.cur = self.todo.pop(0)
+        self.chunks, self.have = [], 0
+        self.dec = QAudioDecoder(self)
+        self.dec.setSource(QUrl.fromLocalFile(self.cur))
+        self.dec.bufferReady.connect(self._on_buffer)
+        self.dec.finished.connect(self._finish)
+        self.dec.error.connect(lambda *_: self._finish())
+        self.guard.start(30000)
+        self.dec.start()
+
+    def _on_buffer(self):
+        dec = self.dec
+        while dec is not None and dec.bufferAvailable():
+            buf = dec.read()
+            fmt = buf.format()
+            S = QAudioFormat.SampleFormat
+            dtype, scale, shift = {S.Int16: (np.int16, 32768.0, 0.0), S.Int32: (np.int32, 2147483648.0, 0.0),
+                                   S.Float: (np.float32, 1.0, 0.0), S.UInt8: (np.uint8, 128.0, 128.0)}.get(
+                fmt.sampleFormat(), (None, 1.0, 0.0))
+            if dtype is None or buf.byteCount() <= 0:
+                continue
+            ch = max(1, fmt.channelCount())
+            data = (np.frombuffer(buf.constData().asstring(buf.byteCount()), dtype=dtype)
+                    .astype(np.float32) - shift) / scale
+            data = data[:len(data) - len(data) % ch].reshape(-1, ch).mean(axis=1)
+            self.sr = fmt.sampleRate() or self.sr
+            self.chunks.append(data)
+            self.have += len(data)
+            if self.have >= self.sr * 45:
+                self._finish()
+                return
+
+    def _finish(self):
+        dec, self.dec = self.dec, None
+        if dec is None:
+            return
+        self.guard.stop()
+        try:
+            dec.stop()
+        except Exception:
+            pass
+        dec.deleteLater()
+        res = None
+        if self.chunks:
+            mono = np.concatenate(self.chunks)
+            if len(mono) > self.sr * 25:
+                mono = mono[self.sr * 10:]       # skip the (often quiet) intro
+            try:
+                res = analyze_samples(mono, self.sr)
+            except Exception:
+                res = None
+        self.one_done.emit(self.cur, res)
+        QTimer.singleShot(0, self._next)
+
+
+class WishlistDialog(QDialog):
+    def __init__(self, main):
+        super().__init__(main)
+        self.main = main
+        self.setWindowTitle("Soulseek wishlist")
+        self.resize(540, 420)
+        v = QVBoxLayout(self)
+        note = QLabel("eozMP searches these on Soulseek every 20 minutes while it is running and tells you "
+                      "when something shows up. Type it like a search: artist and album, or artist and song.")
+        note.setWordWrap(True)
+        note.setObjectName("sub")
+        v.addWidget(note)
+        self.list = QListWidget()
+        self.list.itemDoubleClicked.connect(lambda _i: self.search_selected())
+        v.addWidget(self.list, 1)
+        row = QHBoxLayout()
+        for text, fn in (("Add...", self.add), ("Remove", self.remove), ("Search selected", self.search_selected),
+                         ("Check now", main.wishlist_check)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        row.addStretch(1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        v.addLayout(row)
+        self.refresh()
+
+    def refresh(self):
+        self.list.clear()
+        for w in self.main.cfg["wishlist"]:
+            if w.get("found"):
+                text = f"✔  {w['q']}   (found {time.strftime('%d %b', time.localtime(w['found']))})"
+            else:
+                text = f"…  {w['q']}   (waiting)"
+            self.list.addItem(text)
+
+    def add(self):
+        text, ok = QInputDialog.getText(self, "Wishlist", "What are you looking for?")
+        if ok and text.strip():
+            self.main.wishlist_add(text.strip())
+            self.refresh()
+
+    def remove(self):
+        rows = sorted({i.row() for i in self.list.selectedIndexes()}, reverse=True)
+        for r in rows:
+            if r < len(self.main.cfg["wishlist"]):
+                del self.main.cfg["wishlist"][r]
+        save_config(self.main.cfg)
+        self.refresh()
+
+    def search_selected(self):
+        r = self.list.currentRow()
+        if 0 <= r < len(self.main.cfg["wishlist"]):
+            q = self.main.cfg["wishlist"][r]["q"]
+            self.accept()
+            self.main.soul_query(q)
+
+
+class MissingDialog(QDialog):
+    def __init__(self, main, artist, album, release, total, missing):
+        super().__init__(main)
+        self.main, self.artist, self.album = main, artist, album
+        self.setWindowTitle("Missing songs")
+        self.resize(460, 420)
+        v = QVBoxLayout(self)
+        head = QLabel(f"<b>{html.escape(album)}</b> - {html.escape(artist)}<br>"
+                      f"You have {total - len(missing)} of {total} songs (edition: {html.escape(release)}).")
+        head.setWordWrap(True)
+        v.addWidget(head)
+        self.list = QListWidget()
+        for t in missing:
+            self.list.addItem(t)
+        self.list.itemDoubleClicked.connect(lambda _i: self.search_song())
+        v.addWidget(self.list, 1)
+        row = QHBoxLayout()
+        b = QPushButton("Search whole album on Soulseek")
+        b.clicked.connect(self.search_album)
+        row.addWidget(b)
+        b = QPushButton("Search selected song")
+        b.clicked.connect(self.search_song)
+        row.addWidget(b)
+        b = QPushButton("Add album to wishlist")
+        b.clicked.connect(lambda: (main.wishlist_add(f"{artist} {album}"), self.accept()))
+        row.addWidget(b)
+        v.addLayout(row)
+
+    def search_album(self):
+        self.accept()
+        self.main.soul_query(f"{self.artist} {self.album}")
+
+    def search_song(self):
+        item = self.list.currentItem()
+        if item is not None:
+            self.accept()
+            self.main.soul_query(f"{self.artist} {item.text()}")
+
+
+class DuplicatesDialog(QDialog):
+    def __init__(self, main, groups):
+        super().__init__(main)
+        self.main = main
+        self.setWindowTitle("Duplicate songs")
+        self.resize(900, 520)
+        v = QVBoxLayout(self)
+        note = QLabel(f"{len(groups)} songs exist more than once. The best copy of each is left alone; ticked copies "
+                      "are moved (not deleted) to a '_eozMP duplicates' folder in your music folder, so you can "
+                      "always put them back.")
+        note.setWordWrap(True)
+        note.setObjectName("sub")
+        v.addWidget(note)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Song / file", "Folder", "Quality", "Size"])
+        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for g in groups:
+            top = QTreeWidgetItem([f"{g[0]['artist']} - {g[0]['title']}   ({len(g)} copies)", "", "", ""])
+            self.tree.addTopLevelItem(top)
+            for i, t in enumerate(g):
+                _s, size, kbps = track_quality_score(t)
+                ext = os.path.splitext(t["path"])[1].lower().lstrip(".")
+                q = ext.upper() if ext in LOSSLESS_EXTS else f"{ext.upper()} ~{kbps:.0f}k"
+                row = QTreeWidgetItem([os.path.basename(t["path"]) + ("   (best - kept)" if i == 0 else ""),
+                                       os.path.dirname(t["path"]), q, fmt_size(size)])
+                row.setData(0, KEY_ROLE, t["path"])
+                if i == 0:
+                    row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+                else:
+                    row.setFlags(row.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    row.setCheckState(0, Qt.CheckState.Checked)
+                top.addChild(row)
+            top.setExpanded(True)
+        v.addWidget(self.tree, 1)
+        row = QHBoxLayout()
+        go = QPushButton("Move ticked copies")
+        go.setObjectName("primary")
+        go.clicked.connect(self.move)
+        row.addWidget(go)
+        row.addStretch(1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        v.addLayout(row)
+
+    def move(self):
+        paths = []
+        for i in range(self.tree.topLevelItemCount()):
+            top = self.tree.topLevelItem(i)
+            for j in range(top.childCount()):
+                c = top.child(j)
+                if c.checkState(0) == Qt.CheckState.Checked and c.data(0, KEY_ROLE):
+                    paths.append(c.data(0, KEY_ROLE))
+        if not paths:
+            return
+        root = self.main.organize_target() or (self.main.cfg["folders"][0] if self.main.cfg["folders"] else "")
+        if not root:
+            return
+        if QMessageBox.question(self, "Move duplicates", f"Move {len(paths)} file(s) to\n"
+                                f"{os.path.join(root, '_eozMP duplicates')} ?") != QMessageBox.StandardButton.Yes:
+            return
+        moved, dest = move_to_duplicates(paths, root)
+        self.main.statusBar().showMessage(f"Moved {moved} duplicate(s) to {dest}", 10000)
+        self.accept()
+        self.main.rescan()
+
+
+class QualityDialog(QDialog):
+    def __init__(self, main):
+        super().__init__(main)
+        self.main = main
+        self.setWindowTitle("Audio quality check")
+        self.resize(980, 560)
+        self.db = load_quality()
+        self.analyzer = None
+        v = QVBoxLayout(self)
+        note = QLabel("Looks at the real sound of each file (about 45 s of it) to find songs that claim more "
+                      "quality than they have, such as a 320k MP3 or a FLAC that was made from a 128k MP3. "
+                      "Results are remembered, so the next scan only checks new files.")
+        note.setWordWrap(True)
+        note.setObjectName("sub")
+        v.addWidget(note)
+        top = QHBoxLayout()
+        self.scan_btn = QPushButton("Scan my library")
+        self.scan_btn.setObjectName("primary")
+        self.scan_btn.clicked.connect(self.scan)
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self.stop)
+        self.only_bad = QCheckBox("Only suspicious")
+        self.only_bad.setChecked(True)
+        self.only_bad.stateChanged.connect(lambda *_: self.fill())
+        self.status = QLabel("")
+        better = QPushButton("Find a better copy on Soulseek")
+        better.setToolTip("Search Soulseek for a lossless copy of the selected song's album")
+        better.clicked.connect(self.find_better)
+        for w in (self.scan_btn, self.stop_btn, self.only_bad, better):
+            top.addWidget(w)
+        top.addWidget(self.status, 1)
+        v.addLayout(top)
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Song", "Artist", "Format", "Spectrum ends", "Verdict"])
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.verticalHeader().hide()
+        v.addWidget(self.table, 1)
+        self.fill()
+
+    def find_better(self):
+        r = self.table.currentRow()
+        if r < 0 or self.table.item(r, 0) is None:
+            return
+        path = self.table.item(r, 0).data(KEY_ROLE)
+        hit = self.main.track_by_path.get(path)
+        if hit:
+            self.accept()
+            self.main.upgrade_album(hit[1])
+
+    def entry_ok(self, t):
+        e = self.db.get(t["path"])
+        return e if e and e.get("m") == t.get("mtime") and e.get("s") == t.get("size") else None
+
+    def fill(self):
+        rows = []
+        for t in self.main.all_tracks:
+            e = self.entry_ok(t)
+            if e and e.get("cutoff"):
+                bad, text = quality_verdict(t, e)
+                if bad or not self.only_bad.isChecked():
+                    rows.append((not bad, t, e, text))
+        rows.sort(key=lambda r: (r[0], r[1]["artist"].lower(), r[1]["title"].lower()))
+        self.table.setRowCount(len(rows))
+        for r, (_ok, t, e, text) in enumerate(rows):
+            ext = os.path.splitext(t["path"])[1].lower().lstrip(".").upper()
+            vals = (t["title"], t["artist"], ext, f"{e['cutoff'] / 1000:.1f} kHz", text)
+            for c, val in enumerate(vals):
+                self.table.setItem(r, c, QTableWidgetItem(val))
+            self.table.item(r, 0).setData(KEY_ROLE, t["path"])
+        done = sum(1 for t in self.main.all_tracks if self.entry_ok(t))
+        self.status.setText(f"{done} of {len(self.main.all_tracks)} songs checked, {len(rows)} shown")
+
+    def scan(self):
+        if QAudioDecoder is None or np is None:
+            self.status.setText("This needs Qt multimedia and numpy (pip install numpy).")
+            return
+        todo = [t for t in self.main.all_tracks if not self.entry_ok(t)]
+        if not todo:
+            self.status.setText("Everything is already checked.")
+            return
+        self.by_path = {t["path"]: t for t in todo}
+        self.total, self.n = len(todo), 0
+        self.analyzer = AudioAnalyzer([t["path"] for t in todo], self)
+        self.analyzer.one_done.connect(self.on_one)
+        self.analyzer.all_done.connect(self.on_all)
+        self.scan_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.analyzer.start()
+
+    def stop(self):
+        if self.analyzer is not None:
+            self.analyzer.cancel()
+
+    def on_one(self, path, res):
+        t = self.by_path.get(path)
+        self.n += 1
+        if t is not None and res:
+            self.db[path] = {"m": t.get("mtime"), "s": t.get("size"), **res}
+        self.status.setText(f"Checking {self.n} / {self.total}...")
+        if self.n % 25 == 0:
+            self.save()
+
+    def on_all(self):
+        self.save()
+        self.scan_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.main.quality_db = self.db
+        self.main.refresh_browse_list()
+        self.fill()
+
+    def save(self):
+        try:
+            write_json_atomic(QUALITY_FILE, self.db)
+        except Exception:
+            pass
+
+    def done(self, code):
+        self.stop()
+        self.save()
+        super().done(code)
+
+
+class ExtrasMixin:
+    """The v1.2 features of the main window."""
+
+    def init_extras(self):
+        self.wish_dlg = None
+        self._wish_busy = self._nr_busy = False
+        self.quality_db = load_quality()
+        self.mood_tracks = {}
+        SOUL_TRUST.update(self.cfg.get("soul_trust", {}))
+        self.extras_timer = QTimer(self)
+        self.extras_timer.timeout.connect(self.extras_tick)
+        self.extras_timer.start(20 * 60 * 1000)
+        QTimer.singleShot(90_000, self.extras_tick)     # first pass once the library has loaded
+        if self.cfg.get("update_check", True):
+            QTimer.singleShot(8000, lambda: self.check_updates(silent=True))
+        self.init_bundled_slskd()
+        self.init_extras2()
+
+    def init_bundled_slskd(self):
+        """Use what the installer set up: its slskd settings, and start its slskd if nothing is running."""
+        self.slskd_proc = None
+        setup = APP_DIR / "slskd_setup.json"
+        if not self.cfg["slskd_key"] and setup.exists():
+            try:
+                data = json.loads(setup.read_text(encoding="utf-8-sig"))   # the installer writes a BOM
+                for k in ("slskd_url", "slskd_key", "downloads_dir"):
+                    if data.get(k):
+                        self.cfg[k] = data[k]
+                save_config(self.cfg)
+            except Exception:
+                pass
+        exe = APP_DIR / "slskd" / "slskd.exe"
+        url = self.cfg["slskd_url"]
+        if not (exe.exists() and self.cfg.get("slskd_autostart", True)
+                and ("localhost" in url or "127.0.0.1" in url)):
+            return
+        w = Worker(lambda: slskd_running(url))
+        w.ok.connect(lambda up: None if up else self.start_slskd(exe))
+        self.keep(w)
+
+    def start_slskd(self, exe):
+        try:
+            self.slskd_proc = subprocess.Popen(
+                [str(exe)], cwd=str(exe.parent), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            self.statusBar().showMessage("Starting Soulseek (slskd) in the background...", 8000)
+        except OSError as e:
+            self.statusBar().showMessage(f"Couldn't start slskd ({e})", 10000)
+
+    def restart_app(self):
+        """Start a fresh eozMP, then quit this one (used after changing the language)."""
+        args = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, os.path.abspath(sys.argv[0])]
+        subprocess.Popen(args, cwd=str(APP_DIR), creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+        self.quit_app()
+
+    def stop_slskd(self):
+        proc, self.slskd_proc = getattr(self, "slskd_proc", None), None
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(5)
+            except Exception:
+                pass
+
+    def build_extras_menu(self):
+        def add(menu, text, fn):
+            act = QAction(text, self)
+            act.triggered.connect(lambda checked=False: fn())
+            menu.addAction(act)
+
+        lib = [m for m in self.menuBar().findChildren(QMenu) if m.title() == _t("&Library")][0]
+        lib.addSeparator()
+        add(lib, "Find duplicate songs...", self.open_duplicates)
+        add(lib, "Check audio quality...", self.open_quality)
+        add(lib, "Check for new releases now", lambda: self.check_new_releases_now(True))
+        soul = [m for m in self.menuBar().findChildren(QMenu) if m.title() == _t("&Soulseek")][0]
+        add(soul, "Wishlist...", self.open_wishlist)
+        add(soul, "Add current search to wishlist", lambda: self.wishlist_add(self.search.text().strip()))
+        hlp = [m for m in self.menuBar().findChildren(QMenu) if m.title() == _t("&Help")][0]
+        add(hlp, "Check for updates...", lambda: self.check_updates(silent=False))
+        self.build_connect_menu()
+        guide = APP_DIR / "Soulseek Guide.txt"
+        if guide.exists():
+            add(hlp, "Soulseek (slskd) guide", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(guide))))
+
+    def extras_tick(self):
+        self.wishlist_check()
+        last = float(self.cfg.get("new_releases", {}).get("checked", 0))
+        if time.time() - last > 7 * 86400:
+            self.check_new_releases_now(False)
+
+    def soul_query(self, text):
+        """Run a Soulseek search for `text` (from a dialog, a link or the wishlist)."""
+        self.leave_overlays()
+        self.search.blockSignals(True)
+        self.search.setText(text)
+        self.search.blockSignals(False)
+        self.soulseek_search()
+
+    def notify(self, title, text):
+        self.statusBar().showMessage(f"{title}: {text}", 15000)
+        if self.tray is not None:
+            self.tray.showMessage(title, text, QSystemTrayIcon.MessageIcon.Information, 8000)
+
+    # ----- lyric translation
+    def show_translate_menu(self):
+        menu = QMenu(self)
+        cur = self.cfg.get("translate_lang", "")
+        off = menu.addAction("Off")
+        off.setCheckable(True)
+        off.setChecked(not cur)
+        off.triggered.connect(lambda: self.set_translate_lang(""))
+        menu.addSeparator()
+        for name in TRANSLATE_LANGS:
+            act = menu.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(name == cur)
+            act.triggered.connect(lambda checked=False, n=name: self.set_translate_lang(n))
+        menu.exec(QCursor.pos())
+
+    def set_translate_lang(self, name):
+        self.cfg["translate_lang"] = name
+        save_config(self.cfg)
+        self.apply_translation()
+
+    def apply_translation(self):
+        name = self.cfg.get("translate_lang", "")
+        self.translate_btn.setText(f"Translate: {name}" if name else "Translate")
+        for i in range(len(self.lyric_lines)):
+            item = self.lyrics_list.item(i + self.ly_off)
+            if item is not None:
+                item.setData(TRANS_ROLE, None)
+        self.lyrics_list.doItemsLayout()
+        lang = TRANSLATE_LANGS.get(name)
+        if not lang or not self.lyric_lines:
+            return
+        lines, token = list(self.lyric_lines), self.lyrics_token
+        w = Worker(lambda: translate_lines(lines, lang))
+        w.ok.connect(lambda tr: self.on_translated(token, lines, tr))
+        w.fail.connect(lambda m: self.statusBar().showMessage(f"Couldn't translate the lyrics ({m})", 8000))
+        self.statusBar().showMessage("Translating lyrics...", 4000)
+        self.keep(w)
+
+    def on_translated(self, token, lines, tr):
+        if token != self.lyrics_token or lines != self.lyric_lines:
+            return    # the song changed while we waited
+        for i, line in enumerate(lines):
+            item = self.lyrics_list.item(i + self.ly_off)
+            t = tr.get(line.strip(), "")
+            if item is not None and t and _norm(t) != _norm(line):
+                item.setData(TRANS_ROLE, t)
+        self.resize_lyric_spacers()
+
+    # ----- wishlist
+    def open_wishlist(self):
+        self.wish_dlg = WishlistDialog(self)
+        self.wish_dlg.exec()
+        self.wish_dlg = None
+
+    def wishlist_add(self, text):
+        if not text:
+            self.statusBar().showMessage("Type what you're looking for first.")
+            return
+        if any(_norm(w["q"]) == _norm(text) for w in self.cfg["wishlist"]):
+            self.statusBar().showMessage("Already on your wishlist.")
+            return
+        self.cfg["wishlist"].append({"q": text, "added": time.time(), "found": 0})
+        save_config(self.cfg)
+        self.statusBar().showMessage(f'Added "{text}" to your Soulseek wishlist.', 6000)
+
+    def wishlist_check(self):
+        pending = [w["q"] for w in self.cfg["wishlist"] if not w.get("found")][:4]
+        if not pending or self._wish_busy or not self.slskd_ready():
+            return
+        self._wish_busy = True
+        client, fmt = self.client(), self.cfg["soul_quality"]
+
+        def job():
+            hits = []
+            for q in pending:
+                if STOP_BG.is_set():
+                    break
+                if wish_match(soul_search_sync(client, q), q, fmt):
+                    hits.append(q)
+            return hits
+
+        w = Worker(job)
+        w.ok.connect(self.on_wishlist_hits)
+        w.fail.connect(lambda _m: None)
+        w.finished.connect(lambda: setattr(self, "_wish_busy", False))
+        self.keep(w)
+
+    def on_wishlist_hits(self, hits):
+        for q in hits:
+            for w in self.cfg["wishlist"]:
+                if w["q"] == q and not w.get("found"):
+                    w["found"] = time.time()
+            self.notify("Wishlist", f'"{q}" is now available on Soulseek - open Soulseek > Wishlist to get it.')
+        if hits:
+            save_config(self.cfg)
+            if self.wish_dlg is not None:
+                self.wish_dlg.refresh()
+
+    # ----- missing songs of an album
+    def find_missing(self, key):
+        alb = self.albums.get(key)
+        if not alb:
+            return
+        artist, album = alb["artist"], alb["album"]
+        owned = [t["title"] for t in alb["tracks"]]
+        self.statusBar().showMessage(f'Looking up "{album}" on MusicBrainz...')
+        w = Worker(lambda: find_missing_tracks(artist, album, owned))
+
+        def done(res):
+            self.statusBar().clearMessage()
+            if res is None:
+                QMessageBox.information(self, "Missing songs", f'MusicBrainz doesn\'t know "{album}" by {artist}.')
+            elif not res[2]:
+                QMessageBox.information(self, "Missing songs", f"You have every song of this album ({res[1]}).")
+            else:
+                MissingDialog(self, artist, album, res[0], res[1], res[2]).exec()
+
+        w.ok.connect(done)
+        w.fail.connect(lambda m: self.statusBar().showMessage(f"Couldn't check the album ({m})", 8000))
+        self.keep(w)
+
+    # ----- duplicates and quality
+    def open_duplicates(self):
+        groups = find_duplicates(self.all_tracks)
+        if not groups:
+            QMessageBox.information(self, "Duplicate songs", "No duplicate songs found.")
+            return
+        DuplicatesDialog(self, groups).exec()
+
+    def open_quality(self):
+        QualityDialog(self).exec()
+
+    # ----- moods
+    def compute_moods(self):
+        out = {m: [] for m in MOOD_WORDS}
+        for t in self.all_tracks:
+            e = self.quality_db.get(t["path"])
+            ana = e if e and e.get("m") == t.get("mtime") and e.get("s") == t.get("size") else None
+            for m in moods_of(t, ana):
+                out[m].append(t["path"])
+        self.mood_tracks = out
+
+    # ----- new releases
+    def check_new_releases_now(self, loud):
+        if self._nr_busy:
+            return
+        counts = Counter()
+        for _ts, path, _s in self.stats["events"][-3000:]:
+            hit = self.track_by_path.get(path)
+            if hit:
+                counts[hit[0]["artist"]] += 1
+        for p in self.stats["favorites"]:
+            hit = self.track_by_path.get(p)
+            if hit:
+                counts[hit[0]["artist"]] += 3
+        artists = [a for a, _n in counts.most_common(12) if a != "Unknown Artist"]
+        if not artists:
+            if loud:
+                self.statusBar().showMessage("Play or like some music first, so eozMP knows your artists.")
+            return
+        owned = {}
+        for alb in self.albums.values():
+            owned.setdefault(alb["artist"], set()).add(_norm(alb["album"]))
+        since = time.strftime("%Y-%m-%d", time.localtime(time.time() - 120 * 86400))
+        known = dict(self.cfg.get("mb_artist_ids", {}))
+        self._nr_busy = True
+        if loud:
+            self.statusBar().showMessage("Checking MusicBrainz for new releases (about a minute)...")
+        w = Worker(lambda: check_new_releases(artists, known, owned, since))
+        w.ok.connect(lambda res: self.on_new_releases(res, loud))
+        w.fail.connect(lambda m: self.statusBar().showMessage(f"New release check failed ({m})", 8000)
+                       if loud else None)
+        w.finished.connect(lambda: setattr(self, "_nr_busy", False))
+        self.keep(w)
+
+    def on_new_releases(self, res, loud):
+        seen = set(self.cfg.get("new_releases_seen", []))
+        fresh = [i for i in res["items"] if f"{i['artist']}|{i['title']}" not in seen]
+        self.cfg["mb_artist_ids"] = res["ids"]
+        self.cfg["new_releases"] = {"checked": time.time(), "items": res["items"]}
+        self.cfg["new_releases_seen"] = list(seen | {f"{i['artist']}|{i['title']}" for i in res["items"]})[-300:]
+        save_config(self.cfg)
+        self.render_new_releases()
+        if fresh:
+            names = ", ".join(f"{i['artist']} - {i['title']}" for i in fresh[:3])
+            self.notify("New releases", names + (f" and {len(fresh) - 3} more" if len(fresh) > 3 else ""))
+        elif loud:
+            self.statusBar().showMessage("No new releases from your artists.", 6000)
+
+    def render_new_releases(self):
+        items = self.cfg.get("new_releases", {}).get("items", [])[:12]
+        self.home_new_label.setVisible(bool(items))
+        self.home_new.setVisible(bool(items))
+        col = self.scheme["accent"]
+        self.home_new.setText("<br>".join(
+            self.link("newrel:" + urllib.parse.quote(f"{i['artist']}|{i['title']}"),
+                      f"{i['artist']} - {i['title']}", col)
+            + html.escape(f"   {i['date']}") for i in items))
+
+    # ----- Soulseek trust
+    def update_trust(self, rows):
+        seen = set(self.cfg.get("soul_trust_seen", []))
+        changed = False
+        for r in rows:
+            fin = r["status"] == "Finished"
+            if not (fin or r["status"].startswith("Failed")):
+                continue
+            key = f"{r['username']}|{r['id']}"
+            if key in seen:
+                continue
+            seen.add(key)
+            SOUL_TRUST[r["username"]] = max(-5, min(10, SOUL_TRUST.get(r["username"], 0) + (1 if fin else -1)))
+            changed = True
+        if changed:
+            self.cfg["soul_trust"] = dict(SOUL_TRUST)
+            self.cfg["soul_trust_seen"] = list(seen)[-2000:]
+            save_config(self.cfg)
+
+    # ----- updates
+    def check_updates(self, silent):
+        w = Worker(fetch_remote_version)
+
+        def done(remote):
+            if version_tuple(remote) > version_tuple(APP_VERSION):
+                if QMessageBox.question(self, "eozMP update", f"eozMP {remote} is available (you have {APP_VERSION}).\n"
+                                        "Open the download page?") == QMessageBox.StandardButton.Yes:
+                    QDesktopServices.openUrl(QUrl(REPO_URL))
+            elif not silent:
+                QMessageBox.information(self, "eozMP update", f"You have the newest version ({APP_VERSION}).")
+
+        w.ok.connect(done)
+        if not silent:
+            w.fail.connect(lambda m: QMessageBox.information(self, "eozMP update", f"Couldn't check ({m})."))
+        self.keep(w)
+
+
+# ---------------------------------------------------------------- v1.2 extras, part 2
+# phone remote (and the little web server behind it), TV / speaker casting (DLNA), Windows media controls,
+# Last.fm, automatic tag + cover fixing, and better-copy upgrades from Soulseek.
+import socket
+import http.server
+import xml.etree.ElementTree as ET
+
+LASTFM_API_KEY = ""       # shortcut: empty until eozMP has its own Last.fm app; users paste theirs in Connect > Last.fm
+LASTFM_API_SECRET = ""
+LASTFM_URL = "https://ws.audioscrobbler.com/2.0/"
+AUDIO_MIME = {".mp3": "audio/mpeg", ".flac": "audio/flac", ".m4a": "audio/mp4", ".mp4": "audio/mp4", ".m4b": "audio/mp4",
+              ".aac": "audio/aac", ".wav": "audio/wav", ".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/ogg",
+              ".wma": "audio/x-ms-wma", ".aiff": "audio/aiff", ".aif": "audio/aiff"}
+
+
+def local_ip():
+    """This PC's address on the home network (no packet is actually sent)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("192.168.0.1", 9))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+def file_id(path):
+    return hashlib.sha1(path.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+REMOTE_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>eozMP remote</title><style>
+:root{--bg:#141417;--fg:#ececf1;--sub:#9b9ba8;--acc:#4C8DFF}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;
+display:flex;flex-direction:column;align-items:center;padding:20px 16px 32px;min-height:100vh}
+img{width:min(78vw,360px);aspect-ratio:1;object-fit:cover;border-radius:16px;background:#26262d;margin-top:8px}
+h1{font-size:22px;margin:18px 0 4px;text-align:center}p{margin:0;color:var(--sub);text-align:center}
+#line{min-height:44px;margin:14px 0 6px;font-size:17px;color:var(--fg);font-weight:600}
+input[type=range]{width:min(86vw,380px);accent-color:var(--acc)}
+.row{display:flex;gap:18px;align-items:center;margin:14px 0}
+button{background:#26262d;color:var(--fg);border:0;border-radius:50%;width:58px;height:58px;font-size:22px}
+#play{background:var(--acc);width:74px;height:74px;font-size:28px}
+#phone{border-radius:24px;width:auto;height:auto;padding:12px 20px;font-size:15px;margin-top:10px}
+#phone.on{background:var(--acc)}.t{display:flex;justify-content:space-between;width:min(86vw,380px);color:var(--sub);font-size:13px}
+</style></head><body>
+<img id="cover" alt=""><h1 id="title">eozMP</h1><p id="artist"></p><div id="line"></div>
+<input id="seek" type="range" min="0" max="1" value="0"><div class="t"><span id="pos">0:00</span><span id="dur">0:00</span></div>
+<div class="row"><button onclick="cmd('prev')">&#9198;</button><button id="play" onclick="toggle()">&#9654;</button>
+<button onclick="cmd('next')">&#9197;</button><button id="fav" onclick="cmd('fav')">&#9825;</button></div>
+<div class="row">&#128264;<input id="vol" type="range" min="0" max="100"></div>
+<button id="phone" onclick="phoneMode()">Listen on this phone</button>
+<script>
+let st={},phone=false,lastId=null,seeking=false;const a=new Audio();
+const $=id=>document.getElementById(id);
+const fmt=ms=>{ms=Math.max(0,ms|0);const s=Math.floor(ms/1000);return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
+function cmd(d,v){return fetch('api/cmd?do='+d+(v!==undefined?'&value='+encodeURIComponent(v):'')).then(poll)}
+async function poll(){try{const r=await fetch('api/state');st=await r.json();render()}catch(e){}}
+function render(){
+ $('title').textContent=st.title||'Nothing playing';$('artist').textContent=st.artist?st.artist+' \\u00b7 '+st.album:'';
+ $('line').textContent=st.line||'';$('fav').innerHTML=st.fav?'&#9829;':'&#9825;';
+ if(st.id!==lastId){lastId=st.id;$('cover').src='cover?v='+st.id;if(phone)load()}
+ const playing=phone?!a.paused:st.playing;$('play').innerHTML=playing?'&#10074;&#10074;':'&#9654;';
+ $('seek').max=st.dur||1;if(!seeking){$('seek').value=phone?a.currentTime*1000:st.pos}
+ $('pos').textContent=fmt(phone?a.currentTime*1000:st.pos);$('dur').textContent=fmt(st.dur);
+ if(document.activeElement!==$('vol'))$('vol').value=st.vol}
+function load(){if(!st.id)return;a.src='stream/'+st.id+st.ext;a.currentTime=(st.pos||0)/1000;if(st.playing)a.play()}
+function toggle(){cmd('toggle');if(phone){if(a.paused)a.play();else a.pause()}}
+function phoneMode(){phone=!phone;$('phone').classList.toggle('on',phone);
+ $('phone').textContent=phone?'Listening on this phone - tap to stop':'Listen on this phone';
+ cmd('mute',phone?1:0);if(phone)load();else a.pause()}
+a.onended=()=>cmd('next');
+$('seek').oninput=()=>seeking=true;
+$('seek').onchange=()=>{seeking=false;const v=$('seek').value;cmd('seek',v);if(phone)a.currentTime=v/1000};
+$('vol').onchange=()=>cmd('vol',$('vol').value);
+setInterval(poll,1000);poll();
+</script></body></html>"""
+
+
+class RemoteServer(QObject):
+    """Tiny web server: the phone remote page, its API, the cover, and song files for phones and TVs.
+    Every address starts with a secret token, so only devices that scanned the QR code can use it."""
+    command = pyqtSignal(str, str)
+
+    def __init__(self, token, port, parent=None):
+        super().__init__(parent)
+        self.token, self.port = token, port
+        self.state, self.cover, self.files = {}, b"", {}
+        self.httpd = None
+
+    def start(self):
+        owner = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                owner.handle(self, False)
+
+            def do_HEAD(self):
+                owner.handle(self, True)
+
+        self.httpd = http.server.ThreadingHTTPServer(("0.0.0.0", self.port), Handler)
+        self.httpd.daemon_threads = True
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def stop(self):
+        if self.httpd is not None:
+            self.httpd.shutdown()
+            self.httpd.server_close()
+            self.httpd = None
+
+    def base_url(self):
+        return f"http://{local_ip()}:{self.port}/{self.token}/"
+
+    def reply(self, req, code, body, ctype, head):
+        req.send_response(code)
+        req.send_header("Content-Type", ctype)
+        req.send_header("Content-Length", str(len(body)))
+        req.send_header("Cache-Control", "no-store")
+        req.end_headers()
+        if not head:
+            req.wfile.write(body)
+
+    def handle(self, req, head):
+        try:
+            path, _, query = req.path.partition("?")
+            parts = path.strip("/").split("/")
+            if not parts or parts[0] != self.token:
+                return self.reply(req, 403, b"forbidden", "text/plain", head)
+            rest = [p for p in parts[1:] if p]
+            q = urllib.parse.parse_qs(query)
+            if not rest:
+                return self.reply(req, 200, REMOTE_PAGE.encode("utf-8"), "text/html; charset=utf-8", head)
+            if rest == ["api", "state"]:
+                return self.reply(req, 200, json.dumps(self.state).encode("utf-8"), "application/json", head)
+            if rest == ["api", "cmd"]:
+                self.command.emit(q.get("do", [""])[0], q.get("value", [""])[0])
+                return self.reply(req, 200, b"ok", "text/plain", head)
+            if rest[0] == "cover" and self.cover:
+                return self.reply(req, 200, self.cover, "image/jpeg", head)
+            if rest[0] == "stream" and len(rest) > 1:
+                p = self.files.get(rest[1].split(".")[0])
+                if p and os.path.isfile(p):
+                    return self.send_file(req, p, head)
+            return self.reply(req, 404, b"not found", "text/plain", head)
+        except (ConnectionError, OSError):
+            pass       # the phone/TV hung up halfway, which is normal
+
+    def send_file(self, req, path, head):
+        size = os.path.getsize(path)
+        start, end, code = 0, size - 1, 200
+        m = re.match(r"bytes=(\d*)-(\d*)", req.headers.get("Range") or "")
+        if m and (m.group(1) or m.group(2)):
+            if m.group(1):
+                start = int(m.group(1))
+                end = int(m.group(2)) if m.group(2) else size - 1
+            else:
+                start = max(0, size - int(m.group(2)))
+            end, code = min(end, size - 1), 206
+        req.send_response(code)
+        req.send_header("Content-Type", AUDIO_MIME.get(os.path.splitext(path)[1].lower(), "application/octet-stream"))
+        req.send_header("Accept-Ranges", "bytes")
+        req.send_header("Content-Length", str(end - start + 1))
+        if code == 206:
+            req.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        req.send_header("transferMode.dlna.org", "Streaming")
+        req.send_header("contentFeatures.dlna.org", "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000")
+        req.end_headers()
+        if head:
+            return
+        with open(path, "rb") as f:
+            f.seek(start)
+            left = end - start + 1
+            while left > 0:
+                chunk = f.read(min(65536, left))
+                if not chunk:
+                    break
+                req.wfile.write(chunk)
+                left -= len(chunk)
+
+
+def qr_pixmap(text, size=260):
+    import segno
+    rows = [list(r) for r in segno.make(text, error="m").matrix]
+    n = len(rows) + 8                      # 4 modules of white border on each side
+    img = QImage(n, n, QImage.Format.Format_RGB32)
+    img.fill(QColor("#ffffff"))
+    for y, row in enumerate(rows):
+        for x, v in enumerate(row):
+            if v:
+                img.setPixel(x + 4, y + 4, QColor("#000000").rgb())
+    return QPixmap.fromImage(img.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
+                                        Qt.TransformationMode.FastTransformation))
+
+
+# ----- DLNA / UPnP (smart TVs, Sonos and other network speakers)
+def dlna_discover(seconds=3.0):
+    msg = ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\n"
+           "ST: urn:schemas-upnp-org:service:AVTransport:1\r\n\r\n").encode()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+    sock.settimeout(0.4)
+    try:
+        sock.bind((local_ip(), 0))
+    except OSError:
+        pass
+    locations = set()
+    try:
+        for _ in range(2):
+            sock.sendto(msg, ("239.255.255.250", 1900))
+        end = time.time() + seconds
+        while time.time() < end:
+            try:
+                data, _addr = sock.recvfrom(65507)
+            except socket.timeout:
+                continue
+            m = re.search(rb"(?im)^location:\s*(\S+)", data)
+            if m:
+                locations.add(m.group(1).decode("utf-8", "replace"))
+    finally:
+        sock.close()
+    devices = []
+    for loc in sorted(locations):
+        try:
+            devices.append(dlna_describe(loc))
+        except Exception:
+            pass
+    return [d for d in devices if d.get("av")]
+
+
+def dlna_describe(location):
+    with urllib.request.urlopen(location, timeout=4) as r:
+        root = ET.fromstring(r.read())
+
+    def text(el, name):
+        for c in el.iter():
+            if c.tag.endswith(name):
+                return (c.text or "").strip()
+        return ""
+
+    dev = {"name": text(root, "friendlyName") or location, "location": location, "av": "", "rc": ""}
+    for svc in root.iter():
+        if svc.tag.endswith("service"):
+            kind, ctrl = text(svc, "serviceType"), text(svc, "controlURL")
+            if "AVTransport" in kind:
+                dev["av"] = urllib.parse.urljoin(location, ctrl)
+            elif "RenderingControl" in kind:
+                dev["rc"] = urllib.parse.urljoin(location, ctrl)
+    return dev
+
+
+def dlna_soap(url, service, action, args):
+    body = "".join(f"<{k}>{html.escape(str(v))}</{k}>" for k, v in args)
+    env = ('<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+           's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>'
+           f'<u:{action} xmlns:u="urn:schemas-upnp-org:service:{service}:1">{body}</u:{action}>'
+           '</s:Body></s:Envelope>').encode("utf-8")
+    req = urllib.request.Request(url, data=env, method="POST", headers={
+        "Content-Type": 'text/xml; charset="utf-8"',
+        "SOAPACTION": f'"urn:schemas-upnp-org:service:{service}:1#{action}"'})
+    with urllib.request.urlopen(req, timeout=6) as r:
+        return r.read()
+
+
+def dlna_didl(url, track, cover_url, mime):
+    e = html.escape
+    return ('<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" '
+            'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item id="1" parentID="0" restricted="1">'
+            f'<dc:title>{e(track["title"])}</dc:title><upnp:artist>{e(track["artist"])}</upnp:artist>'
+            f'<upnp:album>{e(track["album"])}</upnp:album><upnp:albumArtURI>{e(cover_url)}</upnp:albumArtURI>'
+            '<upnp:class>object.item.audioItem.musicTrack</upnp:class>'
+            f'<res protocolInfo="http-get:*:{mime}:*">{e(url)}</res></item></DIDL-Lite>')
+
+
+def hms(ms):
+    s = max(0, int(ms // 1000))
+    return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}"
+
+
+# ----- Windows media controls (lock screen, volume flyout, Bluetooth headset buttons)
+class MediaControls(QObject):
+    pressed = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from winrt.windows.media.playback import MediaPlayer
+        self.mp = MediaPlayer()
+        self.mp.command_manager.is_enabled = False
+        s = self.mp.system_media_transport_controls
+        s.is_enabled = s.is_play_enabled = s.is_pause_enabled = True
+        s.is_next_enabled = s.is_previous_enabled = True
+        self.smtc = s
+        self._token = s.add_button_pressed(self._on_button)
+
+    def _on_button(self, _sender, args):
+        from winrt.windows.media import SystemMediaTransportControlsButton as B
+        name = {B.PLAY: "play", B.PAUSE: "pause", B.NEXT: "next", B.PREVIOUS: "prev",
+                B.STOP: "pause"}.get(args.button, "")
+        if name:
+            self.pressed.emit(name)      # arrives on a Windows thread; Qt hands it to the main thread
+
+    def set_track(self, title, artist, album, cover_file):
+        def work():
+            try:
+                from winrt.windows.media import MediaPlaybackType
+                du = self.smtc.display_updater
+                du.type = MediaPlaybackType.MUSIC
+                props = du.music_properties
+                props.title, props.artist, props.album_title = title, artist, album
+                if cover_file:
+                    import asyncio
+                    from winrt.windows.storage import StorageFile
+                    from winrt.windows.storage.streams import RandomAccessStreamReference
+
+                    async def thumb():
+                        return RandomAccessStreamReference.create_from_file(
+                            await StorageFile.get_file_from_path_async(cover_file))
+                    du.thumbnail = asyncio.run(thumb())
+                du.update()
+            except Exception:
+                pass
+        threading.Thread(target=work, daemon=True).start()
+
+    def set_playing(self, playing):
+        from winrt.windows.media import MediaPlaybackStatus
+        self.smtc.playback_status = MediaPlaybackStatus.PLAYING if playing else MediaPlaybackStatus.PAUSED
+
+
+# ----- Last.fm
+def lastfm_call(method, params, key, secret=None, session=None, post=False):
+    p = {"method": method, "api_key": key, **{k: str(v) for k, v in params.items()}}
+    if session:
+        p["sk"] = session
+    if secret:
+        p["api_sig"] = hashlib.md5(("".join(k + p[k] for k in sorted(p)) + secret).encode("utf-8")).hexdigest()
+    p["format"] = "json"
+    data = urllib.parse.urlencode(p)
+    req = (urllib.request.Request(LASTFM_URL, data=data.encode(), method="POST") if post
+           else urllib.request.Request(LASTFM_URL + "?" + data))
+    req.add_header("User-Agent", f"eozMP/{APP_VERSION}")
+    try:
+        with urllib.request.urlopen(req, timeout=12) as r:
+            res = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        res = json.loads(e.read().decode("utf-8", "replace") or "{}")
+    if "error" in res:
+        raise RuntimeError(res.get("message", f"Last.fm error {res['error']}"))
+    return res
+
+
+# ----- tags: fingerprints (AcoustID), MusicBrainz, cover art
+def fpcalc_path():
+    for p in (APP_DIR / "fpcalc" / "fpcalc.exe", APP_DIR / "installer" / "vendor" / "fpcalc" / "fpcalc.exe"):
+        if p.exists():
+            return str(p)
+    return shutil.which("fpcalc")
+
+
+def fingerprint(path):
+    fp = fpcalc_path()
+    out = subprocess.run([fp, "-json", path], capture_output=True, timeout=90,
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    data = json.loads(out.stdout.decode("utf-8", "replace"))
+    return int(data["duration"]), data["fingerprint"]
+
+
+def acoustid_recordings(key, path):
+    """[(score, recording id, [release ids])] best first."""
+    dur, fp = fingerprint(path)
+    body = urllib.parse.urlencode({"client": key, "meta": "recordings releaseids", "duration": dur,
+                                   "fingerprint": fp, "format": "json"}).encode()
+    req = urllib.request.Request("https://api.acoustid.org/v2/lookup", data=body,
+                                 headers={"User-Agent": f"eozMP/{APP_VERSION}"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        res = json.loads(r.read().decode("utf-8"))
+    if res.get("status") != "ok":
+        raise RuntimeError(res.get("error", {}).get("message", "AcoustID error"))
+    time.sleep(0.34)                     # AcoustID allows 3 requests a second
+    out = []
+    for hit in res.get("results", []):
+        for rec in hit.get("recordings", []) or []:
+            out.append((hit.get("score", 0), rec["id"], [r["id"] for r in rec.get("releases", []) or []]))
+    return sorted(out, key=lambda x: -x[0])
+
+
+def release_tags(rid):
+    """MusicBrainz release -> album info + every track's tags, keyed by recording id and by position."""
+    d = mb_json(f"release/{rid}", inc="recordings+artist-credits+release-groups+genres")
+    credit = lambda ac: "".join(a.get("name", "") + a.get("joinphrase", "") for a in ac or [])
+    album = {"album": d.get("title", ""), "albumartist": credit(d.get("artist-credit")),
+             "date": (d.get("date") or "")[:10], "genre": ", ".join(g["name"] for g in (d.get("genres") or [])[:2])}
+    tracks, discs = [], len(d.get("media", []))
+    for m in d.get("media", []):
+        total = len(m.get("tracks", []))
+        for t in m.get("tracks", []):
+            tags = dict(album)
+            tags.update({"title": t.get("title", ""), "artist": credit(t.get("artist-credit")) or album["albumartist"],
+                         "tracknumber": f"{t.get('position', 0)}/{total}",
+                         "discnumber": f"{m.get('position', 1)}/{discs}" if discs > 1 else ""})
+            tracks.append({"rec": (t.get("recording") or {}).get("id", ""), "len": (t.get("length") or 0) / 1000,
+                           "pos": t.get("position", 0), "tags": tags})
+    return {"title": album["album"], "date": album["date"], "tracks": tracks}
+
+
+def cover_art(rid):
+    for url in (f"https://coverartarchive.org/release/{rid}/front-500",):
+        try:
+            data = http_bytes(url, timeout=20)
+            if looks_like_image(data):
+                return data
+        except Exception:
+            pass
+    return None
+
+
+def propose_tags(tracks, artist, album, acoustid_key):
+    """Work out the right tags for these songs. With an AcoustID key every file is identified by its sound;
+    without one the album is looked up by its current name and the songs matched by title/number/length."""
+    plans, releases = {}, {}
+    if acoustid_key and fpcalc_path():
+        votes, recs = Counter(), {}
+        for t in tracks:
+            if STOP_BG.is_set():
+                break
+            try:
+                hits = acoustid_recordings(acoustid_key, t["path"])
+            except Exception:
+                hits = []
+            recs[t["path"]] = hits[:3]
+            for _s, _rid, rels in hits[:3]:
+                votes.update(set(rels))
+        for t in tracks:
+            hits = recs.get(t["path"]) or []
+            if not hits:
+                continue
+            rels = hits[0][2]
+            best = max(rels, key=lambda r: votes[r]) if rels else None
+            if not best:
+                continue
+            if best not in releases:
+                releases[best] = release_tags(best)
+            match = next((x for x in releases[best]["tracks"] if x["rec"] == hits[0][1]), None)
+            if match:
+                plans[t["path"]] = (best, match["tags"])
+    left = [t for t in tracks if t["path"] not in plans]
+    if left and album != "Unknown Album" and artist != "Unknown Artist":
+        res = find_release(artist, album, len(tracks))
+        if res:
+            rid = res
+            if rid not in releases:
+                releases[rid] = release_tags(rid)
+            pool = list(releases[rid]["tracks"])
+            for t in left:
+                def score(x):
+                    s = 3 if _similar_title(t["title"], x["tags"]["title"]) else 0
+                    s += 1 if t.get("num") == x["pos"] else 0
+                    s += 1 if t.get("length") and x["len"] and abs(t["length"] - x["len"]) < 4 else 0
+                    return s
+                best = max(pool, key=score, default=None)
+                if best is not None and score(best) >= 3:
+                    plans[t["path"]] = (rid, best["tags"])
+                    pool.remove(best)
+    return plans, releases
+
+
+def find_release(artist, album, n):
+    q = 'release:"%s" AND artist:"%s"' % (album.replace('"', " "), artist.replace('"', " "))
+    rels = [r for r in mb_json("release", query=q, limit=10).get("releases", []) if r.get("score", 0) >= 80]
+    if not rels:
+        return None
+    count = lambda r: sum(m.get("track-count", 0) for m in r.get("media", [])) or r.get("track-count", 0) or 0
+    rels.sort(key=lambda r: (_norm(r.get("title", "")) != _norm(album), count(r) != n, abs(count(r) - n)))
+    return rels[0]["id"]
+
+
+def write_tags(path, tags, cover=None):
+    audio = MutagenFile(path, easy=True)
+    if audio is None:
+        raise RuntimeError("unsupported file")
+    if audio.tags is None:
+        audio.add_tags()
+    for k, v in tags.items():
+        if v:
+            try:
+                audio[k] = [str(v)]
+            except Exception:
+                pass          # this format has no such tag
+    audio.save()
+    if cover:
+        embed_cover(path, cover)
+
+
+def embed_cover(path, data):
+    mime = "image/png" if data[:8] == b"\x89PNG\r\n\x1a\n" else "image/jpeg"
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".mp3":
+        from mutagen.id3 import ID3, APIC, ID3NoHeaderError
+        try:
+            id3 = ID3(path)
+        except ID3NoHeaderError:
+            id3 = ID3()
+        id3.delall("APIC")
+        id3.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data))
+        id3.save(path)
+    elif ext == ".flac":
+        from mutagen.flac import FLAC, Picture
+        f = FLAC(path)
+        pic = Picture()
+        pic.type, pic.mime, pic.data = 3, mime, data
+        f.clear_pictures()
+        f.add_picture(pic)
+        f.save()
+    elif ext in (".m4a", ".mp4", ".m4b"):
+        from mutagen.mp4 import MP4, MP4Cover
+        f = MP4(path)
+        f["covr"] = [MP4Cover(data, imageformat=MP4Cover.FORMAT_PNG if mime == "image/png" else MP4Cover.FORMAT_JPEG)]
+        f.save()
+
+
+def move_to_duplicates(paths, root):
+    """Move files (never delete) into <root>/_eozMP duplicates. Returns (moved, folder)."""
+    dest = os.path.join(root, "_eozMP duplicates")
+    os.makedirs(dest, exist_ok=True)
+    moved = 0
+    for p in paths:
+        try:
+            name, n = os.path.basename(p), 1
+            target = os.path.join(dest, name)
+            while os.path.exists(target):
+                n += 1
+                target = os.path.join(dest, f"{os.path.splitext(name)[0]} ({n}){os.path.splitext(name)[1]}")
+            shutil.move(p, target)
+            moved += 1
+        except OSError:
+            pass
+    return moved, dest
+
+
+class RemoteDialog(QDialog):
+    def __init__(self, main):
+        super().__init__(main)
+        self.main = main
+        self.setWindowTitle("Phone remote")
+        v = QVBoxLayout(self)
+        self.on = QCheckBox("Turn on the phone remote")
+        self.on.setChecked(main.remote is not None)
+        self.on.toggled.connect(self.toggle)
+        v.addWidget(self.on)
+        note = QLabel("Scan the code with your phone's camera. The phone must be on the same Wi-Fi as this PC. "
+                      "The first time, Windows may ask whether eozMP may use the network - click Allow.")
+        note.setWordWrap(True)
+        note.setObjectName("sub")
+        v.addWidget(note)
+        self.qr = QLabel()
+        self.qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.addWidget(self.qr)
+        self.url = QLabel("")
+        self.url.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.url.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.addWidget(self.url)
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        v.addWidget(close)
+        self.refresh()
+
+    def toggle(self, on):
+        self.main.set_remote(on)
+        self.refresh()
+
+    def refresh(self):
+        srv = self.main.remote
+        if srv is None:
+            self.qr.clear()
+            self.url.setText("")
+            return
+        url = srv.base_url()
+        try:
+            self.qr.setPixmap(qr_pixmap(url))
+        except Exception:
+            self.qr.setText("(install segno to show a QR code)")
+        self.url.setText(_raw(url))
+
+
+class CastDialog(QDialog):
+    def __init__(self, main):
+        super().__init__(main)
+        self.main = main
+        self.devices = []
+        self.setWindowTitle("Play on a TV or speaker")
+        self.resize(460, 380)
+        v = QVBoxLayout(self)
+        self.status = QLabel("Looking for TVs and speakers on your network...")
+        self.status.setWordWrap(True)
+        v.addWidget(self.status)
+        self.list = QListWidget()
+        self.list.itemDoubleClicked.connect(lambda _i: self.cast())
+        v.addWidget(self.list, 1)
+        row = QHBoxLayout()
+        for text, fn in (("Search again", self.search), ("Play there", self.cast), ("Stop casting", self.stop)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        row.addStretch(1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        v.addLayout(row)
+        note = QLabel("Works with smart TVs, Sonos and other speakers that support DLNA / UPnP. eozMP keeps "
+                      "playing silently here so the queue, lyrics and stats stay in step.")
+        note.setWordWrap(True)
+        note.setObjectName("sub")
+        v.addWidget(note)
+        self.search()
+
+    def search(self):
+        self.list.clear()
+        self.status.setText(_t("Looking for TVs and speakers on your network..."))
+        w = Worker(dlna_discover)
+        w.ok.connect(self.found)
+        w.fail.connect(lambda m: self.status.setText(_t(f"Search failed: {m}")))
+        self.main.keep(w)
+
+    def found(self, devices):
+        self.devices = devices
+        self.list.clear()
+        for d in devices:
+            mark = "▶ " if self.main.cast and self.main.cast["location"] == d["location"] else ""
+            self.list.addItem(_raw(mark + d["name"]))
+        self.status.setText(_t(f"Found {len(devices)} device(s).") if devices else
+                            _t("Nothing found. Check that the TV or speaker is on and on the same network."))
+
+    def cast(self):
+        r = self.list.currentRow()
+        if 0 <= r < len(self.devices):
+            self.main.start_cast(self.devices[r])
+            self.found(self.devices)
+
+    def stop(self):
+        self.main.stop_cast()
+        self.found(self.devices)
+
+
+class LastfmDialog(QDialog):
+    def __init__(self, main):
+        super().__init__(main)
+        self.main = main
+        self.token = ""
+        self.setWindowTitle("Last.fm")
+        v = QVBoxLayout(self)
+        note = QLabel("Scrobbling sends the songs you listen to to your Last.fm profile, and the artist page shows "
+                      "similar artists. You need a free API account: last.fm/api/account/create - paste its "
+                      "API key and shared secret here.")
+        note.setWordWrap(True)
+        note.setObjectName("sub")
+        v.addWidget(note)
+        form = QFormLayout()
+        self.key = QLineEdit(main.cfg["lastfm_key"] or LASTFM_API_KEY)
+        self.secret = QLineEdit(main.cfg["lastfm_secret"] or LASTFM_API_SECRET)
+        self.secret.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow("API key", self.key)
+        form.addRow("Shared secret", self.secret)
+        v.addLayout(form)
+        self.on = QCheckBox("Scrobble what I listen to")
+        self.on.setChecked(bool(main.cfg["lastfm_on"]))
+        v.addWidget(self.on)
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        v.addWidget(self.status)
+        row = QHBoxLayout()
+        self.connect_btn = QPushButton("Connect my account")
+        self.connect_btn.clicked.connect(self.connect_account)
+        self.finish_btn = QPushButton("I allowed it - finish")
+        self.finish_btn.clicked.connect(self.finish)
+        self.finish_btn.setEnabled(False)
+        out = QPushButton("Disconnect")
+        out.clicked.connect(self.disconnect)
+        for b in (self.connect_btn, self.finish_btn, out):
+            row.addWidget(b)
+        v.addLayout(row)
+        ok = QPushButton("Save")
+        ok.setObjectName("primary")
+        ok.clicked.connect(self.save)
+        v.addWidget(ok)
+        self.show_status()
+
+    def show_status(self):
+        user = self.main.cfg["lastfm_user"]
+        self.status.setText(_t(f"Connected as {user}.") if user else _t("Not connected."))
+
+    def save(self):
+        self.main.cfg.update({"lastfm_key": self.key.text().strip(), "lastfm_secret": self.secret.text().strip(),
+                              "lastfm_on": self.on.isChecked()})
+        save_config(self.main.cfg)
+        self.accept()
+
+    def connect_account(self):
+        key, secret = self.key.text().strip(), self.secret.text().strip()
+        if not key or not secret:
+            self.status.setText(_t("Paste the API key and shared secret first."))
+            return
+        try:
+            self.token = lastfm_call("auth.getToken", {}, key, secret)["token"]
+        except Exception as e:
+            self.status.setText(_t(f"Last.fm said: {e}"))
+            return
+        QDesktopServices.openUrl(QUrl(f"https://www.last.fm/api/auth/?api_key={key}&token={self.token}"))
+        self.status.setText(_t("Allow eozMP in the browser page that opened, then click \"I allowed it - finish\"."))
+        self.finish_btn.setEnabled(True)
+
+    def finish(self):
+        key, secret = self.key.text().strip(), self.secret.text().strip()
+        try:
+            s = lastfm_call("auth.getSession", {"token": self.token}, key, secret)["session"]
+        except Exception as e:
+            self.status.setText(_t(f"Last.fm said: {e}"))
+            return
+        self.main.cfg.update({"lastfm_session": s["key"], "lastfm_user": s["name"], "lastfm_key": key,
+                              "lastfm_secret": secret})
+        save_config(self.main.cfg)
+        self.finish_btn.setEnabled(False)
+        self.show_status()
+
+    def disconnect(self):
+        self.main.cfg.update({"lastfm_session": "", "lastfm_user": ""})
+        save_config(self.main.cfg)
+        self.show_status()
+
+
+class TagFixDialog(QDialog):
+    def __init__(self, main, tracks, plans, releases):
+        super().__init__(main)
+        self.main, self.plans, self.releases = main, plans, releases
+        self.setWindowTitle("Fix tags and cover")
+        self.resize(1000, 520)
+        v = QVBoxLayout(self)
+        names = ", ".join(sorted({r["title"] for r in releases.values()}))[:200]
+        head = QLabel(_t(f"Matched {len(plans)} of {len(tracks)} songs on MusicBrainz ({names}). "
+                         "Ticked songs get the new tags; your files are changed, so check before you apply."))
+        head.setWordWrap(True)
+        v.addWidget(head)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["File", "Now", "New", "Album / track"])
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.verticalHeader().hide()
+        self.rows = [t for t in tracks if t["path"] in plans]
+        self.table.setRowCount(len(self.rows))
+        for r, t in enumerate(self.rows):
+            new = plans[t["path"]][1]
+            first = QTableWidgetItem(os.path.basename(t["path"]))
+            first.setFlags(first.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            first.setCheckState(Qt.CheckState.Checked)
+            self.table.setItem(r, 0, first)
+            self.table.setItem(r, 1, QTableWidgetItem(f"{t['artist_raw'] or t['artist']} - {t['title']}"))
+            self.table.setItem(r, 2, QTableWidgetItem(f"{new['artist']} - {new['title']}"))
+            self.table.setItem(r, 3, QTableWidgetItem(f"{new['album']}  #{new['tracknumber']}  {new['date'][:4]}"))
+        v.addWidget(self.table, 1)
+        self.cover = QCheckBox("Also put the album cover inside the files")
+        self.cover.setChecked(True)
+        v.addWidget(self.cover)
+        row = QHBoxLayout()
+        go = QPushButton("Apply to ticked songs")
+        go.setObjectName("primary")
+        go.clicked.connect(self.apply)
+        row.addWidget(go)
+        row.addStretch(1)
+        close = QPushButton("Cancel")
+        close.clicked.connect(self.reject)
+        row.addWidget(close)
+        v.addLayout(row)
+
+    def apply(self):
+        jobs = []
+        for r, t in enumerate(self.rows):
+            if self.table.item(r, 0).checkState() == Qt.CheckState.Checked:
+                jobs.append((t["path"], *self.plans[t["path"]]))
+        want_cover = self.cover.isChecked()
+
+        def job():
+            covers, done, failed = {}, 0, 0
+            for path, rid, tags in jobs:
+                if want_cover and rid not in covers:
+                    covers[rid] = cover_art(rid)
+                try:
+                    write_tags(path, tags, covers.get(rid) if want_cover else None)
+                    done += 1
+                except Exception:
+                    failed += 1
+            return done, failed
+
+        w = Worker(job)
+        w.ok.connect(lambda res: (self.main.statusBar().showMessage(
+            _t(f"Fixed the tags of {res[0]} song(s)") + (_t(f", {res[1]} failed") if res[1] else ""), 10000),
+            self.main.rescan()))
+        w.fail.connect(lambda m: self.main.statusBar().showMessage(_t(f"Couldn't write tags ({m})"), 10000))
+        self.main.keep(w)
+        self.main.statusBar().showMessage(_t("Writing tags..."))
+        self.accept()
+
+
+class Extras2Mixin:
+    """Phone remote, casting, Windows media controls, Last.fm, tag fixing and better-copy upgrades."""
+
+    def init_extras2(self):
+        self.remote = None
+        self.cast = None
+        self._cast_prev = None
+        self._cast_pool = None
+        self.smtc = None
+        self.listen_started = time.time()
+        self.remote_timer = QTimer(self)
+        self.remote_timer.setInterval(700)
+        self.remote_timer.timeout.connect(self.update_remote_state)
+        if self.cfg["remote_on"]:
+            self.set_remote(True)
+        if sys.platform == "win32" and self.cfg["smtc"]:
+            try:
+                self.smtc = MediaControls(self)
+                self.smtc.pressed.connect(self.on_media_control)
+            except Exception:
+                self.smtc = None        # winrt isn't installed; everything else still works
+        if self.cfg["lastfm_queue"]:
+            QTimer.singleShot(20000, self.lastfm_flush)
+
+    def shutdown_extras2(self):
+        self.stop_cast()
+        if self.remote is not None:
+            self.remote.stop()
+
+    def build_connect_menu(self):
+        menu = self.menuBar().addMenu("&Connect")
+        for text, fn in (("Phone remote...", lambda: RemoteDialog(self).exec()),
+                         ("Play on a TV or speaker...", lambda: CastDialog(self).exec()),
+                         ("Last.fm...", lambda: LastfmDialog(self).exec()),
+                         ("AcoustID key (for fixing tags)...", self.ask_acoustid_key)):
+            act = QAction(text, self)
+            act.triggered.connect(lambda checked=False, f=fn: f())
+            menu.addAction(act)
+
+    def album_extras(self, key):
+        return (("Find missing songs...", lambda: self.find_missing(key)),
+                ("Fix tags and cover...", lambda: self.fix_tags(key)),
+                ("Find a better copy on Soulseek...", lambda: self.upgrade_album(key)))
+
+    # ----- things that happen when a song starts / pauses / moves
+    def on_track_started(self, track, key):
+        self.listen_started = time.time()
+        self._cast_prev = None
+        fid = file_id(track["path"])
+        cover = b""
+        pix = self.cover_for(key) if key in self.albums else None
+        if pix is not None and (self.remote is not None or self.smtc is not None or self.cast):
+            from PyQt6.QtCore import QBuffer, QIODevice
+            buf = QBuffer()
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            pix.scaled(500, 500, Qt.AspectRatioMode.KeepAspectRatio,
+                       Qt.TransformationMode.SmoothTransformation).save(buf, "JPG", 88)
+            cover = bytes(buf.data())
+        if self.remote is not None:
+            self.remote.files[fid] = track["path"]
+            self.remote.cover = cover
+        if self.smtc is not None:
+            cover_file = ""
+            if cover:
+                cover_file = str(Path(os.environ.get("TEMP", str(Path.home()))) / "eozmp_now_playing.jpg")
+                try:
+                    Path(cover_file).write_bytes(cover)
+                except OSError:
+                    cover_file = ""
+            self.smtc.set_track(track["title"], track["artist"], track["album"], cover_file)
+        if self.cast:
+            self.cast_load(track, fid)
+        if self.lastfm_ready():
+            t = dict(track)
+            key_, secret, sk = self.lastfm_creds()
+            w = Worker(lambda: lastfm_call("track.updateNowPlaying", {
+                "artist": t.get("artist_raw") or t["artist"], "track": t["title"], "album": t["album"],
+                "duration": int(t.get("length") or 0)}, key_, secret, sk, post=True))
+            w.fail.connect(lambda _m: None)
+            self.keep(w)
+
+    def on_play_state(self, playing):
+        if self.smtc is not None:
+            try:
+                self.smtc.set_playing(playing)
+            except Exception:
+                pass
+        if self.cast:
+            self.cast_send("AVTransport", "Play" if playing else "Pause",
+                           [("InstanceID", 0)] + ([("Speed", 1)] if playing else []))
+
+    def on_media_control(self, name):
+        playing = self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        if name == "next":
+            self.next_track(auto=False)
+        elif name == "prev":
+            self.prev_track()
+        elif (name == "play") != playing:
+            self.toggle_play()
+
+    # ----- phone remote
+    def set_remote(self, on):
+        if on and self.remote is None:
+            if not self.cfg["remote_token"]:
+                self.cfg["remote_token"] = uuid.uuid4().hex[:16]
+            srv = RemoteServer(self.cfg["remote_token"], int(self.cfg["remote_port"]), self)
+            try:
+                srv.start()
+            except OSError as e:
+                QMessageBox.warning(self, "Phone remote", _t(f"Couldn't start the remote ({e})."))
+                return
+            srv.command.connect(self.on_remote_command)
+            self.remote = srv
+            self.remote_timer.start()
+            if 0 <= self.index < len(self.queue):
+                self.on_track_started(*self.queue[self.index])
+        elif not on and self.remote is not None and not self.cast:
+            self.remote.stop()
+            self.remote = None
+            self.remote_timer.stop()
+        self.cfg["remote_on"] = self.remote is not None
+        save_config(self.cfg)
+
+    def update_remote_state(self):
+        if self.remote is None:
+            return
+        t = self.queue[self.index][0] if 0 <= self.index < len(self.queue) else None
+        line = ""
+        if self.lyric_times and 0 <= self.lyric_idx < len(self.lyric_lines):
+            line = self.lyric_lines[self.lyric_idx]
+        self.remote.state = {
+            "id": file_id(t["path"]) if t else "", "ext": os.path.splitext(t["path"])[1].lower() if t else "",
+            "title": t["title"] if t else "", "artist": t["artist"] if t else "", "album": t["album"] if t else "",
+            "playing": self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState,
+            "pos": int(self.player.position()), "dur": int(self.seek.maximum()), "vol": self.volume.value(),
+            "line": line, "fav": bool(t) and t["path"] in self.fav_set}
+
+    def on_remote_command(self, do, value):
+        try:
+            if do == "toggle":
+                self.toggle_play()
+            elif do == "next":
+                self.next_track(auto=False)
+            elif do == "prev":
+                self.prev_track()
+            elif do == "seek":
+                self.player.setPosition(int(float(value)))
+            elif do == "vol":
+                self.volume.setValue(int(float(value)))
+            elif do == "fav":
+                self.toggle_favorite_current()
+            elif do == "mute":            # "listen on this phone": the PC keeps time silently
+                self.audio.setMuted(value == "1" or bool(self.cast))
+        except (ValueError, TypeError):
+            pass
+        self.update_remote_state()
+
+    # ----- casting (DLNA)
+    def start_cast(self, device):
+        from concurrent.futures import ThreadPoolExecutor
+        if self.remote is None:
+            self.set_remote(True)
+            if self.remote is None:
+                return
+        if self.cast:
+            self.stop_cast()
+        self.cast = device
+        if self._cast_pool is None:
+            self._cast_pool = ThreadPoolExecutor(max_workers=1)    # one at a time, in order
+        self.audio.setMuted(True)
+        if 0 <= self.index < len(self.queue):
+            self.on_track_started(*self.queue[self.index])
+        self.statusBar().showMessage(_t(f"Playing on {device['name']}"), 8000)
+
+    def stop_cast(self):
+        if not self.cast:
+            return
+        self.cast_send("AVTransport", "Stop", [("InstanceID", 0)])
+        self.cast = None
+        self.audio.setMuted(False)
+        self.statusBar().showMessage(_t("Stopped casting - playing on this PC again."), 6000)
+
+    def cast_send(self, service, action, args):
+        dev = self.cast
+        if not dev or self._cast_pool is None:
+            return
+        url = dev["av"] if service == "AVTransport" else dev["rc"]
+
+        def run():
+            try:
+                dlna_soap(url, service, action, args)
+            except Exception:
+                pass
+        self._cast_pool.submit(run)
+
+    def cast_load(self, track, fid):
+        base = self.remote.base_url()
+        ext = os.path.splitext(track["path"])[1].lower()
+        url = f"{base}stream/{fid}{ext}"
+        mime = AUDIO_MIME.get(ext, "audio/mpeg")
+        meta = dlna_didl(url, track, f"{base}cover?v={fid}", mime)
+        self.cast_send("AVTransport", "Stop", [("InstanceID", 0)])
+        self.cast_send("AVTransport", "SetAVTransportURI",
+                       [("InstanceID", 0), ("CurrentURI", url), ("CurrentURIMetaData", meta)])
+        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self.cast_send("AVTransport", "Play", [("InstanceID", 0), ("Speed", 1)])
+
+    def cast_watch_position(self, pos):
+        """Mirror seeks (a jump in position) to the TV."""
+        if not self.cast:
+            return
+        prev, self._cast_prev = self._cast_prev, pos
+        # (a jump back to ~0 is just the next song starting; the TV gets that song separately)
+        if prev is not None and pos > 1500 and (pos - prev > 3000 or pos < prev - 1500):
+            self.cast_send("AVTransport", "Seek", [("InstanceID", 0), ("Unit", "REL_TIME"), ("Target", hms(pos))])
+
+    # ----- Last.fm
+    def lastfm_creds(self):
+        return (self.cfg["lastfm_key"] or LASTFM_API_KEY, self.cfg["lastfm_secret"] or LASTFM_API_SECRET,
+                self.cfg["lastfm_session"])
+
+    def lastfm_ready(self):
+        key, secret, sk = self.lastfm_creds()
+        return bool(self.cfg["lastfm_on"] and key and secret and sk)
+
+    def lastfm_listened(self, path, ms):
+        """Last.fm's rule: songs over 30 s count once half (or 4 minutes) of them was heard."""
+        hit = self.track_by_path.get(path)
+        if not hit or not self.lastfm_ready():
+            return
+        t = hit[0]
+        length = t.get("length") or 0
+        if length <= 30 or ms < min(length * 500, 240000):
+            return
+        self.cfg["lastfm_queue"].append({"artist": t.get("artist_raw") or t["artist"], "track": t["title"],
+                                         "album": t["album"], "timestamp": int(self.listen_started),
+                                         "duration": int(length)})
+        del self.cfg["lastfm_queue"][:-500]
+        save_config(self.cfg)
+        self.lastfm_flush()
+
+    def lastfm_flush(self):
+        if not self.lastfm_ready() or not self.cfg["lastfm_queue"] or getattr(self, "_fm_busy", False):
+            return
+        batch = list(self.cfg["lastfm_queue"][:50])
+        key, secret, sk = self.lastfm_creds()
+        params = {f"{k}[{i}]": v for i, item in enumerate(batch) for k, v in item.items()}
+        self._fm_busy = True
+        w = Worker(lambda: lastfm_call("track.scrobble", params, key, secret, sk, post=True))
+
+        def done(_res):
+            sent = {(b["timestamp"], b["track"]) for b in batch}
+            self.cfg["lastfm_queue"] = [x for x in self.cfg["lastfm_queue"] if (x["timestamp"], x["track"]) not in sent]
+            save_config(self.cfg)
+
+        w.ok.connect(done)
+        w.fail.connect(lambda _m: None)          # kept in the queue; sent with the next song
+        w.finished.connect(lambda: setattr(self, "_fm_busy", False))
+        self.keep(w)
+
+    def show_similar_artists(self, akey):
+        self.artist_similar.setText("")
+        key = self.cfg["lastfm_key"] or LASTFM_API_KEY
+        if not key:
+            return
+        name = self.artists.get(akey, "")
+        w = Worker(lambda: lastfm_call("artist.getSimilar", {"artist": name, "limit": 8, "autocorrect": 1}, key))
+
+        def done(res):
+            if self.current_artist != akey:
+                return
+            names = [a["name"] for a in res.get("similarartists", {}).get("artist", [])][:8]
+            col = self.scheme["accent"]
+            links = [self.link(f"artist:{urllib.parse.quote(n.lower())}", n, col) if n.lower() in self.artists
+                     else self.link("newrel:" + urllib.parse.quote(n + "|"), n, self.scheme["sub"]) for n in names]
+            if links:
+                self.artist_similar.setText(_raw(html.escape(_t("Similar artists:")) + " " + "  ·  ".join(links)))
+
+        w.ok.connect(done)
+        w.fail.connect(lambda _m: None)
+        self.keep(w)
+
+    # ----- tags
+    def ask_acoustid_key(self):
+        text, ok = QInputDialog.getText(
+            self, "AcoustID", "Paste your free AcoustID application key (get one at acoustid.org/new-application).\n"
+            "With it, eozMP recognises songs by their sound, even with no tags at all.",
+            QLineEdit.EchoMode.Normal, self.cfg["acoustid_key"])
+        if ok:
+            self.cfg["acoustid_key"] = text.strip()
+            save_config(self.cfg)
+
+    def fix_tags(self, key):
+        alb = self.albums.get(key)
+        if not alb:
+            return
+        tracks = [dict(t) for t in alb["tracks"]]
+        artist, album, akey = alb["artist"], alb["album"], self.cfg["acoustid_key"]
+        if not akey and (album == "Unknown Album" or artist == "Unknown Artist"):
+            QMessageBox.information(self, "Fix tags", "These songs have no usable tags. Add an AcoustID key "
+                                    "(Connect > AcoustID key) so eozMP can recognise them by their sound.")
+            return
+        self.statusBar().showMessage(_t("Identifying songs on MusicBrainz (about 1-2 seconds per song)..."))
+        w = Worker(lambda: propose_tags(tracks, artist, album, akey))
+
+        def done(res):
+            plans, releases = res
+            self.statusBar().clearMessage()
+            if not plans:
+                QMessageBox.information(self, "Fix tags", "MusicBrainz didn't recognise these songs.")
+                return
+            TagFixDialog(self, tracks, plans, releases).exec()
+
+        w.ok.connect(done)
+        w.fail.connect(lambda m: self.statusBar().showMessage(_t(f"Couldn't look the songs up ({m})"), 10000))
+        self.keep(w)
+
+    # ----- better copies from Soulseek
+    def upgrade_album(self, key):
+        alb = self.albums.get(key)
+        if not alb:
+            return
+        self.cfg["upgrades"][f"{alb['artist']}|{alb['album']}".lower()] = time.time()
+        save_config(self.cfg)
+        self.fmt_combo.setCurrentText("Lossless only")
+        self.view_combo.setCurrentText("Albums")
+        self.soul_query(f"{alb['artist']} {alb['album']}")
+        self.statusBar().showMessage(_t("Pick a lossless copy and download it - when it arrives, eozMP offers "
+                                        "to put the old files aside."), 15000)
+
+    def check_upgrades(self):
+        """After a rescan: did a better copy of an album we wanted to upgrade arrive?"""
+        if not self.cfg["upgrades"]:
+            return
+        groups = find_duplicates(self.all_tracks)
+        for wanted in list(self.cfg["upgrades"]):
+            artist, _, album = wanted.partition("|")
+            old = [t["path"] for g in groups if _norm(g[0]["artist"]) == _norm(artist)
+                   for t in g[1:] if _norm(t["album"]) == _norm(album) and track_quality_score(g[0])[0]
+                   > track_quality_score(t)[0]]
+            if not old:
+                if time.time() - self.cfg["upgrades"][wanted] > 30 * 86400:
+                    del self.cfg["upgrades"][wanted]       # gave up waiting
+                continue
+            del self.cfg["upgrades"][wanted]
+            root = self.organize_target() or (self.cfg["folders"][0] if self.cfg["folders"] else "")
+            if root and QMessageBox.question(
+                    self, "Better copy arrived",
+                    _t(f"A better copy of \"{album}\" is in your library. Move the {len(old)} old file(s) "
+                       "to the _eozMP duplicates folder?")) == QMessageBox.StandardButton.Yes:
+                moved, folder = move_to_duplicates(old, root)
+                self.statusBar().showMessage(_t(f"Moved {moved} duplicate(s) to {folder}"), 10000)
+                QTimer.singleShot(0, self.rescan)
+        save_config(self.cfg)
+
 # ---------------------------------------------------------------- main window
-class Player(QMainWindow):
+class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("eozMP")
@@ -4239,6 +6698,7 @@ class Player(QMainWindow):
         self.setup_tray()
         if self.cfg["media_keys"]:
             self.register_media_keys()
+        self.init_extras()
 
     # ----- helpers
     def keep(self, worker):
@@ -4451,6 +6911,10 @@ class Player(QMainWindow):
         disco_btn.setToolTip("Find and download every album by an artist")
         disco_btn.clicked.connect(self.start_discography)
         srow.addWidget(disco_btn)
+        wish_btn = QPushButton("Add to wishlist")
+        wish_btn.setToolTip("Keep searching for this in the background and tell me when it appears")
+        wish_btn.clicked.connect(lambda: self.wishlist_add(self.search.text().strip()))
+        srow.addWidget(wish_btn)
         srow.addWidget(self.dl_btn)
         sv.addLayout(srow)
         frow = QHBoxLayout()
@@ -4552,6 +7016,12 @@ class Player(QMainWindow):
         add_link.setToolTip("Open the song's folder so you can save your own lyrics next to it")
         add_link.clicked.connect(self.add_lyrics_manually)
         src_row.addWidget(add_link)
+        self.translate_btn = QPushButton("Translate")
+        self.translate_btn.setObjectName("link")
+        self.translate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.translate_btn.setToolTip("Show a translation under each lyric line")
+        self.translate_btn.clicked.connect(self.show_translate_menu)
+        src_row.addWidget(self.translate_btn)
         src_row.addStretch(1)
         titles.addLayout(src_row)
         titles.addStretch(1)
@@ -4773,6 +7243,13 @@ class Player(QMainWindow):
         at.addStretch(1)
         at.addWidget(self.artist_title)
         at.addWidget(self.artist_sub)
+        self.artist_similar = QLabel("")
+        self.artist_similar.setObjectName("sub")
+        self.artist_similar.setWordWrap(True)
+        self.artist_similar.setTextFormat(Qt.TextFormat.RichText)
+        self.artist_similar.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
+        self.artist_similar.linkActivated.connect(self.on_link)
+        at.addWidget(self.artist_similar)
         at.addSpacing(6)
         at.addLayout(abt)
         at.addStretch(1)
@@ -4829,6 +7306,17 @@ class Player(QMainWindow):
             hv.addWidget(lst)
             hv.addSpacing(6)
             self.home_rows[row_key] = (lab, lst)
+        self.home_new_label = QLabel("New from your artists")
+        self.home_new_label.setObjectName("heading3")
+        self.home_new = QLabel("")
+        self.home_new.setTextFormat(Qt.TextFormat.RichText)
+        self.home_new.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
+        self.home_new.linkActivated.connect(self.on_link)
+        self.home_new.setToolTip("Click one to search it on Soulseek")
+        hv.addWidget(self.home_new_label)
+        hv.addWidget(self.home_new)
+        self.home_new_label.hide()
+        self.home_new.hide()
         hv.addStretch(1)
         home_scroll = QScrollArea()
         home_scroll.setWidgetResizable(True)
@@ -5117,6 +7605,7 @@ class Player(QMainWindow):
             self, "eozMP", "eozMP - eren's definitely (not) sketchy music player, customize and enjoy your music.\n\n"
             "Copyright (C) 2026 Eren. Free software under the GNU General Public License v3."))
         hlp.addAction(act)
+        self.build_extras_menu()
 
     # ----- library
     def add_folder(self):
@@ -5156,6 +7645,7 @@ class Player(QMainWindow):
     def on_scan_done(self, tracks):
         self.scanning = False
         self.build_library(tracks)
+        self.check_upgrades()
         if self.rescan_pending:
             self.rescan_pending = False
             self.rescan()
@@ -5374,7 +7864,7 @@ class Player(QMainWindow):
         self.maybe_fetch_cover(key)
         total = sum(t["length"] for t in alb["tracks"])
         year = f" - {alb['year']}" if alb["year"] else ""
-        self.album_title.setText(alb["album"])
+        self.album_title.setText(_raw(alb["album"]))
         self.album_sub.setText(
             self.link(f"artist:{key[0]}", alb["artist"], "#ffffff", bold=True)
             + html.escape(year) + "<br>"
@@ -5461,6 +7951,7 @@ class Player(QMainWindow):
         self.update_drawer()
         self.update_fullscreen()
         self.update_tray()
+        self.on_track_started(track, key)
 
     def toggle_play(self):
         state = self.player.playbackState()
@@ -5479,6 +7970,13 @@ class Player(QMainWindow):
 
     def next_track(self, auto=False):
         if not self.queue:
+            return
+        if self.cfg["repeat_mode"] == "one" and self.current_path():
+            # "repeat this song": next starts the same song again instead of skipping it
+            self.finalize_listen()
+            self.listen_path = self.current_path()
+            self.player.setPosition(0)
+            self.player.play()
             return
         # 0) after going back, "next" walks forward through what you already heard
         while self.fwd:
@@ -5641,12 +8139,12 @@ class Player(QMainWindow):
             self.queue_list.addItem(item)
         n = len(self.up_next)
         self.queue_btn.setText(f"Queue ({n})" if n else "Queue")
-        after = f"\"{self.ctx_kind}\"" if self.ctx_kind else "your library"
-        self.queue_sub.setText(
-            (f"{n} song{'s' if n != 1 else ''}  ·  {self.queue_length_text()}  -  drag to reorder. "
-             if n else "Nothing queued. ")
-            + f"After the queue, playback continues with {after}."
-        )
+        after = f"\"{_raw(self.ctx_kind)}\"" if self.ctx_kind else _t("your library")
+        self.queue_sub.setText(_raw(
+            (_t(f"{n} song{'s' if n != 1 else ''}  ·  {self.queue_length_text()}  -  drag to reorder. ")
+             if n else _t("Nothing queued. "))
+            + _t(f"After the queue, playback continues with {after}.")
+        ))
         self.update_mini_next()
         self.update_drawer()
 
@@ -5714,6 +8212,7 @@ class Player(QMainWindow):
             self.fs.vol_btn.setIcon(make_icon(kind, "#ffffff"))
 
     def on_position(self, pos):
+        self.cast_watch_position(pos)
         if not self.seek.isSliderDown():
             self.seek.setValue(pos)
         self.time_label.setText(fmt_time(pos))
@@ -5777,6 +8276,7 @@ class Player(QMainWindow):
             self.mini.set_icons(playing)
         self.update_tray()
         self.update_fullscreen()
+        self.on_play_state(playing)
 
     # ----- settings
     def open_settings(self, tab=None):
@@ -5793,6 +8293,10 @@ class Player(QMainWindow):
         self.apply_settings()
         self.apply_soulseek_defaults()
         self.apply_equalizer()
+        if (ui_language_code(old["ui_lang"]) != ui_language_code(self.cfg["ui_lang"])
+                and QMessageBox.question(self, "eozMP", "Restart eozMP now to change the language?")
+                == QMessageBox.StandardButton.Yes):
+            QTimer.singleShot(0, self.restart_app)
         if old["media_keys"] != self.cfg["media_keys"]:
             if self.cfg["media_keys"]:
                 self.register_media_keys()
@@ -6049,6 +8553,9 @@ class Player(QMainWindow):
             self.thumbs.stop()
             self.thumbs.wait(2000)
             # let background jobs finish (a library scan, or organize halfway through moving a song)
+            STOP_BG.set()
+            self.shutdown_extras2()
+            self.stop_slskd()     # only stops the slskd eozMP started itself
             deadline = time.time() + 10
             for w in list(self.workers):
                 if hasattr(w, "stop"):
@@ -6283,7 +8790,7 @@ class Player(QMainWindow):
         sub = f"{len(keys)} album{'s' if len(keys) != 1 else ''}  ·  {len(tracks)} songs"
         if total_plays:
             sub += f"  ·  {total_plays} plays"
-        self.artist_title.setText(self.artists[akey])
+        self.artist_title.setText(_raw(self.artists[akey]))
         self.artist_sub.setText(sub)
         self.artist_avatar_key = self.artist_cover_key(akey)
         self.artist_avatar.setPixmap(self.artist_pixmap(akey, 120))
@@ -6305,6 +8812,7 @@ class Player(QMainWindow):
             count = plays.get(path, {}).get("count", 0)
             for c, val in enumerate((t["title"], t["album"], str(count) if count else "")):
                 self.artist_top.setItem(r, c, QTableWidgetItem(val))
+        self.show_similar_artists(akey)
         if switch:
             self.stack.setCurrentIndex(7)
             self.nav_note(("artist", akey))
@@ -6352,6 +8860,7 @@ class Player(QMainWindow):
                 self.add_tile(lst, "home", kind, value, text, 120)
             lab.setVisible(bool(items))
             lst.setVisible(bool(items))
+        self.render_new_releases()
         if switch:
             self.stack.setCurrentIndex(8)
             self.left_stack.setCurrentIndex(0)
@@ -6513,13 +9022,17 @@ class Player(QMainWindow):
         self.browse_list.clear()
 
         def add(text, data=None):
-            item = QListWidgetItem(text)
+            item = QListWidgetItem(_t(text))
             if data is None:
                 item.setFlags(Qt.ItemFlag.NoItemFlags)
             else:
                 item.setData(KEY_ROLE, data)
             self.browse_list.addItem(item)
 
+        self.compute_moods()
+        add("MOODS")
+        for m in MOOD_WORDS:
+            add(_t(f"{_t(m)}   ({len(self.mood_tracks.get(m, []))} songs)"), ("mood", m))
         add("GENRES")
         for gk in sorted(self.genres, key=lambda k: self.genres[k]["name"].lower()):
             g = self.genres[gk]
@@ -6536,7 +9049,11 @@ class Player(QMainWindow):
             self.show_browse(*data)
 
     def show_browse(self, kind, value):
-        if kind == "genre":
+        if kind == "mood":
+            paths = set(self.mood_tracks.get(value, []))
+            keys = list({self.track_by_path[p][1] for p in paths if p in self.track_by_path})
+            title = _t(f"{_t(value)} mood")
+        elif kind == "genre":
             keys = list(self.genres.get(value, {}).get("albums", []))
             title = self.genres.get(value, {}).get("name", value)
         else:
@@ -6545,6 +9062,8 @@ class Player(QMainWindow):
         keys = [k for k in keys if k in self.albums]
         keys.sort(key=lambda k: (self.albums[k]["artist"].lower(), self.albums[k]["year"] or 9999))
         self.browse_paths = [p for k in keys for p in self.album_paths(k)]
+        if kind == "mood":
+            self.browse_paths = [p for p in self.browse_paths if p in paths]
         self.browse_name = title
         self.browse_title.setText(title)
         self.browse_sub.setText(f"{len(keys)} albums  ·  {len(self.browse_paths)} songs")
@@ -6722,6 +9241,8 @@ class Player(QMainWindow):
         elif kind == "album" and value in self.track_by_path:
             self.leave_overlays()
             self.open_album(self.track_by_path[value][1])
+        elif kind == "newrel":
+            self.soul_query(value.replace("|", " "))
 
     def leave_overlays(self):
         if self.fs_active:
@@ -6901,7 +9422,7 @@ class Player(QMainWindow):
             return
         if 0 <= self.index < len(self.queue):
             t, key = self.queue[self.index]
-            self.drawer_title.setText(t["title"])
+            self.drawer_title.setText(_raw(t["title"]))
             self.drawer_artist.setText(f"{t['artist']}  ·  {t['album']}")
             self.drawer_cover.setPixmap(self.thumb_pixmap(key, 48, self.radius(8)))
         else:
@@ -7021,7 +9542,7 @@ class Player(QMainWindow):
         key = self.current_key()
         if 0 <= self.index < len(self.queue):
             t = self.queue[self.index][0]
-            fs.title.setText(t["title"])
+            fs.title.setText(_raw(t["title"]))
             fs.artist.setText(f"{t['artist']}  ·  {t['album']}")
         else:
             fs.title.setText("Nothing playing")
@@ -7052,9 +9573,9 @@ class Player(QMainWindow):
         v = self.volume.value()
         kind = "vol_mute" if (self.audio.isMuted() or v == 0) else ("vol_low" if v < 50 else "vol_high")
         fs.vol_btn.setIcon(make_icon(kind, "#ffffff"))
-        if self.cfg["fs_motion"] and not fs.motion_timer.isActive():
+        if (self.cfg["fs_motion"] or self.cfg["fs_fluid"]) and not fs.motion_timer.isActive():
             fs.motion_timer.start()
-        elif not self.cfg["fs_motion"]:
+        elif not (self.cfg["fs_motion"] or self.cfg["fs_fluid"]):
             fs.motion_timer.stop()
         self.setup_visualizer()
         fs.show_next_card("")
@@ -7100,7 +9621,7 @@ class Player(QMainWindow):
     def visualizers(self):
         out = []
         style = self.cfg["visualizer"]
-        if style == "Off":
+        if style == "Off" and not (self.fs_active and self.cfg["fs_fluid"]):
             return out
         if self.fs_active and self.fs is not None:
             out.append(self.fs.viz)
@@ -7111,7 +9632,8 @@ class Player(QMainWindow):
     def setup_visualizer(self):
         style = self.cfg["visualizer"]
         on = style != "Off"
-        can = (on and QAudioBufferOutput is not None and isinstance(self.player, QMediaPlayer)
+        feed = on or bool(self.cfg["fs_fluid"])      # the fluid background also listens to the music
+        can = (feed and QAudioBufferOutput is not None and isinstance(self.player, QMediaPlayer)
                and hasattr(self.player, "setAudioBufferOutput"))
         if can and self.buf_out is None:
             self.buf_out = QAudioBufferOutput(self)
@@ -7129,7 +9651,7 @@ class Player(QMainWindow):
                 continue
             viz.style = style if style != "Off" else "Bars"
             viz.color = QColor(255, 255, 255, 150) if (light or viz is not self.ly_viz) else QColor(self.scheme["accent"])
-            viz.setVisible(visible)
+            viz.setVisible(visible and on)
         if can:
             self.viz_timer.start()
         else:
@@ -7236,7 +9758,7 @@ class Player(QMainWindow):
 
     def set_lyric_line(self, text):
         """The current lyric under the song title (bottom bar and mini player)."""
-        self.lyric_line.setText(text)
+        self.lyric_line.setText(_raw(text))
         if self.mini is not None:
             self.mini.set_lyric(text)
 
@@ -7327,6 +9849,7 @@ class Player(QMainWindow):
         self.listen_ms, self.last_pos = 0, None
         if not path:
             return
+        self.lastfm_listened(path, ms)
         hit = self.track_by_path.get(path)
         length_ms = hit[0]["length"] * 1000 if hit and hit[0]["length"] else 60000
         if ms >= min(30000, length_ms * 0.5):
@@ -7792,9 +10315,10 @@ class Player(QMainWindow):
                 paths += self.album_paths(item.child(i).data(0, KEY_ROLE))
         if not paths:
             return
+        extra = self.album_extras(key) if key in self.albums else ()
         self.track_menu(
             self.tree.viewport().mapToGlobal(pos), paths,
-            play_cb=lambda: self.play_from_library(self.qindex[paths[0]]),
+            play_cb=lambda: self.play_from_library(self.qindex[paths[0]]), extra=extra,
         )
 
     def album_table_menu(self, pos):
@@ -7808,9 +10332,11 @@ class Player(QMainWindow):
         paths = [tracks[r]["path"] for r in sel if r < len(tracks)]
         if not paths:
             return
+        album_key = self.current_album
         self.track_menu(
             self.track_table.viewport().mapToGlobal(pos), paths,
             play_cb=lambda: self.play_from_library(self.qindex[paths[0]]),
+            extra=self.album_extras(album_key),
         )
 
     def refresh_playlist_list(self, select=None):
@@ -7885,7 +10411,7 @@ class Player(QMainWindow):
         sub = f"{len(tracks)} songs - {fmt_time(total * 1000)}"
         if missing:
             sub += f"  ({missing} not found in your library right now)"
-        self.pl_title.setText(name)
+        self.pl_title.setText(_raw(name))
         self.pl_ren_btn.setEnabled(name not in SMART_PLAYLISTS)
         self.pl_del_btn.setEnabled(name not in SMART_PLAYLISTS)
         self.pl_sub.setText(sub)
@@ -8091,7 +10617,7 @@ class Player(QMainWindow):
         self.lyric_times, self.lyric_lines, self.lyric_idx = [], [], -1
         self.set_lyric_line("")
         if message:
-            item = QListWidgetItem(message)
+            item = QListWidgetItem(_t(message))
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             item.setFont(self.lyric_look[0])
@@ -8160,6 +10686,7 @@ class Player(QMainWindow):
         self.lyrics_list.doItemsLayout()
         if synced:
             self.update_lyric_position(self.player.position())
+        self.apply_translation()
 
     def update_lyric_position(self, pos):
         times = self.lyric_times
@@ -8330,10 +10857,12 @@ class Player(QMainWindow):
             else:
                 where = "/".join(parts[-2:])
             size = sum(f["size"] for f in group)
-            slot = "Free slot" if top["free"] else f"Queue {top['queue']}"
+            slot = _t("Free slot") if top["free"] else _t(f"Queue {top['queue']}")
             if top["speed"]:
                 slot += f" - {top['speed'] / 1024:.0f} KB/s"
-            vals = (name, where, top["username"], quality_text(group), fmt_size(size), slot)
+            trust = SOUL_TRUST.get(top["username"], 0)
+            user = ("\u2605 " if trust >= 2 else "\u26a0 " if trust <= -2 else "") + top["username"]
+            vals = (name, where, user, quality_text(group), fmt_size(size), slot)
             for c, v in enumerate(vals):
                 self.soul_table.setItem(r, c, QTableWidgetItem(v))
             if (top["username"], top["filename"]) in selected:
@@ -8409,6 +10938,7 @@ class Player(QMainWindow):
                         "status": parse_state(f.get("state", "")),
                         "percent": float(f.get("percentComplete") or 0),
                     })
+        self.update_trust(rows)
         rank = {"Downloading": 0, "Starting": 1, "Waiting in queue": 2}
 
         def sort_key(r):
@@ -8439,7 +10969,7 @@ class Player(QMainWindow):
     def dl_values(row):
         name, _ = split_path(row["filename"])
         pct = "100%" if row["status"] == "Finished" else f"{row['percent']:.0f}%"
-        return (name, row["username"], row["status"], pct)
+        return (name, row["username"], _t(row["status"]), pct)
 
     def render_downloads(self):
         rows = self.dl_rows
@@ -8529,6 +11059,17 @@ if __name__ == "__main__":
             pass
     app = QApplication(sys.argv)
     app.setApplicationName("eozMP")
+    lang = ui_language_code(load_config().get("ui_lang", ""))
+    set_ui_language(lang)
+    install_ui_translation()
+    if lang != "en":
+        from PyQt6.QtCore import QLibraryInfo, QLocale, QTranslator
+        qt_tr = QTranslator(app)     # Qt's own buttons (OK, Cancel, Yes, No...)
+        if qt_tr.load(QLocale(lang.replace("-", "_")), "qtbase", "_",
+                      QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
+            app.installTranslator(qt_tr)
+        if lang == "ar":
+            app.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
     app.setWindowIcon(app_icon())
     SYSTEM_FONT_FAMILY = app.font().family()
     app.setStyle("Fusion")
