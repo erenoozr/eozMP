@@ -4997,7 +4997,7 @@ class Player(QMainWindow):
         row.setSpacing(6)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search")
-        self.search.setToolTip("Search your library. Press Enter to also search Soulseek when something's missing.")
+        self.search.setToolTip("Search your library. Use the Soulseek button next to it to look for music you don't have.")
         self.search.textChanged.connect(self.apply_filter)
         self.search.textChanged.connect(lambda _t: self.search_timer.start(220))
         self.search.setClearButtonEnabled(True)
@@ -5553,7 +5553,7 @@ class Player(QMainWindow):
         srv = QVBoxLayout(sr)
         self.search_title = QLabel("")
         self.search_title.setObjectName("heading2")
-        search_hint = QLabel("Press Enter to also look on Soulseek.")
+        search_hint = QLabel('Not what you wanted? Press "Search Soulseek too" below.')
         search_hint.setObjectName("sub")
         srv.addWidget(self.search_title)
         srv.addWidget(search_hint)
@@ -6045,11 +6045,7 @@ class Player(QMainWindow):
         if len(text) < 2:
             return
         self.search_timer.stop()
-        self.run_search()
-        if self.slskd_ready():
-            self.search_soulseek_inline()
-        else:
-            self.statusBar().showMessage("Set up Soulseek in Preferences to search it too.", 6000)
+        self.run_search()   # Soulseek only on a button press: Enter shouldn't send what you type out
 
     # ----- album page
     def cover_for(self, key):
