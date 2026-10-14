@@ -13,7 +13,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtMultimedia import QMediaPlayer  # noqa: E402
 
 from test_core import TempDirTest, mp  # noqa: E402
-from test_mpv_engine import APP, tone, wait_for  # noqa: E402,F401
+from test_mpv_engine import APP, tone, wait_for  # noqa: E402
+
+assert APP is not None   # the shared QApplication
 
 HOME_PATHS = ("CONFIG_FILE", "CACHE_FILE", "PLAYLIST_FILE", "LYRICS_DIR", "UI_DIR", "STATS_FILE", "COVERS_DIR")
 
@@ -74,6 +76,51 @@ class PlayerTest(TempDirTest):
     def start(self, name):
         p = self.player
         p.play_from_library(next(i for i, (t, _k) in enumerate(p.queue) if Path(t["path"]).stem.endswith(" - " + name)))
+
+    def seeks_during(self, action):
+        calls = []
+        real = self.player.player.setPosition
+        with mock.patch.object(self.player.player, "setPosition", side_effect=lambda ms: (calls.append(ms), real(ms))):
+            action()
+            wait_for(lambda: False, 0.2)
+        return calls
+
+    def test_dragging_the_seek_bar_seeks_once_when_let_go(self):
+        self.make_player(["One"], seconds=4)
+        self.start("One")
+        self.assertTrue(wait_for(lambda: self.player.seek.maximum() > 0))
+        bar = self.player.seek
+
+        def drag():
+            bar.setSliderDown(True)
+            for v in range(200, 3001, 200):
+                bar.setSliderPosition(v)
+            bar.setSliderDown(False)
+        self.assertEqual(self.seeks_during(drag), [3000])
+
+    def test_clicking_the_seek_bar_jumps_there(self):
+        from PyQt6.QtCore import QPoint, Qt
+        from PyQt6.QtTest import QTest
+        self.make_player(["One"], seconds=4)
+        self.start("One")
+        self.assertTrue(wait_for(lambda: self.player.seek.maximum() > 0))
+        bar = self.player.seek
+        bar.resize(400, 20)
+        calls = self.seeks_during(lambda: QTest.mouseClick(bar, Qt.MouseButton.LeftButton, pos=QPoint(300, 10)))
+        self.assertEqual(len(calls), 1)
+        self.assertAlmostEqual(calls[0] / bar.maximum(), 0.75, delta=0.08)
+
+    def test_clicking_the_handle_without_moving_does_not_seek(self):
+        from PyQt6.QtCore import QPoint, Qt
+        from PyQt6.QtTest import QTest
+        self.make_player(["One"], seconds=4)
+        self.start("One")
+        self.assertTrue(wait_for(lambda: self.player.seek.maximum() > 0))
+        bar = self.player.seek
+        bar.resize(400, 20)
+        bar.setValue(0)   # handle at the far left
+        calls = self.seeks_during(lambda: QTest.mouseClick(bar, Qt.MouseButton.LeftButton, pos=QPoint(4, 10)))
+        self.assertEqual(calls, [])
 
     def test_a_missing_song_is_skipped(self):
         self.make_player(["One", "Two", "Three"])

@@ -63,12 +63,12 @@ except Exception:
 from array import array
 import math
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
+    QAbstractItemView, QAbstractSlider, QApplication, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QColorDialog, QFileDialog, QFontComboBox, QFrame, QGraphicsBlurEffect, QGraphicsOpacityEffect,
     QGraphicsPixmapItem, QGraphicsScene, QPlainTextEdit, QScrollArea, QFormLayout, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox,
-    QPushButton, QSizePolicy, QSlider, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QSpinBox, QSplitter, QStackedWidget,
+    QPushButton, QSizePolicy, QSlider, QStyle, QStyledItemDelegate, QStyleOptionSlider, QStyleOptionViewItem, QSpinBox, QSplitter, QStackedWidget,
     QSystemTrayIcon, QTabWidget,
     QTableWidget, QTableWidgetItem, QToolTip, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
@@ -3312,6 +3312,47 @@ class DiscographyDialog(QDialog):
 
 
 # ---------------------------------------------------------------- mini player
+class SeekSlider(QSlider):
+    """The song's progress bar. A click jumps straight there; dragging only moves the handle and
+    the song follows when you let go (seeking on every mouse move makes the audio stutter)."""
+    seekRequested = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(Qt.Orientation.Horizontal, parent)
+        self._pressed_at = None
+        self.sliderReleased.connect(self._released)
+        self.actionTriggered.connect(self._on_action)
+
+    def _released(self):
+        if self.value() != self._pressed_at:   # just clicking the handle shouldn't re-seek (and click)
+            self.seekRequested.emit(self.value())
+
+    def mousePressEvent(self, e):
+        self._pressed_at = self.value()
+        if e.button() == Qt.MouseButton.LeftButton and self.maximum() > self.minimum():
+            opt = QStyleOptionSlider()
+            self.initStyleOption(opt)
+            style = self.style()
+            groove = style.subControlRect(QStyle.ComplexControl.CC_Slider, opt,
+                                          QStyle.SubControl.SC_SliderGroove, self)
+            handle = style.subControlRect(QStyle.ComplexControl.CC_Slider, opt,
+                                          QStyle.SubControl.SC_SliderHandle, self)
+            if not handle.contains(e.position().toPoint()):
+                span = max(1, groove.width() - handle.width())
+                x = int(e.position().x()) - groove.x() - handle.width() // 2
+                self.setValue(QStyle.sliderValueFromPosition(self.minimum(), self.maximum(),
+                                                             max(0, min(span, x)), span))
+                # the handle is now under the mouse: the press below starts a drag from here
+        super().mousePressEvent(e)
+
+    def _on_action(self, action):
+        # keyboard and page steps move the song right away; a drag waits for the release
+        if self.isSliderDown() or action in (QAbstractSlider.SliderAction.SliderMove,
+                                             QAbstractSlider.SliderAction.SliderNoAction):
+            return
+        QTimer.singleShot(0, lambda: self.seekRequested.emit(self.value()))
+
+
 class MarqueeLabel(QWidget):
     """One line of text that slowly slides when it doesn't fit."""
 
@@ -3409,6 +3450,7 @@ class MiniPlayer(QWidget):
         self.accent = "#4C8DFF"
         self._drag = None
         self._seeking = False
+        self._seek_frac = None
         self._hover = False
         self.idle_opacity = 0.9
         self.fade = QPropertyAnimation(self, b"windowOpacity", self)
@@ -3547,7 +3589,8 @@ class MiniPlayer(QWidget):
 
     # --- mouse: drag to move, click/drag the bottom bar to seek, wheel for volume
     def _seek_to(self, x):
-        self.main.seek_fraction(max(0.0, min(1.0, x / max(1, self.width()))))
+        self._seek_frac = max(0.0, min(1.0, x / max(1, self.width())))
+        self.set_progress(self._seek_frac)   # the song moves when you let go
 
     def mousePressEvent(self, e):
         if e.button() != Qt.MouseButton.LeftButton:
@@ -3568,8 +3611,11 @@ class MiniPlayer(QWidget):
     def mouseReleaseEvent(self, e):
         if self._drag is not None:
             self.snap()
+        if self._seeking and self._seek_frac is not None:
+            self.main.seek_fraction(self._seek_frac)
         self._drag = None
         self._seeking = False
+        self._seek_frac = None
 
     def mouseDoubleClickEvent(self, e):
         if e.position().toPoint().y() < self.height() - self.BAR_ZONE:
@@ -4197,8 +4243,8 @@ class FullPlayer(QWidget):
         seek_row = QHBoxLayout()
         self.pos_label = QLabel("0:00")
         self.pos_label.setObjectName("fssub")
-        self.seek = QSlider(Qt.Orientation.Horizontal)
-        self.seek.sliderMoved.connect(lambda v: self.main.player.setPosition(v))
+        self.seek = SeekSlider()
+        self.seek.seekRequested.connect(lambda v: self.main.player.setPosition(v))
         self.len_label = QLabel("0:00")
         self.len_label.setObjectName("fssub")
         seek_row.addWidget(self.pos_label)
@@ -5331,9 +5377,10 @@ class Player(QMainWindow):
         seek_row = QHBoxLayout()
         self.time_label = QLabel("0:00")
         self.time_label.setObjectName("sub")
-        self.seek = QSlider(Qt.Orientation.Horizontal)
+        self.seek = SeekSlider()
         self.seek.setRange(0, 0)
-        self.seek.sliderMoved.connect(lambda v: self.player.setPosition(v))
+        self.seek.seekRequested.connect(lambda v: self.player.setPosition(v))
+        self.seek.sliderMoved.connect(lambda v: self.time_label.setText(fmt_time(v)))
         self.total_label = QLabel("0:00")
         self.total_label.setObjectName("sub")
         self.total_label.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -6082,7 +6129,7 @@ class Player(QMainWindow):
     def on_position(self, pos):
         if not self.seek.isSliderDown():
             self.seek.setValue(pos)
-        self.time_label.setText(fmt_time(pos))
+            self.time_label.setText(fmt_time(pos))
         if self.cfg["show_remaining"]:
             self.update_total_labels(pos)
         self.update_lyric_position(pos)
