@@ -4686,6 +4686,7 @@ class FullPlayer(QWidget):
             f"QPushButton#fsplay {{ background: {sc['accent']}; border-radius: 32px; }}"
             f"QPushButton#fsplay:hover {{ background: {sc['accent_hover']}; }}"
             "QPushButton#fsclose:hover { background: rgba(232, 17, 35, 200); }"
+            + accent_qss(sc)   # no parent window, so it can't inherit the accent widgets' sheets
         )
 
     def cover_side(self):
@@ -6727,6 +6728,8 @@ class Player(QMainWindow):
         self.refresh_icons()
         self.set_sheet(self.album_header, header_qss(self.scheme))
         self.set_sheet(self.artist_header, header_qss(self.scheme))
+        if self.fs_active and self.fs is not None:
+            self.fs.style_for(self.scheme)
         if self.list_covers():
             for k, item in self.tree_albums.items():
                 if self.thumb_cache.get(k) is None:

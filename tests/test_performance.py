@@ -136,6 +136,19 @@ class AlbumAccentTest(PlayerHarness):
         for b in links:
             self.assertEqual(b.styleSheet(), "")
 
+    def test_fullscreen_player_follows_the_accent(self):
+        """The fullscreen window has no parent, so it carries the accent in its own sheet."""
+        p = self.accent_player()
+        p.enter_fullscreen()
+        self.addCleanup(p.exit_fullscreen)
+        self.set_album_accent("#d02020")
+        bar = p.fs.seek
+        bar.setRange(0, 100)
+        bar.setValue(80)
+        APP.processEvents()
+        self.assertEqual(pixel(bar, 8, bar.height() // 2), "#d02020")
+        self.assertEqual(pixel(p.fs.play, 32, 4), "#d02020")
+
     def test_song_change_is_quick(self):
         p = self.accent_player()
         self.set_album_accent("#d02020")
