@@ -202,6 +202,9 @@ def _tr_first_strs(a, n=2):
     return tuple(_t(x) if i < n and isinstance(x, str) else x for i, x in enumerate(a))
 
 
+QtLabel = QLabel      # Qt's own class: labels Qt makes itself (message boxes...) are of this type
+
+
 class QLabel(QLabel):
     def __init__(self, *a, **k):
         super().__init__(*_tr_first_strs(a, 1), **k)
@@ -4475,7 +4478,7 @@ class PlainLabels(QObject):
     themselves and escape the tags; every other label is switched to plain text before it is shown."""
 
     def eventFilter(self, obj, event):
-        if (event.type() == QEvent.Type.Polish and isinstance(obj, QLabel)
+        if (event.type() == QEvent.Type.Polish and isinstance(obj, QtLabel)
                 and obj.textFormat() == Qt.TextFormat.AutoText):
             obj.setTextFormat(Qt.TextFormat.PlainText)
         return False
