@@ -2633,6 +2633,7 @@ class VlcEngine(QObject):
         self._fresh = False
         self._play_at = None
         self._ever_played = False
+        self._media_played = False
         self.eq = None
         self._eq_on = False
         self.timer = QTimer(self)
@@ -2656,6 +2657,7 @@ class VlcEngine(QObject):
         self._media = self.instance.media_new_path(path)
         self.mp.set_media(self._media)
         self._duration, self._pending, self._ended, self._play_at = 0, None, False, None
+        self._media_played = False
         self._set_state(QMediaPlayer.PlaybackState.StoppedState)
         self.mediaStatusChanged.emit(QMediaPlayer.MediaStatus.LoadedMedia)
 
@@ -2728,7 +2730,7 @@ class VlcEngine(QObject):
         self._play_at = None
         self._ended = True
         self._set_state(QMediaPlayer.PlaybackState.StoppedState)
-        if not self._ever_played:
+        if not self._ever_played and os.path.exists(self._source.toLocalFile()):
             self.failed.emit(why)              # VLC itself doesn't work here
         else:
             self.errorOccurred.emit(None, why)  # just this one file
@@ -2739,7 +2741,7 @@ class VlcEngine(QObject):
         st = self.mp.get_state()
         if st == vlc.State.Playing:
             self._play_at = None
-            self._ever_played = True
+            self._ever_played = self._media_played = True
             if self._fresh:   # VLC only accepts volume once audio is running
                 self._fresh = False
                 self.mp.audio_set_mute(self.audio._muted)
@@ -2754,6 +2756,8 @@ class VlcEngine(QObject):
                     self.durationChanged.emit(d)
             now = max(0, self.mp.get_time() or 0)
             self.positionChanged.emit(now)
+        elif st == vlc.State.Ended and not self._ended and not self._media_played:
+            self._fail("VLC could not open this file")   # VLC says "Ended" for missing files
         elif st == vlc.State.Ended and not self._ended:
             self._ended = True
             self._set_state(QMediaPlayer.PlaybackState.StoppedState)
@@ -4489,6 +4493,7 @@ class Player(QMainWindow):
         self.shuffle_played = set()
         self.listen_ms = 0
         self.last_pos = None
+        self.fail_streak = 0      # songs in a row that couldn't be played
         self.listen_path = None
         self.album_accent = None
         self.accent_cache = {}
@@ -6081,8 +6086,11 @@ class Player(QMainWindow):
         if self.cfg["show_remaining"]:
             self.update_total_labels(pos)
         self.update_lyric_position(pos)
+        playing = self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        if playing and pos >= 1000:
+            self.fail_streak = 0      # this one plays fine
         # listening stats: count only time actually played (seeking doesn't count)
-        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState and self.last_pos is not None:
+        if playing and self.last_pos is not None:
             step = pos - self.last_pos
             if 0 < step < 2000:
                 self.listen_ms += step
@@ -7547,7 +7555,17 @@ class Player(QMainWindow):
         self.setup_visualizer()
 
     def on_player_error(self, _err, msg):
-        self.statusBar().showMessage(f"Can't play this file: {msg}")
+        """Skip a song that can't be played (moved, deleted, unplugged drive, broken file),
+        but stop after a few in a row so a missing folder doesn't spin through the whole list."""
+        self.fail_streak += 1
+        limit = min(5, max(1, len(self.ctx_paths) + len(self.up_next)))
+        if self.fail_streak >= limit:
+            self.fail_streak = 0
+            self.player.stop()
+            self.statusBar().showMessage(f"Stopped: {limit} song(s) in a row couldn't be played ({msg})", 15000)
+            return
+        self.statusBar().showMessage(f"Skipped a song that can't be played: {msg}", 8000)
+        QTimer.singleShot(0, lambda: self.next_track(auto=True))
 
     def on_engine_failed(self, why):
         if self.engine_name != "VLC":
