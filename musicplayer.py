@@ -687,6 +687,36 @@ def flatten_responses(responses):
 SOUL_ROWS_SHOWN = 2000   # a longer results table gets slow to draw
 
 
+def enqueue_files(client, files):
+    """Ask slskd to download files, user by user. One offline user doesn't stop the rest.
+    Returns (how many were queued, {user: how many couldn't be})."""
+    by_user = {}
+    for f in files:
+        by_user.setdefault(f["username"], []).append({"filename": f["filename"], "size": f["size"]})
+    queued, failed = 0, {}
+    for user, items in by_user.items():
+        try:
+            res = client.call("POST", f"/transfers/downloads/{urllib.parse.quote(user, safe='')}", items)
+        except Exception:
+            failed[user] = len(items)
+            continue
+        bad = len(res.get("failed") or []) if isinstance(res, dict) else 0
+        queued += len(items) - bad
+        if bad:
+            failed[user] = bad
+    return queued, failed
+
+
+def enqueue_report(queued, failed, ok_msg):
+    """Status bar text for enqueue_files' result."""
+    msg = ok_msg.format(n=queued) if queued else "Nothing could be queued."
+    if failed:
+        users = ", ".join(sorted(failed)[:3]) + (" and others" if len(failed) > 3 else "")
+        msg += (f" {sum(failed.values())} couldn't be queued: {users} may be offline or no longer "
+                "sharing them. Try other results.")
+    return msg
+
+
 def passes_filters(row, fmt, free_only):
     if free_only and not row["free"]:
         return False
@@ -9132,22 +9162,10 @@ class Player(QMainWindow):
         self.enqueue_downloads(files)
 
     def enqueue_downloads(self, files):
-        by_user = {}
-        for f in files:
-            by_user.setdefault(f["username"], []).append({"filename": f["filename"], "size": f["size"]})
-        count = len(files)
         client = self.client()
-
-        def job():
-            for user, items in by_user.items():
-                client.call("POST", f"/transfers/downloads/{urllib.parse.quote(user, safe='')}", items)
-            return count
-
-        self.run_job(
-            job,
-            "Queued {n} file(s). Watch them on the Downloads page - finished files "
-            "appear in your library by themselves.",
-        )
+        ok_msg = ("Queued {n} file(s). Watch them on the Downloads page - finished files "
+                  "appear in your library by themselves.")
+        self.run_job(lambda: enqueue_report(*enqueue_files(client, files), ok_msg), "{n}")
 
     # ----- downloads manager
     def poll_downloads(self):
@@ -9245,13 +9263,9 @@ class Player(QMainWindow):
                     client.call("DELETE", f"/transfers/downloads/{u}/{r['id']}?remove=true")
                 except Exception:
                     pass
-                client.call(
-                    "POST", f"/transfers/downloads/{u}",
-                    [{"filename": r["filename"], "size": r["size"]}],
-                )
-            return len(failed)
+            return enqueue_report(*enqueue_files(client, failed), "Retrying {n} download(s).")
 
-        self.run_job(job, "Retrying {n} download(s).")
+        self.run_job(job, "{n}")
 
     def remove_downloads(self, targets, message):
         if not targets:
