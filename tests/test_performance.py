@@ -427,5 +427,55 @@ class StatsSaveTest(PlayerHarness):
         self.assertEqual(len(mp.load_stats()["events"]), 2)
 
 
+
+class FullscreenMotionTest(PlayerHarness):
+    """The slowly moving fullscreen background repainted the whole screen 20 times a second, even
+    while paused (half a core at 4K)."""
+
+    def playing_fullscreen(self):
+        self.make_player(["One"], seconds=6, fs_motion=True)
+        p = self.player
+        self.start("One")
+        self.assertTrue(wait_for(lambda: p.player.playbackState() == mp.QMediaPlayer.PlaybackState.PlayingState))
+        p.enter_fullscreen()
+        APP.processEvents()
+        self.addCleanup(p.exit_fullscreen)
+        return p, p.fs
+
+    def test_background_moves_only_while_playing(self):
+        p, fs = self.playing_fullscreen()
+        self.assertTrue(fs.motion_timer.isActive())
+        self.assertGreaterEqual(fs.motion_timer.interval(), 100)     # 10 fps is plenty for a slow drift
+        p.toggle_play()
+        self.assertTrue(wait_for(lambda: not fs.motion_timer.isActive()))
+        p.toggle_play()
+        self.assertTrue(wait_for(lambda: fs.motion_timer.isActive()))
+        p.exit_fullscreen()
+        self.assertFalse(fs.motion_timer.isActive())
+
+    def test_paused_background_does_not_jump_when_playing_again(self):
+        p, fs = self.playing_fullscreen()
+        p.toggle_play()
+        self.assertTrue(wait_for(lambda: not fs.motion_timer.isActive()))
+        before = fs.motion_clock
+        wait_for(lambda: False, 0.6)
+        p.toggle_play()
+        self.assertTrue(wait_for(lambda: fs.motion_timer.isActive()))
+        wait_for(lambda: False, 0.3)
+        self.assertLess(fs.motion_clock - before, 0.55)   # only the time it actually played
+
+    def test_backdrop_is_darkened_like_before(self):
+        p, fs = self.playing_fullscreen()
+        p.cfg["fs_motion"] = False                         # a still frame to compare against
+        fs.motion_timer.stop()
+        back = QPixmap(64, 64)
+        back.fill(QColor("#c08040"))
+        fs.set_backdrop(back)
+        got = fs.grab().toImage().pixelColor(5, 5)
+        keep = 1 - 140 / 255                               # black at alpha 140 on top, as before
+        for have, base in ((got.red(), 0xc0), (got.green(), 0x80), (got.blue(), 0x40)):
+            self.assertAlmostEqual(have, base * keep, delta=2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4539,6 +4539,9 @@ class QueueDrawer(QWidget):
         p.end()
 
 
+FS_MOTION_MS = 100   # the background drifts slowly; 10 frames a second is enough (each one is the whole screen)
+
+
 class FullPlayer(QWidget):
     """Full-screen player: big cover and controls on the left, lyrics on the right."""
 
@@ -4663,8 +4666,10 @@ class FullPlayer(QWidget):
         self.idle_timer.setInterval(300)
         self.idle_timer.timeout.connect(self._check_idle)
         self.motion_timer = QTimer(self)
-        self.motion_timer.setInterval(50)
-        self.motion_timer.timeout.connect(self.update)
+        self.motion_timer.setInterval(FS_MOTION_MS)
+        self.motion_timer.timeout.connect(self._motion_tick)
+        self.motion_clock = time.monotonic()   # only runs while the background moves
+        self._motion_last = None
         self.viz = Visualizer(self, bars=64)
         self.viz.hide()
 
@@ -4707,17 +4712,37 @@ class FullPlayer(QWidget):
             if self._cache is None or self._cache.size().width() < want.width() - 2:
                 self._cache = self.backdrop.scaled(want, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                                                    Qt.TransformationMode.SmoothTransformation)
+                dim = QPainter(self._cache)   # darken once here, not over the whole screen every frame
+                dim.fillRect(self._cache.rect(), QColor(0, 0, 0, 140))
+                dim.end()
             x = (self.width() - self._cache.width()) / 2
             y = (self.height() - self._cache.height()) / 2
             if motion:   # slow, gentle drift
-                t = time.monotonic()
+                t = self.motion_clock
                 x += math.sin(t / 9.0) * (self._cache.width() - self.width()) * 0.45
                 y += math.cos(t / 13.0) * (self._cache.height() - self.height()) * 0.45
             p.drawPixmap(int(x), int(y), self._cache)
         else:
             p.fillRect(self.rect(), QColor("#111114"))
-        p.fillRect(self.rect(), QColor(0, 0, 0, 140))
+            p.fillRect(self.rect(), QColor(0, 0, 0, 140))
         p.end()
+
+    def sync_motion(self):
+        """Move the background only while it's on screen and the music plays."""
+        main = self.main
+        want = (self.isVisible() and bool(main.cfg["fs_motion"])
+                and main.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState)
+        if want and not self.motion_timer.isActive():
+            self._motion_last = time.monotonic()
+            self.motion_timer.start()
+        elif not want:
+            self.motion_timer.stop()
+
+    def _motion_tick(self):
+        now = time.monotonic()
+        self.motion_clock += min(now - self._motion_last, 0.5)   # paused time doesn't count
+        self._motion_last = now
+        self.update()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -4743,8 +4768,7 @@ class FullPlayer(QWidget):
         super().showEvent(e)
         self._wake()
         self.idle_timer.start()
-        if self.main.cfg["fs_motion"]:
-            self.motion_timer.start()
+        self.sync_motion()
 
     def hideEvent(self, e):
         super().hideEvent(e)
@@ -7953,10 +7977,7 @@ class Player(QMainWindow):
         v = self.volume.value()
         kind = "vol_mute" if (self.audio.isMuted() or v == 0) else ("vol_low" if v < 50 else "vol_high")
         fs.vol_btn.setIcon(make_icon(kind, "#ffffff"))
-        if self.cfg["fs_motion"] and not fs.motion_timer.isActive():
-            fs.motion_timer.start()
-        elif not self.cfg["fs_motion"]:
-            fs.motion_timer.stop()
+        fs.sync_motion()
         self.setup_visualizer()
         fs.show_next_card("")
 
