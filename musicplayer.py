@@ -43,12 +43,12 @@ from pathlib import Path
 
 from mutagen import File as MutagenFile
 from PyQt6.QtCore import (
-    QAbstractNativeEventFilter, QByteArray, QEasingCurve, QEvent, QMimeData, QPoint, QPointF, QRect, QRectF,
+    QAbstractNativeEventFilter, QBuffer, QByteArray, QEasingCurve, QEvent, QIODevice, QMimeData, QPoint, QPointF, QRect, QRectF,
     QVariantAnimation, QFileSystemWatcher, QItemSelectionModel, QObject, QPropertyAnimation, QSize, Qt, QThread,
     QTimer, QUrl, pyqtSignal,
 )
 from PyQt6.QtGui import (
-    QAction, QBrush, QColor, QCursor, QGradient, QImage, QKeySequence, QShortcut, QDesktopServices, QFont, QFontDatabase, QFontMetrics, QIcon, QLinearGradient, QPainter,
+    QAction, QBrush, QColor, QCursor, QGradient, QImage, QImageReader, QKeySequence, QShortcut, QDesktopServices, QFont, QFontDatabase, QFontMetrics, QIcon, QLinearGradient, QPainter,
     QPainterPath, QPalette, QPen, QPixmap,
 )
 from PyQt6.QtMultimedia import QAudioFormat, QAudioOutput, QMediaPlayer
@@ -1586,9 +1586,46 @@ class BackdropWidget(QWidget):
         painter.end()
 
 
+THUMB_PX = 160   # library covers are kept this big; lists and tiles shrink them further
+
+
+def thumb_image(data, size=THUMB_PX):
+    """Square, centre-cropped cover as a QImage (unlike QPixmap, fine to make off the GUI thread).
+    The reader shrinks while decoding, so a 3000 px cover is never unpacked at full size."""
+    buf = QBuffer()
+    buf.setData(QByteArray(data))
+    buf.open(QIODevice.OpenModeFlag.ReadOnly)
+    reader = QImageReader(buf)
+    src = reader.size()
+    short = min(src.width(), src.height()) if src.isValid() else 0
+    if short > 2 * size:   # decode at ~2x, then a smooth scale like before
+        f = 2 * size / short
+        reader.setScaledSize(QSize(max(1, round(src.width() * f)), max(1, round(src.height() * f))))
+    img = reader.read()
+    if img.isNull():
+        return None
+    img = img.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                     Qt.TransformationMode.SmoothTransformation)
+    return img.copy((img.width() - size) // 2, (img.height() - size) // 2, size, size)
+
+
+def load_thumb(paths, artist, album):
+    """The library cover for an album: embedded art, a cover file in the folder, or a downloaded one."""
+    data = None
+    for path in paths[:3]:
+        data = embedded_cover(path)
+        if data:
+            break
+    if not data and paths:
+        data = folder_cover(paths[0])
+    if not data:
+        data = read_cached_cover(artist, album)
+    return thumb_image(data) if data else None
+
+
 class ThumbLoader(QThread):
-    """Reads album covers in the background so the library list never freezes."""
-    loaded = pyqtSignal(object, object)   # album key, image bytes (or None)
+    """Reads and shrinks album covers in the background so the library list never freezes."""
+    loaded = pyqtSignal(object, object)   # album key, 160 px QImage (or None)
 
     def __init__(self):
         super().__init__()
@@ -1623,19 +1660,11 @@ class ThumbLoader(QThread):
                 self.event.clear()
                 continue
             key, paths, artist, album = job
-            data = None
             try:
-                for path in paths[:3]:
-                    data = embedded_cover(path)
-                    if data:
-                        break
-                if not data and paths:
-                    data = folder_cover(paths[0])
-                if not data:
-                    data = read_cached_cover(artist, album)
+                img = load_thumb(paths, artist, album)
             except Exception:
-                data = None
-            self.loaded.emit(key, data)
+                img = None
+            self.loaded.emit(key, img)
 
 
 BAD_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -6876,12 +6905,8 @@ class Player(QMainWindow):
     def artist_icon(self, akey, size):
         return static_icon(self.artist_pixmap(akey, size))
 
-    def on_thumb_loaded(self, key, data):
-        pix = None
-        if data:
-            img = QPixmap()
-            if img.loadFromData(data):
-                pix = rounded_pixmap(img, 160, 0)
+    def on_thumb_loaded(self, key, img):
+        pix = QPixmap.fromImage(img) if img is not None else None   # decoded and shrunk by ThumbLoader
         self.thumb_cache[key] = pix
         self.tree_px.pop(key, None)
         if key in self.tree_albums:

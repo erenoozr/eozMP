@@ -7,11 +7,28 @@ import time
 import unittest
 from unittest import mock
 
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import QBuffer, QByteArray, QIODevice
+from PyQt6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPixmap
 from PyQt6.QtWidgets import QApplication, QMenu
 
 from test_mpv_engine import APP, wait_for
 from test_player import PlayerHarness, mp
+
+
+def jpeg(width, height):
+    """A big cover, like the ones embedded in downloaded albums."""
+    img = QImage(width, height, QImage.Format.Format_RGB32)
+    p = QPainter(img)
+    grad = QLinearGradient(0, 0, width, height)
+    grad.setColorAt(0, QColor("#d02020"))
+    grad.setColorAt(1, QColor("#2040d0"))
+    p.fillRect(img.rect(), grad)
+    p.end()
+    data = QByteArray()
+    buf = QBuffer(data)
+    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    img.save(buf, "JPG", 90)
+    return bytes(data)
 
 
 def pixel(widget, x, y):
@@ -114,6 +131,55 @@ class AlbumAccentTest(PlayerHarness):
             took.append(time.perf_counter() - started)
         print(f" accent change: {min(took) * 1000:.0f}-{max(took) * 1000:.0f} ms", end=" ")
         self.assertLess(min(took), 0.15)
+
+
+
+class CoverThumbTest(PlayerHarness):
+    """Library covers are decoded and shrunk in the ThumbLoader thread; the GUI thread only turns a
+    small finished image into a pixmap (it used to decode every full-size cover itself)."""
+
+    def test_loader_hands_over_a_small_decoded_image(self):
+        big = jpeg(1600, 1200)
+        with mock.patch.object(mp, "embedded_cover", return_value=big):
+            img = mp.load_thumb(["a.mp3"], "Artist", "Album")
+        self.assertIsInstance(img, QImage)
+        self.assertEqual((img.width(), img.height()), (160, 160))
+        old = QPixmap()                     # what the GUI thread used to make from the same bytes
+        old.loadFromData(big)
+        old = mp.rounded_pixmap(old, 160, 0).toImage()
+        for x, y in ((2, 2), (80, 80), (157, 20), (20, 157), (157, 157)):
+            a, b = img.pixelColor(x, y), old.pixelColor(x, y)
+            self.assertLessEqual(max(abs(a.red() - b.red()), abs(a.green() - b.green()), abs(a.blue() - b.blue())), 6)
+        with mock.patch.object(mp, "embedded_cover", return_value=b"not an image"),                 mock.patch.object(mp, "folder_cover", return_value=None),                 mock.patch.object(mp, "read_cached_cover", return_value=None):
+            self.assertIsNone(mp.load_thumb(["a.mp3"], "Artist", "Album"))
+
+    def test_decoding_is_shrunk_while_reading(self):
+        """QImageReader.setScaledSize: a 3000 px JPEG is never decoded at full size."""
+        reads = []
+        real = mp.QImageReader.read
+
+        def read(reader):
+            reads.append(reader.scaledSize())
+            return real(reader)
+        with mock.patch.object(mp, "embedded_cover", return_value=jpeg(3000, 3000)),                 mock.patch.object(mp.QImageReader, "read", read):
+            mp.load_thumb(["a.mp3"], "Artist", "Album")
+        self.assertEqual(len(reads), 1)
+        self.assertLessEqual(reads[0].width(), 320)
+
+    def test_gui_thread_does_not_decode_covers(self):
+        self.make_player(["One"])
+        p = self.player
+        with mock.patch.object(mp, "embedded_cover", return_value=jpeg(1200, 1200)):
+            img = mp.load_thumb(["a.mp3"], "Artist", "Album")
+        started = time.perf_counter()
+        with mock.patch.object(QPixmap, "loadFromData") as decode:
+            for i in range(100):
+                p.on_thumb_loaded(("artist", f"album {i}"), img)
+        took = time.perf_counter() - started
+        print(f" 100 covers on the GUI thread: {took * 1000:.0f} ms", end=" ")
+        self.assertEqual(decode.call_count, 0)
+        self.assertEqual(p.thumb_cache.get(("artist", "album 5")).width(), 160)
+        self.assertLess(took, 0.3)
 
 
 if __name__ == "__main__":
