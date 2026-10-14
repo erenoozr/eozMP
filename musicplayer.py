@@ -5939,6 +5939,12 @@ class QualityDialog(QDialog):
 
 class ExtrasMixin:
     """The v1.2 features of the main window."""
+    # defaults, because a resumed song can start before __init__ reaches init_extras()
+    wish_dlg = None
+    _wish_busy = _nr_busy = False
+    quality_db = {}
+    mood_tracks = {}
+    slskd_proc = None
 
     def init_extras(self):
         self.wish_dlg = None
@@ -7066,6 +7072,9 @@ class TagFixDialog(QDialog):
 
 class Extras2Mixin:
     """Phone remote, casting, Windows media controls, Last.fm, tag fixing and better-copy upgrades."""
+    # defaults, because a resumed song can start before __init__ reaches init_extras2()
+    remote = cast = smtc = _cast_prev = _cast_pool = None
+    listen_started = 0.0
 
     def init_extras2(self):
         self.remote = None
