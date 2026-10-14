@@ -129,7 +129,8 @@ DEFAULT_CFG = {
     "split_collabs": True,
     "keep_together": [],
     "cfg_version": 1,
-    "audio_engine": "Automatic (VLC if installed)",
+    "audio_engine": "Automatic (mpv, then VLC)",
+    "mpv_dir": "",
     "eq_enabled": False,
     "eq_preamp": 0.0,
     "eq_bands": [],
@@ -1932,21 +1933,31 @@ class PreferencesDialog(QDialog):
         au = QWidget()
         uf = QFormLayout(au)
         self.engine = QComboBox()
-        self.engine.addItems(["Automatic (VLC if installed)", "Qt (built-in)"])
-        self.engine.setCurrentText(cfg["audio_engine"])
+        self.engine.addItems(ENGINE_CHOICES)
+        self.engine.setCurrentText(cfg["audio_engine"] if cfg["audio_engine"] in ENGINE_CHOICES
+                                   else ENGINE_CHOICES[0])
+        self.mpv_dir = QLineEdit(cfg["mpv_dir"])
+        self.mpv_dir.setPlaceholderText("Folder with libmpv-2.dll (empty: next to eozMP)")
+        mpv_pick = QPushButton("Browse...")
+        mpv_pick.clicked.connect(self.pick_mpv_dir)
+        mpv_row = QHBoxLayout()
+        mpv_row.addWidget(self.mpv_dir, 1)
+        mpv_row.addWidget(mpv_pick)
         using = getattr(parent, "engine_name", "Qt")
         problem = getattr(parent, "vlc_error", "") or ENGINE_ERROR
+        names = {"mpv": "mpv", "VLC": "VLC"}
         info = QLabel(
-            f"Now playing through: {'VLC' if using == 'VLC' else 'the built-in Qt engine'}.\n"
-            f"VLC: {VLC_STATUS}." + (f"\nLast VLC problem: {problem}" if problem else "") + "\n"
-            "VLC plays more formats and powers the equalizer. If VLC can't play, eozMP switches "
-            "back to the built-in engine by itself."
+            f"Now playing through: {names.get(using, 'the built-in Qt engine')}.\n"
+            f"mpv: {MPV_STATUS}.  VLC: {VLC_STATUS}." + (f"\nLast problem: {problem}" if problem else "") + "\n"
+            "mpv gives the cleanest sound. VLC powers the equalizer. If neither is there, eozMP "
+            "uses the built-in engine."
         )
         info.setWordWrap(True)
         info.setObjectName("sub")
         eq_open = QPushButton("Open equalizer...")
         eq_open.clicked.connect(lambda: self.player.open_equalizer())
         uf.addRow("Audio engine", self.engine)
+        uf.addRow("mpv folder", mpv_row)
         self.viz_style = QComboBox()
         self.viz_style.addItems(["Off", "Bars", "Wave"])
         self.viz_style.setCurrentText(cfg["visualizer"])
@@ -2099,6 +2110,7 @@ class PreferencesDialog(QDialog):
             "covers_auto": self.covers_auto.isChecked(),
             "covers_to_folder": self.covers_folder.isChecked(),
             "audio_engine": self.engine.currentText(),
+            "mpv_dir": self.mpv_dir.text().strip(),
             "accent_custom": self.custom_value(),
             "mini_opacity": self.mini_opacity.value(),
             "close_to_tray": self.close_tray.isChecked(),
@@ -2126,6 +2138,11 @@ class PreferencesDialog(QDialog):
         if mode.currentText() == "Custom":
             return picker.currentFont().family()
         return ""
+
+    def pick_mpv_dir(self):
+        folder = QFileDialog.getExistingDirectory(self, "Folder that has libmpv-2.dll", self.mpv_dir.text())
+        if folder:
+            self.mpv_dir.setText(folder)
 
     def pick_organize_root(self):
         folder = QFileDialog.getExistingDirectory(self, "Organize downloads into...")
@@ -2747,6 +2764,236 @@ class VlcEngine(QObject):
             self._fail(f"VLC didn't start playing (stuck at {st})")
 
 
+# ---------------------------------------------------------------- optional mpv engine (gapless, ReplayGain...)
+mpv = None
+MPV_STATUS = "libmpv-2.dll wasn't found"
+
+
+def app_dir():
+    """The folder eozMP runs from (next to the .exe when it's built)."""
+    return os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
+
+
+def load_mpv(extra_dir=""):
+    """Import python-mpv, which needs libmpv-2.dll. Looks in the folder from the settings,
+    EOZMP_LIBMPV, next to eozMP (or in its 'libmpv' folder), then on PATH. True if it worked."""
+    global mpv, MPV_STATUS
+    if mpv is not None:
+        return True
+    for d in (extra_dir, os.environ.get("EOZMP_LIBMPV", ""), app_dir(), os.path.join(app_dir(), "libmpv")):
+        if d and os.path.isfile(os.path.join(d, "libmpv-2.dll")):
+            os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+            try:
+                os.add_dll_directory(d)
+            except (OSError, AttributeError):
+                pass
+            break
+    try:
+        import mpv as python_mpv
+    except ImportError:
+        MPV_STATUS = "python-mpv isn't installed (run: pip install mpv)"
+        return False
+    except Exception:
+        MPV_STATUS = "libmpv-2.dll wasn't found (set its folder in Preferences > Audio)"
+        return False
+    mpv = python_mpv
+    MPV_STATUS = "Found mpv"
+    return True
+
+
+class MpvAudio:
+    """Looks like QAudioOutput. mpv's volume curve is cubic, so the slider feels even."""
+
+    def __init__(self, engine):
+        self.engine = engine
+        self._volume = 1.0
+        self._muted = False
+
+    def setVolume(self, v):
+        self._volume = float(v)
+        self.engine.mp.volume = self._volume * 100
+
+    def volume(self):
+        return self._volume
+
+    def isMuted(self):
+        return self._muted
+
+    def setMuted(self, muted):
+        self._muted = bool(muted)
+        self.engine.mp.mute = self._muted
+
+
+class MpvEngine(QObject):
+    """Wraps libmpv so it behaves like QMediaPlayer for the rest of eozMP."""
+    positionChanged = pyqtSignal(int)
+    durationChanged = pyqtSignal(int)
+    mediaStatusChanged = pyqtSignal(object)
+    playbackStateChanged = pyqtSignal(object)
+    errorOccurred = pyqtSignal(object, str)
+    failed = pyqtSignal(str)                 # same interface as VlcEngine (mpv reports per-file errors)
+    _from_mpv = pyqtSignal(str, object)      # mpv's event thread -> the GUI thread
+
+    def __init__(self, **options):
+        super().__init__()
+        opts = dict(load_scripts=False, config=False, video=False, vo="null", ytdl=False, idle=True,
+                    audio_display=False, keep_open=False, input_default_bindings=False)
+        opts.update(options)
+        self.mp = mpv.MPV(**opts)
+        self.audio = MpvAudio(self)
+        self._source = QUrl()
+        self._state = QMediaPlayer.PlaybackState.StoppedState
+        self._duration = 0
+        self._pending = None        # position asked for before the file was loaded
+        self._loaded = False
+        self._ended = True          # nothing loaded yet
+        self._at_start = True       # stopped: position() is 0
+        self._play_when_loaded = False
+        self._loads = self._starts = 0   # match mpv's events to the file we asked for last
+        self._from_mpv.connect(self._on_mpv)
+        for name in ("start-file", "file-loaded", "end-file"):
+            self.mp.event_callback(name)(lambda ev, n=name: self._from_mpv.emit(n, ev.as_dict()))
+        self.timer = QTimer(self)
+        self.timer.setInterval(100)
+        self.timer.timeout.connect(self._poll)
+
+    def setAudioOutput(self, _audio):
+        pass
+
+    def source(self):
+        return self._source
+
+    def setSource(self, url):
+        self._source = QUrl(url)
+        self._duration, self._pending, self._play_when_loaded = 0, None, False
+        self.mp.pause = True
+        self._load()
+        self._set_state(QMediaPlayer.PlaybackState.StoppedState)
+        self.mediaStatusChanged.emit(QMediaPlayer.MediaStatus.LoadedMedia)
+
+    def _load(self):
+        self._loads += 1
+        self._loaded, self._ended, self._at_start = False, False, True
+        self.mp.loadfile(os.path.normpath(self._source.toLocalFile()))
+
+    def play(self):
+        if self._source.isEmpty():
+            return
+        if self._ended:
+            self.mp.pause = True
+            self._load()
+        self._at_start = False
+        if self._pending is not None and not self._loaded:
+            self._play_when_loaded = True   # unpause once the start position is set, no blip from 0:00
+        else:
+            self.mp.pause = False
+        self._set_state(QMediaPlayer.PlaybackState.PlayingState)
+        self.timer.start()
+
+    def pause(self):
+        self._play_when_loaded = False
+        if self._state == QMediaPlayer.PlaybackState.PlayingState:
+            self.mp.pause = True
+            self._set_state(QMediaPlayer.PlaybackState.PausedState)
+
+    def stop(self):
+        self._play_when_loaded = False
+        self.mp.pause = True
+        self._pending = None
+        if self._loaded:
+            self.mp.seek(0, "absolute")
+        self._at_start = True
+        self.timer.stop()
+        self._set_state(QMediaPlayer.PlaybackState.StoppedState)
+        self.positionChanged.emit(0)
+
+    def shutdown(self):
+        self.timer.stop()
+        try:
+            self.mp.terminate()
+        except Exception:
+            pass
+
+    def position(self):
+        if self._pending is not None:
+            return self._pending
+        if self._at_start:
+            return 0
+        t = self.mp.time_pos
+        return int(t * 1000) if t else 0
+
+    def setPosition(self, ms):
+        ms = max(0, int(ms))
+        self._at_start = False
+        if self._loaded:
+            self.mp.seek(ms / 1000, "absolute+exact")
+        else:
+            self._pending = ms
+        self.positionChanged.emit(ms)
+
+    def playbackState(self):
+        return self._state
+
+    def _set_state(self, state):
+        if state != self._state:
+            self._state = state
+            self.playbackStateChanged.emit(state)
+
+    def _on_mpv(self, name, data):
+        if name == "start-file":
+            self._starts += 1
+            return
+        if self._starts != self._loads:
+            return   # about a file we already replaced
+        if name == "file-loaded":
+            self._loaded = True
+            if self._pending is not None:
+                self.mp.seek(self._pending / 1000, "absolute+exact")
+                self._pending = None
+            if self._play_when_loaded:
+                self._play_when_loaded = False
+                self.mp.pause = False
+            self._update_duration()
+        elif name == "end-file":
+            reason = data.get("reason")
+            if reason not in (b"eof", b"error", "eof", "error"):
+                return   # stopped or replaced on purpose
+            self._loaded, self._ended, self._pending = False, True, None
+            self.timer.stop()
+            self._set_state(QMediaPlayer.PlaybackState.StoppedState)
+            if reason in (b"eof", "eof"):
+                self.mediaStatusChanged.emit(QMediaPlayer.MediaStatus.EndOfMedia)
+            else:
+                why = data.get("file_error") or b"unknown error"
+                why = why.decode("utf-8", "replace") if isinstance(why, bytes) else str(why)
+                self.errorOccurred.emit(None, f"mpv couldn't play this file ({why})")
+
+    def _update_duration(self):
+        d = self.mp.duration
+        if d and int(d * 1000) != self._duration:
+            self._duration = int(d * 1000)
+            self.durationChanged.emit(self._duration)
+
+    def _poll(self):
+        if self._loaded and self._state == QMediaPlayer.PlaybackState.PlayingState:
+            if not self._duration:
+                self._update_duration()
+            self.positionChanged.emit(self.position())
+
+
+ENGINE_CHOICES = ["Automatic (mpv, then VLC)", "mpv", "VLC", "Qt (built-in)"]
+
+
+def engine_order(choice):
+    """Engines to try, best first. The built-in Qt engine is always the last resort."""
+    choice = str(choice)
+    if choice.startswith("Qt"):
+        return ["Qt"]
+    if choice in ("mpv", "VLC"):
+        return [choice, "Qt"]
+    return ["mpv", "VLC", "Qt"]   # "Automatic", including the old "Automatic (VLC if installed)"
+
+
 def vlc_eq_info():
     """(band frequencies, [(preset name, preamp, [band amps])])"""
     n = vlc.libvlc_audio_equalizer_get_band_count()
@@ -2767,16 +3014,29 @@ def vlc_eq_info():
     return freqs, presets
 
 
-def create_engine(choice):
+def create_engine(choice, mpv_dir=""):
     """Returns (player, audio output, engine name)."""
     global ENGINE_ERROR
-    if not str(choice).startswith("Qt") and vlc is not None:
-        try:
-            engine = VlcEngine()
-            ENGINE_ERROR = ""
-            return engine, engine.audio, "VLC"
-        except Exception as e:
-            ENGINE_ERROR = f"VLC failed to start: {e}"
+    problems = []
+    for name in engine_order(choice):
+        if name == "mpv":
+            if not load_mpv(mpv_dir):
+                problems.append(MPV_STATUS)
+                continue
+            try:
+                engine = MpvEngine()
+                ENGINE_ERROR = ""
+                return engine, engine.audio, "mpv"
+            except Exception as e:
+                problems.append(f"mpv failed to start: {e}")
+        elif name == "VLC" and vlc is not None:
+            try:
+                engine = VlcEngine()
+                ENGINE_ERROR = ""
+                return engine, engine.audio, "VLC"
+            except Exception as e:
+                problems.append(f"VLC failed to start: {e}")
+    ENGINE_ERROR = "; ".join(problems)
     audio = QAudioOutput()
     player = QMediaPlayer()
     player.setAudioOutput(audio)
@@ -4287,7 +4547,7 @@ class Player(QMainWindow):
         self.search_timer.setSingleShot(True)
         self.search_timer.timeout.connect(self.run_search)
 
-        self.player, self.audio, self.engine_name = create_engine(self.cfg["audio_engine"])
+        self.player, self.audio, self.engine_name = create_engine(self.cfg["audio_engine"], self.cfg["mpv_dir"])
         self.audio.setVolume(self.cfg["volume"] / 100)
 
         self.build_ui()
@@ -5901,7 +6161,7 @@ class Player(QMainWindow):
                 self.unregister_media_keys()
         if self.mini is not None:
             self.mini.set_idle_opacity(int(self.cfg["mini_opacity"]) / 100)
-        if old["audio_engine"] != self.cfg["audio_engine"]:
+        if old["audio_engine"] != self.cfg["audio_engine"] or old["mpv_dir"] != self.cfg["mpv_dir"]:
             self.vlc_error = ""
             self.switch_engine(self.cfg["audio_engine"])
         if any(old[k] != self.cfg[k] for k in ("slskd_url", "slskd_key", "downloads_dir")):
@@ -7281,7 +7541,7 @@ class Player(QMainWindow):
         p.mediaStatusChanged.connect(self.on_status)
         p.playbackStateChanged.connect(self.on_state)
         p.errorOccurred.connect(self.on_player_error)
-        if isinstance(p, VlcEngine):
+        if hasattr(p, "failed"):
             p.failed.connect(self.on_engine_failed)
         self.buf_out = None
         self.setup_visualizer()
@@ -7311,15 +7571,16 @@ class Player(QMainWindow):
             except Exception:
                 pass
         try:
-            if isinstance(old, VlcEngine):
-                old.failed.disconnect()
+            if hasattr(old, "shutdown"):
+                if hasattr(old, "failed"):
+                    old.failed.disconnect()
                 old.shutdown()
             else:
                 old.stop()
         except Exception:
             pass
         old.deleteLater()
-        self.player, self.audio, self.engine_name = create_engine(choice)
+        self.player, self.audio, self.engine_name = create_engine(choice, self.cfg["mpv_dir"])
         self.audio.setVolume(self.volume.value() / 100)
         self.connect_engine()
         self.apply_equalizer()
@@ -7330,7 +7591,9 @@ class Player(QMainWindow):
                 self.player.play()
         self.refresh_icons()
         if not notice:
-            if self.engine_name == "VLC":
+            if self.engine_name == "mpv":
+                notice = "Now playing through mpv."
+            elif self.engine_name == "VLC":
                 notice = "Now playing through VLC - the equalizer is available."
             else:
                 why = ENGINE_ERROR or ("" if vlc is not None else VLC_STATUS)
