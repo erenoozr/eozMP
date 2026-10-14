@@ -166,6 +166,7 @@ class PlayerTest(PlayerHarness):
         self.player.next_track(auto=True)                        # the list is done
         self.assertEqual(len(self.played), 3)
         self.assertNotEqual(self.player.player.playbackState(), QMediaPlayer.PlaybackState.PlayingState)
+        self.assertEqual(self.player.shuffle_played, set())     # playing again starts a new round
 
     def test_shuffle_with_repeat_all_keeps_going(self):
         self.make_player(["One", "Two"], seconds=4, shuffle_on=True, repeat_mode="all")

@@ -81,6 +81,7 @@ AUDIO_EXTS = {
 }
 COVER_NAMES = ("cover", "folder", "front", "album", "albumart")
 COVER_EXTS = (".jpg", ".jpeg", ".png")
+APP_VERSION = "1.1"   # raise it with every release; the release tag is "v" + this (see MANUAL)
 CONFIG_FILE = Path.home() / ".simple_music_player.json"
 CACHE_FILE = Path.home() / ".simple_music_player_cache.json"
 LOSSLESS_EXTS = {"flac", "wav", "aiff", "aif", "ape", "wv"}
@@ -216,7 +217,6 @@ def read_json(path, kind, quarantine=True):
     return None
 
 
-APP_VERSION = "1.1"            # raise it with every release; the release tag is "v" + this
 UPDATE_REPO = "erenoozr/eozMP"
 
 
@@ -585,7 +585,7 @@ def embedded_lyrics(path):
 
 def http_json(url):
     req = urllib.request.Request(
-        url, headers={"User-Agent": "eozMP/1.0 (personal music player)"}
+        url, headers={"User-Agent": f"eozMP/{APP_VERSION} (personal music player)"}
     )
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8", "replace"))
@@ -2604,7 +2604,7 @@ def accent_from_pixmap(pix):
 
 
 def http_bytes(url, timeout=15):
-    req = urllib.request.Request(url, headers={"User-Agent": "eozMP/1.0 (personal music player)"})
+    req = urllib.request.Request(url, headers={"User-Agent": f"eozMP/{APP_VERSION} (personal music player)"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
 
@@ -6497,7 +6497,7 @@ class Player(QMainWindow):
         elif self.player.source().isEmpty():
             if self.up_next:
                 self.next_track()
-            elif self.current_album is not None:
+            elif self.current_album is not None and self.albums[self.current_album]["tracks"]:
                 first_track = self.albums[self.current_album]["tracks"][0]
                 self.play_from_library(self.qindex[first_track["path"]])
             else:
@@ -6534,7 +6534,7 @@ class Player(QMainWindow):
             if current:
                 played.add(current)
             if auto and self.cfg["repeat_mode"] != "all" and played.issuperset(self.ctx_paths):
-                return dict(plan, kind="stop")   # every song has had its turn
+                return dict(plan, kind="stop", played=set())   # every song had its turn; next time is a new round
             pick = self.shuffle_pick
             if pick in self.ctx_paths and pick != current and pick in self.qindex:
                 pos = self.ctx_paths.index(pick)
@@ -6580,6 +6580,8 @@ class Player(QMainWindow):
             self.ctx_pos = plan["pos"]
             self.play_index(self.qindex[plan["path"]], loaded=loaded)
         elif kind == "stop":
+            if "played" in plan:
+                self.shuffle_played = plan["played"]
             self.player.stop()
 
     def line_up_next(self):
@@ -6772,7 +6774,12 @@ class Player(QMainWindow):
     def set_volume(self, value):
         self.audio.setVolume(value / 100)
         self.cfg["volume"] = value
-        save_config(self.cfg)
+        # dragging the slider fires many times a second; write once it settles
+        if not hasattr(self, "_vol_save_timer"):
+            self._vol_save_timer = QTimer(self)
+            self._vol_save_timer.setSingleShot(True)
+            self._vol_save_timer.timeout.connect(lambda: save_config(self.cfg))
+        self._vol_save_timer.start(500)
         if value and self.audio.isMuted():
             self.audio.setMuted(False)
         self.update_mute_icon()
