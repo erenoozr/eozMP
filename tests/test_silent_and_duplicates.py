@@ -2,6 +2,7 @@
 The PC stays silent while the music plays on a TV or phone, and moved-aside duplicates stay out of the library.
 Nothing here plays a song, so no sound comes out.
 """
+import socket
 import time
 import unittest
 
@@ -9,10 +10,18 @@ from test_core import TempDirTest, mp
 from test_player import PlayerHarness
 
 
+def free_port():
+    """A port nothing uses right now: a fixed one clashes when two test runs share the PC, and the
+    "couldn't start the remote" message box then waits for a click forever."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 class SilentWhileElsewhereTest(PlayerHarness):
     def setUp(self):
         super().setUp()
-        self.make_player(["One"], remote_port=18877)
+        self.make_player(["One"], remote_port=free_port())
         self.p = self.player
         self.assertFalse(self.p.audio.isMuted())
 

@@ -3,6 +3,7 @@ Tests that drive the real Player window (offscreen, volume 0) on a small fake li
 Every settings/cache path is moved into a temp folder first, so your own eozMP data is never touched.
 """
 import json
+import time
 import os
 import unittest
 from pathlib import Path
@@ -264,9 +265,17 @@ class PlayerTest(PlayerHarness):
         for s in self.songs:
             self.delete(s)
         self.start("One")
-        wait_for(lambda: False, 3)
+        # under load the skips take longer than a fixed wait: wait until playback has stayed stopped
+        quiet = {"since": None}
+
+        def settled():
+            if self.player.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                quiet["since"] = None
+                return False
+            quiet["since"] = quiet["since"] or time.monotonic()
+            return time.monotonic() - quiet["since"] > 1.0
+        self.assertTrue(wait_for(settled, 20))
         self.assertLessEqual(len(self.played), 3)
-        self.assertNotEqual(self.player.player.playbackState(), QMediaPlayer.PlaybackState.PlayingState)
 
 
 @unittest.skipUnless(mp.load_mpv(os.environ.get("EOZMP_LIBMPV", "")), "libmpv-2.dll not found")
