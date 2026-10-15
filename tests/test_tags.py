@@ -59,6 +59,13 @@ class FormatTagsTest(TempDirTest):
         t = mp.read_track(str(p))
         self.assertEqual((t["title"], t["artist"]), ("Gül Döktüm Yollarına", "Barış Manço"))
 
+    def test_broken_riff_info_is_just_untagged(self):
+        import struct
+        p = s.wav(self.tmp / "a.wav")
+        p.write_bytes(p.read_bytes() + b"LIST" + struct.pack("<I", 0) + b"LIST" + struct.pack("<I", 2))
+        t = mp.read_track(str(p))
+        self.assertEqual((t["title"], t["artist"]), ("a", "Unknown Artist"))
+
     def test_wav_id3_wins_over_riff_info(self):
         p = s.wav(self.tmp / "a.wav")
         s.add_riff_info(p, {"INAM": "Old name", "IGNR": "Pop"})

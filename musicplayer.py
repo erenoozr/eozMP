@@ -677,8 +677,8 @@ def riff_info(path):
             if len(chunk) < 8:
                 break
             size, start = int.from_bytes(chunk[4:], "little"), f.tell()
-            if chunk[:4] == b"LIST" and f.read(4) == b"INFO":
-                body, pos = f.read(size - 4), 0
+            if chunk[:4] == b"LIST" and size >= 4 and f.read(4) == b"INFO":
+                body, pos = f.read(min(size - 4, 1 << 20)), 0
                 while pos + 8 <= len(body):
                     key, n = body[pos:pos + 4].decode("latin-1"), int.from_bytes(body[pos + 4:pos + 8], "little")
                     text = decode_text(body[pos + 8:pos + 8 + n].split(b"\0")[0]).strip()
