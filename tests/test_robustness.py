@@ -94,5 +94,28 @@ class StaleRowTest(PlayerHarness):
         self.assertEqual(self.played, ["One"])
 
 
+class OrganizeTimingTest(PlayerHarness):
+    @staticmethod
+    def downloads(finished, queued):
+        files = [{"id": f"f{i}", "filename": f"x_{i}.mp3", "size": 1, "state": "Completed, Succeeded"}
+                 for i in range(finished)]
+        files += [{"id": f"q{i}", "filename": f"x_q{i}.mp3", "size": 1, "state": "Queued, Remotely"}
+                  for i in range(queued)]
+        return [{"username": "u", "directories": [{"files": files}]}]
+
+    def test_a_compilation_is_sorted_only_when_all_its_files_are_in(self):      # B11
+        self.make_player(["One"])
+        p = self.player
+        calls = []
+        p.after_downloads_finished = lambda: calls.append(1)
+        p.on_downloads(self.downloads(1, 2))        # first answer: nothing to do
+        p.on_downloads(self.downloads(2, 1))        # one more arrived, two still to come
+        self.assertEqual(calls, [])
+        p.on_downloads(self.downloads(3, 0))        # the last one is in
+        self.assertEqual(calls, [1])
+        p.on_downloads(self.downloads(3, 0))
+        self.assertEqual(calls, [1])                # and it is not repeated
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -12959,6 +12959,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if self.poll_fails == 1:
             self.statusBar().showMessage("Can't reach slskd, so downloads aren't being watched right now.", 8000)
 
+    organize_since = None        # when the first not-yet-sorted finished download was seen
+
     def on_downloads(self, data):
         if self.poll_fails:
             self.poll_fails = 0
@@ -13003,8 +13005,14 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             # first answer since eozMP started: sort what finished while it was closed
             if self.cfg["organize_downloads"] and self.cfg["downloads_dir"]:
                 self.organize_now(quiet=True, startup=True)
-        elif done > self.last_done:
-            self.after_downloads_finished()
+        else:
+            if done > self.last_done and self.organize_since is None:
+                self.organize_since = time.time()
+            # a compilation arrives one file at a time: wait until the queue is idle (or ten minutes),
+            # or its songs get sorted into one folder per singer before the rest are there
+            if self.organize_since is not None and (not active or time.time() - self.organize_since > 600):
+                self.organize_since = None
+                self.after_downloads_finished()
         self.last_done = done
 
     @staticmethod
