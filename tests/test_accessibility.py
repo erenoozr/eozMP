@@ -5,11 +5,16 @@ on a fake library in a temp folder, so your own eozMP data is never touched.
 """
 import colorsys
 import os
+import subprocess
+import sys
 import unittest
+from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import Qt  # noqa: E402
+from PyQt6.QtCore import QSize, Qt  # noqa: E402
+from PyQt6.QtGui import QColor, QPixmap  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
 from PyQt6.QtWidgets import QAbstractButton, QAbstractSlider, QApplication, QWidget  # noqa: E402
 
@@ -196,6 +201,67 @@ class ScreenReaderNameTest(WindowTest):                                   # C8
         self.assertEqual(p.fav_btn.accessibleName(), "Add to Favorites")
         p.toggle_favorite_current()
         self.assertEqual(p.fav_btn.accessibleName(), "Remove from Favorites")
+
+
+
+def logical_size(pm):
+    return pm.deviceIndependentSize().toSize()
+
+
+class SharpCoversTest(PlayerHarness):                                     # C10
+    """At 125-200 % Windows scaling a cover must be drawn with that many more pixels and say so
+    (devicePixelRatio); otherwise Qt stretches a small picture and it looks blurry."""
+
+    def big_cover(self):
+        pm = QPixmap(600, 600)
+        pm.fill(QColor("#c03030"))
+        return pm
+
+    def test_covers_and_stand_ins_are_drawn_at_the_screens_scale(self):
+        with mock.patch.object(mp, "screen_dpr", return_value=2.0):
+            for size, pm in ((56, mp.rounded_pixmap(self.big_cover(), 56, 8)),
+                             (220, mp.placeholder_cover(220, 14, "#4C8DFF")),
+                             (28, mp.neutral_cover(28, 6, "#26262d", "#9b9ba8")),
+                             (120, mp.avatar_pixmap("Bonobo", 120, "#26262d", "#ececf1"))):
+                self.assertEqual(pm.devicePixelRatio(), 2.0)
+                self.assertEqual((pm.width(), pm.height()), (2 * size, 2 * size))
+                self.assertEqual(logical_size(pm), QSize(size, size))      # same place on screen as before
+
+    def test_window_covers_follow_the_scaling(self):
+        with mock.patch.object(mp, "screen_dpr", return_value=1.5):
+            self.make_player(["One"])
+            p = self.player
+            shown = {}      # QLabel.pixmap() hands back a copy made for this (unscaled) test screen
+            for name in ("cover_label", "np_cover"):
+                real = getattr(p, name).setPixmap
+                getattr(p, name).setPixmap = lambda pm, name=name, real=real: (shown.__setitem__(name, pm), real(pm))
+            key = next(iter(p.albums))
+            p.show_album(key)
+            self.start("One")
+            self.assertTrue(wait_for(lambda: len(shown) == 2, 5))
+            for name, pm in shown.items():
+                self.assertEqual(pm.devicePixelRatio(), 1.5, name)
+                self.assertEqual(logical_size(pm), getattr(p, name).size(), name)
+            p.on_thumb_loaded(key, self.big_cover().toImage())
+            thumb = p.tree_thumb(key)
+            self.assertEqual(thumb.devicePixelRatio(), 1.5)
+            self.assertEqual(logical_size(thumb), QSize(28, 28))
+
+    def test_the_scale_comes_from_the_screen(self):
+        """A fresh process at 200 % (QT_SCALE_FACTOR): the scale is found, and the big cover viewer uses it."""
+        root = Path(__file__).resolve().parent.parent
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); "
+                "from PyQt6.QtGui import QPixmap; "
+                "from PyQt6.QtWidgets import QApplication, QWidget; "
+                "app = QApplication([]); "
+                "import musicplayer as mp; "
+                "pm = QPixmap(500, 500); pm.fill(); "
+                "viewer = mp.CoverViewer(QWidget(), pm); "
+                "print(mp.screen_dpr(), mp.rounded_pixmap(pm, 40, 4).devicePixelRatio(), viewer.pix.devicePixelRatio())")
+        env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_SCALE_FACTOR="2")
+        out = subprocess.run([sys.executable, "-c", code, str(root)], env=env, capture_output=True, text=True,
+                             timeout=60)
+        self.assertEqual(out.stdout.split(), ["2.0", "2.0", "2.0"], out.stderr[-2000:])
 
 
 if __name__ == "__main__":

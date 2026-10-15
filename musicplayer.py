@@ -1409,29 +1409,47 @@ def is_accent_target(w):
     return any(w.inherits(cls) and (obj is None or obj == name) for cls, obj in ACCENT_TARGETS)
 
 
-def rounded_pixmap(pix, size, radius):
-    """Square, centre-cropped cover with rounded corners."""
+def screen_dpr():
+    """Device pixels per logical pixel on the sharpest screen (1.25 at 125 % Windows scaling). Covers are
+    drawn that much bigger and tagged with it, so Qt doesn't stretch them (blurry) on a scaled screen."""
+    app = QApplication.instance()
+    return max(1.0, float(app.devicePixelRatio())) if app is not None else 1.0
+
+
+def hidpi_canvas(size, dpr=None):
+    """A transparent square pixmap for `size` logical pixels at the screen's real resolution, and its scale
+    (draw with painter.scale(scale, scale), then setDevicePixelRatio(scale))."""
+    n = max(1, round(size * (dpr or screen_dpr())))
+    pm = QPixmap(n, n)
+    pm.fill(Qt.GlobalColor.transparent)
+    return pm, n / size
+
+
+def rounded_pixmap(pix, size, radius, dpr=None):
+    """Square, centre-cropped cover with rounded corners, at the screen's real resolution."""
+    out, scale = hidpi_canvas(size, dpr)
+    n = out.width()
     scaled = pix.scaled(
-        size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        n, n, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
         Qt.TransformationMode.SmoothTransformation)
-    out = QPixmap(size, size)
-    out.fill(Qt.GlobalColor.transparent)
+    scaled.setDevicePixelRatio(1.0)    # drawn pixel for pixel below
     painter = QPainter(out)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
     path = QPainterPath()
-    path.addRoundedRect(0, 0, size, size, radius, radius)
+    path.addRoundedRect(0, 0, n, n, radius * scale, radius * scale)
     painter.setClipPath(path)
-    painter.drawPixmap((size - scaled.width()) // 2, (size - scaled.height()) // 2, scaled)
+    painter.drawPixmap((n - scaled.width()) // 2, (n - scaled.height()) // 2, scaled)
     painter.end()
+    out.setDevicePixelRatio(scale)
     return out
 
 
-def placeholder_cover(size, radius, accent):
+def placeholder_cover(size, radius, accent, dpr=None):
     """Shown when an album has no artwork: accent gradient with a note."""
-    out = QPixmap(size, size)
-    out.fill(Qt.GlobalColor.transparent)
+    out, scale = hidpi_canvas(size, dpr)
     painter = QPainter(out)
+    painter.scale(scale, scale)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     path = QPainterPath()
     path.addRoundedRect(0, 0, size, size, radius, radius)
@@ -1443,8 +1461,9 @@ def placeholder_cover(size, radius, accent):
     font.setPixelSize(max(10, size // 2))
     painter.setFont(font)
     painter.setPen(QColor(255, 255, 255, 190))
-    painter.drawText(out.rect(), Qt.AlignmentFlag.AlignCenter, "\u266a")
+    painter.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, "\u266a")
     painter.end()
+    out.setDevicePixelRatio(scale)
     return out
 
 
@@ -1617,9 +1636,9 @@ def chevron_tokens(color):
 
 def avatar_pixmap(name, size, bg, fg):
     """Round picture with the artist's first letter (used until a cover is found)."""
-    pm = QPixmap(size, size)
-    pm.fill(Qt.GlobalColor.transparent)
+    pm, scale = hidpi_canvas(size)
     p = QPainter(pm)
+    p.scale(scale, scale)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     circle = QPainterPath()
     circle.addEllipse(0, 0, size, size)
@@ -1629,8 +1648,9 @@ def avatar_pixmap(name, size, bg, fg):
     font.setWeight(QFont.Weight.Bold)
     p.setFont(font)
     p.setPen(QColor(fg))
-    p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, (name.strip()[:1] or "?").upper())
+    p.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, (name.strip()[:1] or "?").upper())
     p.end()
+    pm.setDevicePixelRatio(scale)
     return pm
 
 
@@ -4476,9 +4496,9 @@ def paths_from_mime(md):
 
 def neutral_cover(size, radius, bg, fg):
     """Quiet stand-in for a missing cover: a soft square with a small note."""
-    pm = QPixmap(size, size)
-    pm.fill(Qt.GlobalColor.transparent)
+    pm, scale = hidpi_canvas(size)
     p = QPainter(pm)
+    p.scale(scale, scale)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     shape = QPainterPath()
     shape.addRoundedRect(0, 0, size, size, radius, radius)
@@ -4487,8 +4507,9 @@ def neutral_cover(size, radius, bg, fg):
     f.setPixelSize(max(6, int(size * 0.5)))
     p.setFont(f)
     p.setPen(QColor(fg))
-    p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, "\u266a")
+    p.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, "\u266a")
     p.end()
+    pm.setDevicePixelRatio(scale)
     return pm
 
 
@@ -4676,8 +4697,9 @@ class TreeRowDelegate(QStyledItemDelegate):
             painter.setFont(font)
             if style in ("Covers and numbers", "Covers"):
                 pm = m.tree_thumb(index.data(KEY_ROLE))
-                painter.drawPixmap(int(x), int(r.center().y() - pm.height() / 2), pm)
-                x += pm.width() + 10
+                side = pm.deviceIndependentSize()     # on screen; the pixmap itself is bigger on a scaled screen
+                painter.drawPixmap(int(x), int(r.center().y() - side.height() / 2), pm)
+                x += side.width() + 10
             if style in ("Covers and numbers", "Numbers"):
                 nw = fm.horizontalAdvance("00.")
                 painter.setPen(sub_col)
@@ -4876,14 +4898,17 @@ class CoverViewer(QDialog):
         area = screen.availableGeometry()
         side = int(min(area.width(), area.height()) * 0.86)
         target = min(side, max(pix.width(), pix.height()) * 2)
-        self.pix = pix.scaled(target, target, Qt.AspectRatioMode.KeepAspectRatio,
+        dpr = max(1.0, screen.devicePixelRatio())    # full resolution on a scaled screen
+        self.pix = pix.scaled(round(target * dpr), round(target * dpr), Qt.AspectRatioMode.KeepAspectRatio,
                               Qt.TransformationMode.SmoothTransformation)
+        self.pix.setDevicePixelRatio(dpr)
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.fillRect(self.rect(), QColor(0, 0, 0, 215))
-        p.drawPixmap((self.width() - self.pix.width()) // 2, (self.height() - self.pix.height()) // 2, self.pix)
+        size = self.pix.deviceIndependentSize()
+        p.drawPixmap(QPointF((self.width() - size.width()) / 2, (self.height() - size.height()) / 2), self.pix)
         p.end()
 
     def mousePressEvent(self, event):
@@ -6542,8 +6567,11 @@ def qr_pixmap(text, size=260):
         for x, v in enumerate(row):
             if v:
                 img.setPixel(x + 4, y + 4, QColor("#000000").rgb())
-    return QPixmap.fromImage(img.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
-                                        Qt.TransformationMode.FastTransformation))
+    dpr = screen_dpr()                     # sharp squares on a scaled screen too
+    pm = QPixmap.fromImage(img.scaled(round(size * dpr), round(size * dpr), Qt.AspectRatioMode.KeepAspectRatio,
+                                      Qt.TransformationMode.FastTransformation))
+    pm.setDevicePixelRatio(dpr)
+    return pm
 
 
 # ----- DLNA / UPnP (smart TVs, Sonos and other network speakers)
