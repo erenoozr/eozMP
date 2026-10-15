@@ -8777,6 +8777,11 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             self.rescan()
 
     def clear_folders(self):
+        if self.cfg["folders"] and QMessageBox.question(
+                self, "Remove all folders",
+                "Take every music folder out of eozMP? Your music files are not deleted; "
+                "the library is just emptied until you add a folder again.") != QMessageBox.StandardButton.Yes:
+            return
         self.cfg["folders"] = []
         save_config(self.cfg)
         self.rescan()

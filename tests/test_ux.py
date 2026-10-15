@@ -10,6 +10,7 @@ from unittest import mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtGui import QColor  # noqa: E402
+from PyQt6.QtWidgets import QMessageBox  # noqa: E402
 
 from test_mpv_engine import wait_for  # noqa: E402
 from test_player import PlayerHarness, mp  # noqa: E402
@@ -60,6 +61,20 @@ class EmptyLibraryTest(PlayerHarness):
         p.show()
         p.show_home()
         self.assertFalse(p.home_add_btn.isVisible())
+
+
+class RemoveFoldersTest(PlayerHarness):
+    def test_removing_all_folders_asks_first(self):
+        self.make_player(["One"])
+        p = self.player
+        folders = list(p.cfg["folders"])
+        with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No) as ask:
+            p.clear_folders()
+        ask.assert_called_once()
+        self.assertEqual(p.cfg["folders"], folders)
+        with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            p.clear_folders()
+        self.assertEqual(p.cfg["folders"], [])
 
 
 if __name__ == "__main__":
