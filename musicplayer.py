@@ -6028,7 +6028,9 @@ def find_duplicates(tracks):
     """Groups of the same song (same artist + title, lengths within 3 s), best copy first."""
     by_key = {}
     for t in tracks:
-        by_key.setdefault((_norm(song_artist(t)), _norm(t["title"])), []).append(t)
+        # _words keeps every script: _norm keeps only a-z/0-9, which made every Cyrillic or Japanese
+        # title "" and so the same song, and these copies get moved aside
+        by_key.setdefault((_words(song_artist(t)), _words(t["title"])), []).append(t)
     groups = []
     for same in by_key.values():
         if len(same) < 2:
