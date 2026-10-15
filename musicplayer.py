@@ -1264,6 +1264,10 @@ QStatusBar { background: @bg@; color: @sub@; }
 
 QLineEdit, QComboBox { background: @panel@; border: 1px solid @border@; border-radius: @r_md@; padding: 7px 10px; selection-background-color: @accent@; }
 QSpinBox { background: @panel@; border: 1px solid @border@; border-radius: @r_md@; padding: 4px 8px; }
+QCheckBox { spacing: 6px; padding: 2px 0px; }
+QCheckBox::indicator, QAbstractItemView::indicator { width: 14px; height: 14px; border: 1px solid @sub@; border-radius: @r_xs@; background: @panel@; }
+QCheckBox::indicator:checked, QAbstractItemView::indicator:checked { image: url("@check@"); }
+QCheckBox::indicator:disabled { border-color: @border@; }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border: 1px solid @accent@; }
 QComboBox QAbstractItemView { background: @panel@; border: 1px solid @border@; selection-background-color: @accent@; selection-color: @on_accent@; outline: none; }
 
@@ -1346,6 +1350,7 @@ QPushButton#transport:focus, QPushButton#link:focus, QPushButton#seg:focus { bor
 QPushButton#primary:focus, QPushButton#play:focus { border: 2px solid @text@; }
 QTreeWidget:focus, QTableWidget:focus, QListWidget:focus, QListWidget#tiles:focus, QWidget#drawer QListWidget:focus { border: 1px solid @focus@; }
 QSlider::handle:horizontal:focus, QSlider::handle:vertical:focus { background: @focus@; }
+QCheckBox::indicator:focus { border: 1px solid @focus@; }
 """
 
 
@@ -1363,6 +1368,7 @@ def look_scheme(theme, accent_name, system_dark, tokens=None):
     sc = make_scheme(dark, accent)
     sc.update(tokens or {})
     sc.update(chevron_tokens(sc["sub"]))
+    sc.update(check_tokens(sc["text"]))
     return sc
 
 
@@ -1539,7 +1545,7 @@ def style_tokens(cfg, display_family):
     def px(r):
         return f"{int(round(r * f))}px"
 
-    tokens = {"r_sm": px(6), "r_md": px(8), "r_lg": px(10), "r_pill": px(23),
+    tokens = {"r_xs": px(3), "r_sm": px(6), "r_md": px(8), "r_lg": px(10), "r_pill": px(23),
               "display_font": display_family}
     tokens.update(DENSITY.get(cfg["density"], DENSITY["Comfortable"]))
     return tokens
@@ -1633,6 +1639,36 @@ def chevron_tokens(color):
     except Exception:
         tokens = {"chev_right": "", "chev_down": ""}
     return tokens
+
+
+def check_tokens(color):
+    """Tick image for ticked boxes, drawn like the chevrons (QSS needs a real file)."""
+    try:
+        UI_DIR.mkdir(exist_ok=True)
+        tag = QColor(color).name().lstrip("#")
+        for scale, suffix in ((1, ""), (2, "@2x")):
+            path = UI_DIR / f"check_{tag}{suffix}.png"
+            if not path.exists():
+                n = 12 * scale
+                pm = QPixmap(n, n)
+                pm.fill(Qt.GlobalColor.transparent)
+                painter = QPainter(pm)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                pen = QPen(QColor(color))
+                pen.setWidthF(1.8 * scale)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+                painter.setPen(pen)
+                tick = QPainterPath()
+                tick.moveTo(0.18 * n, 0.52 * n)
+                tick.lineTo(0.42 * n, 0.76 * n)
+                tick.lineTo(0.84 * n, 0.26 * n)
+                painter.drawPath(tick)
+                painter.end()
+                pm.save(str(path))
+        return {"check": (UI_DIR / f"check_{tag}.png").as_posix()}
+    except Exception:
+        return {"check": ""}
 
 
 def avatar_pixmap(name, size, bg, fg):

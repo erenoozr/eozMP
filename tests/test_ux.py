@@ -10,7 +10,7 @@ from unittest import mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtGui import QColor  # noqa: E402
-from PyQt6.QtWidgets import QMessageBox  # noqa: E402
+from PyQt6.QtWidgets import QMessageBox, QStyle, QStyleOptionButton  # noqa: E402
 
 from test_mpv_engine import wait_for  # noqa: E402
 from test_player import PlayerHarness, mp  # noqa: E402
@@ -106,6 +106,33 @@ class MenuShortcutTest(PlayerHarness):
             if k:
                 self.assertNotIn(k, seen, f"{k}: {a.text()} and {seen.get(k)}")
                 seen[k] = a.text()
+
+
+
+class TickBoxTest(PlayerHarness):
+    def test_an_empty_tick_box_can_be_seen_on_the_dark_theme(self):
+        self.make_player(["One"], theme="Dark")
+        p = self.player
+        p.resize(1100, 700)
+        p.show()
+        p.stack.setCurrentIndex(1)                     # Soulseek results: "Free slots only"
+        box = p.free_check
+        self.assertTrue(wait_for(box.isVisible, 2))
+        bg = QColor(p.scheme["bg"])
+
+        opt = QStyleOptionButton()
+        box.initStyleOption(opt)
+        square = box.style().subElementRect(QStyle.SubElement.SE_CheckBoxIndicator, opt, box)   # not the text
+
+        def strongest(checked):
+            box.setChecked(checked)
+            img = box.grab().toImage()
+            dpr = img.devicePixelRatio()
+            return max(mp.contrast_ratio(img.pixelColor(int(x * dpr), int(y * dpr)), bg)
+                       for x in range(square.left(), square.right() + 1)
+                       for y in range(square.top(), square.bottom() + 1))
+        self.assertGreaterEqual(strongest(False), 3.0)        # WCAG: 3:1 for the outline of a control
+        self.assertGreaterEqual(strongest(True), 3.0)
 
 
 if __name__ == "__main__":
