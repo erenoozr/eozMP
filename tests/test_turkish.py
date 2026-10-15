@@ -18,7 +18,7 @@ from eozmp_lang import LANG  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 TR = LANG["tr"]
 PH = re.compile(r"\{\d+\}")
-ACCEL = re.compile(r"&([^&\s])")      # "&Library" -> "L"; "&&" is a plain "&", "A & B" is no shortcut
+ACCEL = re.compile(r"(?<!&)&([^&\s])")   # "&Library" -> "L"; "&&" is a plain "&", "A & B" is no shortcut
 
 # English placeholders that only carry an English word or plural ending ("s", "people have", "Added to"...):
 # the Turkish sentence leaves them out on purpose. A placeholder may be dropped only here, never added.
