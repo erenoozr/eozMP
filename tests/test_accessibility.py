@@ -9,7 +9,78 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt6.QtCore import Qt  # noqa: E402
+from PyQt6.QtTest import QTest  # noqa: E402
+from PyQt6.QtWidgets import QApplication  # noqa: E402
+
+from test_mpv_engine import wait_for  # noqa: E402
 from test_player import PlayerHarness, mp  # noqa: E402
+
+
+class WindowTest(PlayerHarness):
+    """The real window, shown and active (keyboard shortcuts only work in the active window)."""
+
+    def setUp(self):
+        super().setUp()
+        self.make_player(["One", "Two", "Three"])
+        p = self.player
+        p.resize(1100, 700)
+        p.show()
+        p.activateWindow()
+        p.show_album(next(iter(p.albums)))
+        wait_for(lambda: p.isActiveWindow(), 2)
+        self.toggles = []
+        p.toggle_play = lambda: self.toggles.append(1)     # what Space would do; the menu action looks it up
+
+    def focus(self, w):
+        w.setFocus(Qt.FocusReason.TabFocusReason)
+        self.assertTrue(wait_for(lambda: QApplication.focusWidget() is w, 2), f"couldn't focus {w}")
+
+    def key(self, w, key):
+        self.focus(w)
+        QTest.keyClick(w, key)
+        wait_for(lambda: False, 0.05)
+
+
+class SpaceKeyTest(WindowTest):                                           # C7
+    def test_space_presses_the_focused_button(self):
+        p = self.player
+        was = p.shuffle.isChecked()
+        self.key(p.shuffle, Qt.Key.Key_Space)
+        self.assertNotEqual(p.shuffle.isChecked(), was)
+        self.assertEqual(self.toggles, [])
+
+    def test_space_ticks_the_focused_checkbox(self):
+        p = self.player
+        p.stack.setCurrentIndex(1)                       # Soulseek results: "Free slots only"
+        wait_for(lambda: p.free_check.isVisible(), 2)
+        was = p.free_check.isChecked()
+        self.key(p.free_check, Qt.Key.Key_Space)
+        self.assertNotEqual(p.free_check.isChecked(), was)
+        self.assertEqual(self.toggles, [])
+
+    def test_space_types_in_the_search_box(self):
+        p = self.player
+        p.search.setText("a")
+        self.focus(p.search)
+        p.search.deselect()                  # Tab selects the text; type after it instead
+        p.search.end(False)
+        QTest.keyClick(p.search, Qt.Key.Key_Space)
+        self.assertEqual(p.search.text(), "a ")
+        self.assertEqual(self.toggles, [])
+
+    def test_space_in_the_song_list_plays_and_pauses(self):
+        self.key(self.player.track_table, Qt.Key.Key_Space)
+        self.assertEqual(self.toggles, [1])
+
+    def test_clicking_a_button_leaves_space_to_play_pause(self):
+        p = self.player
+        self.focus(p.track_table)
+        QTest.mouseClick(p.repeat_btn, Qt.MouseButton.LeftButton)
+        self.assertIs(QApplication.focusWidget(), p.track_table)
+        QTest.keyClick(p.track_table, Qt.Key.Key_Space)
+        wait_for(lambda: False, 0.05)
+        self.assertEqual(self.toggles, [1])
 
 
 def luminance(color):

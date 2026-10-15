@@ -210,14 +210,20 @@ class QLabel(QLabel):
         super().__init__(*_tr_first_strs(a, 1), **k)
 
 
+CLICK_KEEPS_FOCUS = Qt.FocusPolicy.TabFocus   # buttons, tick boxes, lists: focused by Tab, not by a click
+
+
 class QPushButton(QPushButton):
     def __init__(self, *a, **k):
         super().__init__(*_tr_first_strs(a), **k)
+        # Tab reaches it but a click doesn't focus it, so Space still plays/pauses after you click one
+        self.setFocusPolicy(CLICK_KEEPS_FOCUS)
 
 
 class QCheckBox(QCheckBox):
     def __init__(self, *a, **k):
         super().__init__(*_tr_first_strs(a, 1), **k)
+        self.setFocusPolicy(CLICK_KEEPS_FOCUS)
 
 
 class QAction(QAction):
@@ -228,6 +234,10 @@ class QAction(QAction):
 class QComboBox(QComboBox):
     """Shows translated items but keeps the English text as the item's data, so the code (and the
     settings file) keep working with the English values."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.setFocusPolicy(CLICK_KEEPS_FOCUS)
 
     def addItem(self, *a):
         if a and isinstance(a[0], str):
@@ -4516,6 +4526,14 @@ def make_labels_plain():
     if PLAIN_LABELS is None:
         PLAIN_LABELS = PlainLabels()
         QApplication.instance().installEventFilter(PLAIN_LABELS)
+
+
+SPACE_WIDGETS = ("QAbstractButton", "QComboBox", "QAbstractSpinBox", "QLineEdit", "QTextEdit", "QPlainTextEdit")
+
+
+def uses_space(w):
+    """Buttons, tick boxes, drop-down lists and text fields do something with Space themselves."""
+    return isinstance(w, QWidget) and any(w.inherits(name) for name in SPACE_WIDGETS)
 
 
 class SongTable(QTableWidget):
@@ -10295,6 +10313,10 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
 
     def eventFilter(self, obj, event):
         etype = event.type()
+        if (etype == QEvent.Type.ShortcutOverride and event.key() == Qt.Key.Key_Space
+                and event.modifiers() == Qt.KeyboardModifier.NoModifier and uses_space(obj)):
+            event.accept()      # the focused button/box/field gets the Space, not play/pause
+            return True
         if etype == QEvent.Type.Show and isinstance(obj, QWidget) and is_accent_target(obj):
             self.sync_accent(obj)        # shown after the album-art accent changed (pages, menus, dialogs)
         if etype == QEvent.Type.Resize and obj is getattr(self, "lyrics_list", None):
