@@ -26,7 +26,8 @@ PH_RE = re.compile(r"\{\d+\}")
 # names and technical strings that stay as they are in every language
 KEEP = {"Soulseek", "&Soulseek", "Apple Music", "Arial", "Georgia", "Fusion", "Liberation Serif", "DejaVu Serif",
         "Times New Roman", "Qt", "Preamp", "MP3 320k+", "Soulseek Guide.txt", "eozMP", "MYMEMORY WARNING",
-        "AcoustID", "Last.fm", "Last.fm..."}
+        "AcoustID", "Last.fm", "Last.fm...",
+        "eozMP - eren's definitely (not) sketchy music player."}   # the hidden tagline stays English
 TECH_RE = re.compile(r"^[\w\-{}.]*:(?!\s|$)|^\S*[/|]\S*$|^/|^\{0\}\.|rgba\(|font-|^color:|^explorer |"
                      r"^[\w-]+-[A-Z][\w-]*$|^[A-Z]{2,}\{0\}$|^eozMP(/|-backup)|^release|^\d+px|^M-SEARCH|\?v=|@\w|=\w+=")
 

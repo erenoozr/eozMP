@@ -276,6 +276,7 @@ TRANS_ROLE = Qt.ItemDataRole.UserRole + 5     # a lyric line's translation
 TRANSLATE_LANGS = dict(UI_LANGS)     # lyrics can be translated into every interface language
 TRANSLATE_DIR = Path.home() / ".simple_music_player_translations"
 QUALITY_FILE = Path.home() / ".simple_music_player_quality.json"
+SECRET_TAGLINE = "eozMP - eren's definitely (not) sketchy music player."   # English only, on purpose
 DUPLICATES_FOLDER = "_eozMP duplicates"   # moved-aside copies; the library scan skips it
 # where eozMP.exe lives; the installer puts slskd and the Soulseek guide next to it
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
@@ -6037,6 +6038,13 @@ class ExtrasMixin:
         if time.time() - last > 7 * 86400:
             self.check_new_releases_now(False)
 
+    def brand_clicked(self, _event):
+        now = time.monotonic()
+        self._brand_clicks = [t for t in getattr(self, "_brand_clicks", []) if now - t < 2.5] + [now]
+        if len(self._brand_clicks) >= 5:
+            self._brand_clicks = []
+            QToolTip.showText(QCursor.pos(), _raw(SECRET_TAGLINE), self)
+
     def soul_query(self, text):
         """Run a Soulseek search for `text` (from a dialog, a link or the wishlist)."""
         self.leave_overlays()
@@ -7758,6 +7766,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         brand = QHBoxLayout()
         brand_name = QLabel("eozMP")
         brand_name.setObjectName("brand")
+        brand_name.mousePressEvent = self.brand_clicked     # five quick clicks: a little secret
         brand.addWidget(brand_name)
         brand.addStretch(1)
         self.nav_back_btn = QPushButton()
