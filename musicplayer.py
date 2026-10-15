@@ -286,7 +286,8 @@ COVER_NAMES = ("cover", "folder", "front", "album", "albumart")
 COVER_EXTS = (".jpg", ".jpeg", ".png")
 APP_VERSION = "1.3"   # raise it with every release; the release tag is "v" + this (see MANUAL)
 CONFIG_FILE = Path.home() / ".simple_music_player.json"
-CACHE_FILE = Path.home() / ".simple_music_player_cache.json"
+CRASH_FILE = Path.home() / ".simple_music_player_crash.log"
+CACHE_FILE =Path.home() / ".simple_music_player_cache.json"
 LOSSLESS_EXTS = {"flac", "wav", "aiff", "aif", "ape", "wv"}
 FORMAT_OPTIONS = ["Any format", "Lossless only", "MP3 320k+", "MP3 (any)"]
 KEY_ROLE = Qt.ItemDataRole.UserRole
@@ -5068,9 +5069,19 @@ def make_labels_plain():
 SPACE_WIDGETS = ("QAbstractButton", "QComboBox", "QAbstractSpinBox", "QLineEdit", "QTextEdit", "QPlainTextEdit")
 
 
-def uses_space(w):
-    """Buttons, tick boxes, drop-down lists and text fields do something with Space themselves."""
-    return isinstance(w, QWidget) and any(w.inherits(name) for name in SPACE_WIDGETS)
+TEXT_WIDGETS = ("QLineEdit", "QTextEdit", "QPlainTextEdit", "QAbstractSpinBox")
+
+
+def is_text_input(w):
+    return isinstance(w, QWidget) and any(w.inherits(name) for name in TEXT_WIDGETS)
+
+
+def uses_space(w, by_keyboard=True):
+    """Text fields always take Space; buttons, tick boxes and drop-down lists only when the user got
+    to them with Tab (Qt also moves focus to them by itself when a page changes)."""
+    if is_text_input(w):
+        return True
+    return by_keyboard and isinstance(w, QWidget) and any(w.inherits(name) for name in SPACE_WIDGETS)
 
 
 class SongTable(QTableWidget):
@@ -10911,9 +10922,18 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
     def eventFilter(self, obj, event):
         etype = event.type()
         if (etype == QEvent.Type.ShortcutOverride and event.key() == Qt.Key.Key_Space
-                and event.modifiers() == Qt.KeyboardModifier.NoModifier and uses_space(obj)):
+                and event.modifiers() == Qt.KeyboardModifier.NoModifier
+                and uses_space(obj, getattr(self, "focus_by_key", False))):
             event.accept()      # the focused button/box/field gets the Space, not play/pause
             return True
+        if etype == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+            self.focus_by_key = True     # Space now belongs to whatever button Tab lands on
+        elif etype == QEvent.Type.MouseButtonPress:
+            self.focus_by_key = False
+            fw = QApplication.focusWidget()
+            if (is_text_input(fw) and isinstance(obj, QWidget) and obj is not fw and not is_text_input(obj)
+                    and obj.window() is self):
+                fw.clearFocus()          # a click elsewhere ends typing, so Space plays/pauses again
         if etype == QEvent.Type.Show and isinstance(obj, QWidget) and is_accent_target(obj):
             self.sync_accent(obj)        # shown after the album-art accent changed (pages, menus, dialogs)
         if etype == QEvent.Type.Resize and obj is getattr(self, "lyrics_list", None):
@@ -12954,6 +12974,32 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.remove_downloads(targets, "Removed {n} download(s).")
 
 
+def log_uncaught(exc_type, exc, tb, window=None):
+    """An error nobody caught used to close the whole app (Qt aborts on it) and lose the session.
+    Write it to a log file and say so in the status bar instead."""
+    import traceback
+    if issubclass(exc_type, KeyboardInterrupt):
+        return
+    text = "".join(traceback.format_exception(exc_type, exc, tb))
+    try:
+        old = CRASH_FILE.read_text(encoding="utf-8", errors="replace") if CRASH_FILE.exists() else ""
+        entry = f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n{text}\n"
+        CRASH_FILE.write_text((old + entry)[-200000:], encoding="utf-8")   # keeps the last ~200 KB
+    except OSError:
+        pass
+    try:
+        if window is not None:
+            window.statusBar().showMessage(
+                _t("Something went wrong: {0}. Details are in {1}").format(exc, CRASH_FILE.name), 15000)
+    except Exception:
+        pass
+
+
+def install_error_log(window_getter=lambda: None):
+    sys.excepthook = lambda t, e, tb: log_uncaught(t, e, tb, window_getter())
+    threading.excepthook = lambda a: log_uncaught(a.exc_type, a.exc_value, a.exc_traceback, window_getter())
+
+
 if __name__ == "__main__":
     if sys.platform == "win32":
         try:  # so the taskbar shows the eozMP icon instead of Python's
@@ -12982,5 +13028,6 @@ if __name__ == "__main__":
     if ui_font is not None:
         app.setFont(ui_font)
     win = Player()
+    install_error_log(lambda: win)
     win.show()
     sys.exit(app.exec())

@@ -41,7 +41,8 @@ class WindowTest(PlayerHarness):
         w.setFocus(Qt.FocusReason.TabFocusReason)
         self.assertTrue(wait_for(lambda: QApplication.focusWidget() is w, 2), f"couldn't focus {w}")
 
-    def key(self, w, key):
+    def key(self, w, key, by_tab=True):
+        self.player.focus_by_key = by_tab        # as if the user had got here with Tab
         self.focus(w)
         QTest.keyClick(w, key)
         wait_for(lambda: False, 0.05)
@@ -86,6 +87,36 @@ class SpaceKeyTest(WindowTest):                                           # C7
         QTest.keyClick(p.track_table, Qt.Key.Key_Space)
         wait_for(lambda: False, 0.05)
         self.assertEqual(self.toggles, [1])
+
+
+class SpaceAfterMouseTest(WindowTest):                                    # B2, B24
+    def test_a_button_focused_by_a_page_change_does_not_get_space(self):
+        p = self.player
+        p.focus_by_key = False                  # the last thing the user did was click
+        self.focus(p.shuffle)                   # Qt moved the focus here by itself
+        was = p.shuffle.isChecked()
+        QTest.keyClick(p.shuffle, Qt.Key.Key_Space)
+        wait_for(lambda: False, 0.05)
+        self.assertEqual(p.shuffle.isChecked(), was)
+        self.assertEqual(self.toggles, [1])
+
+    def test_tab_then_space_still_presses_the_button(self):
+        p = self.player
+        self.focus(p.track_table)
+        QTest.keyClick(p.track_table, Qt.Key.Key_Tab)
+        self.assertTrue(p.focus_by_key)
+        QTest.mouseClick(p.track_table.viewport(), Qt.MouseButton.LeftButton)
+        self.assertFalse(p.focus_by_key)
+
+    def test_clicking_away_from_the_search_box_gives_space_back(self):
+        p = self.player
+        self.focus(p.search)
+        QTest.mouseClick(p.repeat_btn, Qt.MouseButton.LeftButton)
+        wait_for(lambda: False, 0.05)
+        self.assertIsNot(QApplication.focusWidget(), p.search)
+        QTest.keyClick(QApplication.focusWidget() or p, Qt.Key.Key_Space)
+        wait_for(lambda: False, 0.05)
+        self.assertEqual(p.search.text(), "")
 
 
 def luminance(color):
