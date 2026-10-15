@@ -4395,10 +4395,23 @@ def album_key(name, artist):
     return years[-1] if years else a
 
 
+def copy_rank(group, most):
+    """How good one Soulseek copy (a folder) of an album is; bigger is better. most = the most songs
+    any copy of this album has. A copy missing songs loses, unless it's just a bonus track or two
+    (up to a tenth of the album). Then lossless beats lossy, a higher bitrate (in steps of 32k, so
+    V0 and 256k are alike) beats a lower one, a free upload slot beats waiting in a queue, and the
+    more songs and the faster the uploader, the better."""
+    lossless = sum(1 for f in group if f["ext"] in LOSSLESS_EXTS) * 2 > len(group)
+    rates = [f["bitrate"] for f in group if f["bitrate"]]
+    kbps = sum(rates) / len(rates) if rates else 0
+    complete = len(group) >= most - most // 10
+    return complete, lossless, int(kbps // 32), group[0]["free"], len(group), group[0]["speed"]
+
+
 def pick_discography(rows, artist):
-    """From raw Soulseek results, pick the best folder for every album by this artist."""
+    """From raw Soulseek results, pick the best folder for every album by this artist (see copy_rank)."""
     a = _words(artist)
-    best = {}
+    copies = {}
     for group in group_by_folder(rows):
         if len(group) < 3:
             continue
@@ -4417,12 +4430,13 @@ def pick_discography(rows, artist):
         if not key:
             continue
         key = f"{key} {disc}".strip()
-        lossless = sum(1 for f in group if f["ext"] in LOSSLESS_EXTS) * 2 > len(group)
-        score = (group[0]["free"], len(group), lossless, group[0]["speed"])
-        if key not in best or score > best[key]["score"]:
-            best[key] = {"score": score, "key": album_key(name, artist),
-                         "name": name + (f" ({parts[-1]})" if disc else ""), "files": group}
-    return sorted(best.values(), key=lambda d: d["name"].lower())
+        copies.setdefault(key, []).append({"key": album_key(name, artist),
+                                           "name": name + (f" ({parts[-1]})" if disc else ""), "files": group})
+    best = []
+    for found in copies.values():
+        most = max(len(c["files"]) for c in found)
+        best.append(max(found, key=lambda c: copy_rank(c["files"], most)))   # the first one on a tie
+    return sorted(best, key=lambda d: d["name"].lower())
 
 
 class DiscographyDialog(QDialog):
