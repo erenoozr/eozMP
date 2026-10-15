@@ -5302,7 +5302,7 @@ class SongInfoDialog(QDialog):
         title = QLabel(_raw(t["title"]))
         title.setObjectName("heading2")
         title.setWordWrap(True)
-        sub = QLabel(f"{song_artist(t)}  ·  {t['album']}")
+        sub = QLabel(_raw(f"{song_artist(t)}  ·  {t['album']}"))
         sub.setObjectName("sub")
         sub.setWordWrap(True)
         names.addStretch(1)
@@ -11070,7 +11070,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if 0 <= self.index < len(self.queue):
             t, key = self.queue[self.index]
             self.drawer_title.setText(_raw(t["title"]))
-            self.drawer_artist.setText(f"{song_artist(t)}  ·  {t['album']}")
+            self.drawer_artist.setText(_raw(f"{song_artist(t)}  ·  {t['album']}"))
             self.drawer_cover.setPixmap(self.thumb_pixmap(key, 48, self.radius(8)))
         else:
             self.drawer_title.setText("Nothing playing")
@@ -11196,7 +11196,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if 0 <= self.index < len(self.queue):
             t = self.queue[self.index][0]
             fs.title.setText(_raw(t["title"]))
-            fs.artist.setText(f"{song_artist(t)}  ·  {t['album']}")
+            fs.artist.setText(_raw(f"{song_artist(t)}  ·  {t['album']}"))
         else:
             fs.title.setText("Nothing playing")
             fs.artist.setText("")
@@ -11847,7 +11847,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if 0 <= self.index < len(self.queue):
             t = self.queue[self.index][0]
             text = f"{t['title']} - {song_artist(t)}"
-            self.tray_now.setText(text if len(text) < 60 else text[:57] + "...")
+            self.tray_now.setText(_raw(text if len(text) < 60 else text[:57] + "..."))
             self.tray.setToolTip(f"eozMP\n{text}"[:120])
 
     # ----- keyboard media keys
