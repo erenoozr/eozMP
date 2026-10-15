@@ -27,7 +27,7 @@ class WindowTest(PlayerHarness):
         p.resize(1100, 700)
         p.show()
         p.activateWindow()
-        p.show_album(next(iter(p.albums)))
+        p.open_album(next(iter(p.albums)))       # as if clicked in the library list
         wait_for(lambda: p.isActiveWindow(), 2)
         self.toggles = []
         p.toggle_play = lambda: self.toggles.append(1)     # what Space would do; the menu action looks it up
@@ -113,6 +113,43 @@ class AccentContrastTest(unittest.TestCase):                             # C9
                     accent = "#%02x%02x%02x" % (round(r * 255), round(g * 255), round(b * 255))
                     sc = mp.make_scheme(True, accent)
                     self.assertGreaterEqual(contrast(sc["on_accent"], accent), 4.5, accent)
+
+
+
+class TabKeyTest(WindowTest):                                             # C13
+    def test_tab_leaves_the_song_table(self):
+        p = self.player
+        p.track_table.setCurrentCell(0, 2)
+        self.key(p.track_table, Qt.Key.Key_Tab)
+        self.assertIsNot(QApplication.focusWidget(), p.track_table)
+
+    def test_tab_goes_around_the_whole_window_in_reading_order(self):
+        p = self.player
+        self.focus(p.search)
+        seen = []
+        for _ in range(80):
+            w = QApplication.focusWidget()
+            seen.append(w)
+            QTest.keyClick(w, Qt.Key.Key_Tab)
+            if QApplication.focusWidget() is p.search:
+                break
+        self.assertIs(QApplication.focusWidget(), p.search, "Tab never came back to the search box")
+        for w in (p.tree, p.album_play_btn, p.track_table, p.play_btn, p.next_btn, p.seek, p.volume):
+            self.assertIn(w, seen)
+        # the library, then the page you're on, then the player controls
+        self.assertLess(seen.index(p.tree), seen.index(p.album_play_btn))
+        self.assertLess(seen.index(p.track_table), seen.index(p.prev_btn))
+        self.assertLess(seen.index(p.prev_btn), seen.index(p.play_btn))
+
+    def test_keyboard_focus_is_visible(self):
+        p = self.player
+        for w in (p.play_btn, p.next_btn, p.seg_lib, p.sort_btn, p.album_play_btn, p.album_shuffle_btn,
+                  p.volume, p.track_table, p.tree):
+            self.focus(p.search)
+            before = w.grab().toImage()
+            self.focus(w)
+            after = w.grab().toImage()
+            self.assertNotEqual(before, after, f"no focus mark on {w.objectName() or type(w).__name__}")
 
 
 if __name__ == "__main__":

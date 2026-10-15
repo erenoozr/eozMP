@@ -267,6 +267,12 @@ class QComboBox(QComboBox):
             super().setCurrentText(text)
 
 
+class QTableWidget(QTableWidget):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.setTabKeyNavigation(False)   # Tab goes on to the next control, not from cell to cell (arrows do that)
+
+
 AUDIO_EXTS = {
     ".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".oga", ".opus",
     ".wma", ".aiff", ".aif", ".mp4", ".m4b", ".ape", ".wv", ".mka",
@@ -1203,6 +1209,7 @@ def make_scheme(dark, accent):
               "hover": "#e2e4ea", "border": "#dcdee5",
               "text": "#1c1c1e", "sub": "#6b6b76"}
     sc["accent"] = accent
+    sc["focus"] = accent   # keyboard focus mark; not an accent token, so it stays out of the per-widget accent sheets
     c = QColor(accent)
     sc["on_accent"] = text_on(accent)   # text/icons drawn on the accent
     # hovering moves the accent away from its text colour, so the text stays readable
@@ -1331,6 +1338,12 @@ QTabBar::tab { padding: 8px 16px; background: transparent; color: @sub@; border-
 QTabBar::tab:selected { color: @text@; border-bottom: 2px solid @accent@; }
 QTabBar::tab:hover { color: @text@; }
 QSplitter::handle:horizontal { background: transparent; width: 8px; }
+
+QPushButton:focus { border: 1px solid @focus@; }
+QPushButton#transport:focus, QPushButton#link:focus, QPushButton#seg:focus { border: 1px solid @focus@; border-radius: @r_sm@; }
+QPushButton#primary:focus, QPushButton#play:focus { border: 2px solid @text@; }
+QTreeWidget:focus, QTableWidget:focus, QListWidget:focus, QListWidget#tiles:focus, QWidget#drawer QListWidget:focus { border: 1px solid @focus@; }
+QSlider::handle:horizontal:focus, QSlider::handle:vertical:focus { background: @focus@; }
 """
 
 
@@ -1630,6 +1643,7 @@ def header_qss(sc):
         "QPushButton:hover { background: rgba(255, 255, 255, 64); }"
         f"QPushButton#primary {{ background: {sc['accent']}; color: {sc['on_accent']}; font-weight: 600; }}"
         f"QPushButton#primary:hover {{ background: {sc['accent_hover']}; }}"
+        "QPushButton:focus { border: 2px solid #ffffff; }"
     )
 
 
@@ -2307,6 +2321,7 @@ def lyrics_page_qss(apple, immersive):
             "QPushButton#link { background: transparent; padding: 0px 2px; color: rgba(255, 255, 255, 210);"
             " font-size: 12px; }"
             "QPushButton#link:hover { background: transparent; color: #ffffff; text-decoration: underline; }"
+            "QPushButton:focus { border: 1px solid #ffffff; }"
         )
     return qss
 
@@ -4277,7 +4292,8 @@ class MiniPlayer(QWidget):
             b.setToolTip(tip)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setStyleSheet("QPushButton { background: transparent; border: none; border-radius: 17px; }"
-                            "QPushButton:hover { background: rgba(255, 255, 255, 46); }")
+                            "QPushButton:hover { background: rgba(255, 255, 255, 46); }"
+                            "QPushButton:focus { border: 1px solid rgba(255, 255, 255, 200); }")
         top.addStretch(1)
         top.addWidget(self.heart)
         top.addWidget(self.expand)
@@ -5165,6 +5181,7 @@ class FullPlayer(QWidget):
             f"QPushButton#fsplay {{ background: {sc['accent']}; border-radius: 32px; }}"
             f"QPushButton#fsplay:hover {{ background: {sc['accent_hover']}; }}"
             "QPushButton#fsclose:hover { background: rgba(232, 17, 35, 200); }"
+            "QPushButton:focus { border: 2px solid rgba(255, 255, 255, 200); }"
             + accent_qss(sc)   # no parent window, so it can't inherit the accent widgets' sheets
         )
 
