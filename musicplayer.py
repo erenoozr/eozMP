@@ -1166,10 +1166,11 @@ def embedded_lyrics(path):
     return ""
 
 
+USER_AGENT = f"eozMP/{APP_VERSION} ( https://github.com/erenoozr/eozMP )"   # MusicBrainz wants a contact
+
+
 def http_json(url):
-    req = urllib.request.Request(
-        url, headers={"User-Agent": f"eozMP/{APP_VERSION} (personal music player)"}
-    )
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8", "replace"))
 
@@ -3233,7 +3234,7 @@ def accent_from_pixmap(pix):
 
 
 def http_bytes(url, timeout=15):
-    req = urllib.request.Request(url, headers={"User-Agent": f"eozMP/{APP_VERSION} (personal music player)"})
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
 
@@ -3246,39 +3247,61 @@ def looks_like_image(data):
     return bool(data) and (data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n")
 
 
+EDITION_RE = re.compile(r"\s*(?:[(\[][^()\[\]]*[)\]]|\s-\s.*)\s*$")
+
+
+def same_album(mine, theirs):
+    """Whole titles, give or take an edition: 'Abbey Road' is 'Abbey Road (Remastered)', but '1' is
+    not '1967-1970' (a piece of a title matched before)."""
+    def core(name):
+        name = str(name)
+        while EDITION_RE.search(name) and EDITION_RE.sub("", name).strip():
+            name = EDITION_RE.sub("", name)
+        return _words(name)
+    a, b = _words(mine), _words(theirs)
+    return bool(a) and (a == b or core(mine) == core(theirs))
+
+
 def fetch_cover_bytes(artist, album):
-    """Album art from Apple's iTunes search, falling back to MusicBrainz + Cover Art Archive."""
-    a, b = _norm(artist), _norm(album)
-    if not a or not b:
+    """Album art from Apple's iTunes search, falling back to MusicBrainz + Cover Art Archive.
+    None means they answered and have no cover. When one couldn't be asked (no internet, a service
+    down) and nothing was found, the error is raised, so it isn't remembered as "no cover"."""
+    a = _words(artist)                    # any script: 'Кино' was searched as nothing before
+    if not a or not _words(album):
         return None
+    failed = None
     try:
         url = "https://itunes.apple.com/search?" + urllib.parse.urlencode(
             {"term": f"{artist} {album}", "entity": "album", "limit": 10})
         for r in http_json(url).get("results", []):
-            name = _norm(r.get("collectionName", ""))
-            if a in _norm(r.get("artistName", "")) and (b in name or (name and name in b)):
+            if has_words(_words(r.get("artistName", "")), a) and same_album(album, r.get("collectionName", "")):
                 art = r.get("artworkUrl100", "")
                 if art:
                     data = http_bytes(art.replace("100x100bb", "600x600bb"))
                     if looks_like_image(data):
                         return data
-    except Exception:
-        pass
+    except Exception as e:
+        failed = e
     try:
-        query = f'releasegroup:"{album}" AND artist:"{artist}"'
-        data = http_json("https://musicbrainz.org/ws/2/release-group/?" + urllib.parse.urlencode(
-            {"query": query, "fmt": "json", "limit": 5}))
+        clean = lambda text: re.sub(r'["\\]', " ", text)
+        data = mb_json("release-group/", query=f'releasegroup:"{clean(album)}" AND artist:"{clean(artist)}"', limit=5)
         for rg in data.get("release-groups", []):
-            if int(rg.get("score", 0)) < 80:
+            if int(rg.get("score", 0)) < 80 or not same_album(album, rg.get("title", "")):
                 continue
             try:
                 img = http_bytes(f"https://coverartarchive.org/release-group/{rg['id']}/front-500")
                 if looks_like_image(img):
                     return img
-            except Exception:
-                continue
-    except Exception:
-        pass
+            except urllib.error.HTTPError as e:
+                e.close()
+                if e.code != 404:             # 404: this one has no front cover
+                    failed = failed or e
+            except Exception as e:
+                failed = failed or e
+    except Exception as e:
+        failed = failed or e
+    if failed is not None:
+        raise failed
     return None
 
 
@@ -3294,8 +3317,24 @@ def read_cached_cover(artist, album):
         return None
 
 
+def album_folder(paths):
+    """The folder of these songs if it holds no other songs, so a cover.jpg there is theirs alone."""
+    if not paths:
+        return None
+    folder, mine = os.path.dirname(paths[0]), {norm_path(p) for p in paths}
+    try:
+        with os.scandir(folder) as entries:
+            for e in entries:
+                if os.path.splitext(e.name)[1].lower() in AUDIO_EXTS and norm_path(e.path) not in mine:
+                    return None
+    except OSError:
+        return None
+    return folder
+
+
 def download_cover(artist, album, folder=None):
-    """Runs in a background thread. Saves the cover and returns True if one was found."""
+    """Runs in a background thread. Saves the cover and returns True if one was found, False if
+    there's none; raises when the services couldn't be asked. folder: see album_folder."""
     data = fetch_cover_bytes(artist, album)
     if not data:
         return False
@@ -3321,7 +3360,7 @@ class CoverBatch(QThread):
 
     def __init__(self, jobs, to_folder):
         super().__init__()
-        self.jobs = jobs            # [(key, artist, album, first song path)]
+        self.jobs = jobs            # [(key, artist, album, the album's song paths)]
         self.to_folder = to_folder
         self.missed = []
         self._stop = False
@@ -3332,20 +3371,21 @@ class CoverBatch(QThread):
     def run(self):
         got = 0
         total = len(self.jobs)
-        for i, (key, artist, album, first) in enumerate(self.jobs):
+        for i, (key, artist, album, paths) in enumerate(self.jobs):
             if self._stop:
                 break
+            first = paths[0]
             if embedded_cover(first) or folder_cover(first) or read_cached_cover(artist, album):
                 continue
             self.progress.emit(f"Finding covers {i + 1}/{total}: {artist} - {album}")
             try:
-                ok = download_cover(artist, album, os.path.dirname(first) if self.to_folder else None)
+                ok = download_cover(artist, album, album_folder(paths) if self.to_folder else None)
             except Exception:
-                ok = False
+                ok = None             # no internet or a service down: ask again next time
             if ok:
                 got += 1
                 self.found.emit(key)
-            else:
+            elif ok is False:
                 self.missed.append(f"{artist}|{album}".lower())
             for _ in range(30):   # be polite to the free services: ~3 s per album
                 if self._stop:
@@ -11514,9 +11554,9 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if time.time() - self.stats["cover_misses"].get(miss_key, 0) < 30 * 86400:
             return
         self.cover_fetching.add(key)
-        folder = os.path.dirname(alb["tracks"][0]["path"]) if self.cfg["covers_to_folder"] else None
+        paths, to_folder = [t["path"] for t in alb["tracks"]], bool(self.cfg["covers_to_folder"])
         artist, album = alb["artist"], alb["album"]
-        w = Worker(lambda: download_cover(artist, album, folder))
+        w = Worker(lambda: download_cover(artist, album, album_folder(paths) if to_folder else None))
         w.ok.connect(lambda ok: self.on_cover_fetched(key, miss_key, ok))
         w.fail.connect(lambda _m: self.cover_fetching.discard(key))
         self.keep(w)
@@ -11550,7 +11590,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if self.cover_batch is not None and self.cover_batch.isRunning():
             self.statusBar().showMessage("Already looking for covers...")
             return
-        jobs = [(k, a["artist"], a["album"], a["tracks"][0]["path"]) for k, a in self.albums.items()
+        jobs = [(k, a["artist"], a["album"], [t["path"] for t in a["tracks"]]) for k, a in self.albums.items()
                 if a["album"] != "Unknown Album" and a["artist"] != "Unknown Artist"]
         if not jobs:
             self.statusBar().showMessage("No albums to check.")
