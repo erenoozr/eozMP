@@ -8577,7 +8577,14 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.search_soul_table.cellDoubleClicked.connect(lambda r, _c: self.download_inline_rows([r]))
         self.search_soul_table.hide()
         srv.addWidget(self.search_soul_table)
-        self.stack.addWidget(sr)
+        # artists + albums take ~400 px: the songs keep room for a few rows, and the page scrolls on a
+        # short window instead of making the whole window taller than a laptop screen
+        self.search_songs.setMinimumHeight(220)
+        sr_scroll = QScrollArea()
+        sr_scroll.setWidgetResizable(True)
+        sr_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        sr_scroll.setWidget(sr)
+        self.stack.addWidget(sr_scroll)
 
         # page 10: browse (a genre or a decade)
         br_page = QWidget()

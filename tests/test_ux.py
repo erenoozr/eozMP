@@ -135,5 +135,25 @@ class TickBoxTest(PlayerHarness):
         self.assertGreaterEqual(strongest(True), 3.0)
 
 
+
+class SmallScreenTest(PlayerHarness):
+    def test_the_window_fits_a_laptop_screen(self):
+        """1366 x 768, or 1920 x 1080 at 150 %, leave about 700 px of height (eozMP's own default size)."""
+        self.make_player(["One"])
+        self.assertLessEqual(self.player.minimumSizeHint().height(), 700)
+
+    def test_search_results_show_several_songs(self):
+        self.make_player([f"Song {i}" for i in range(1, 9)])
+        p = self.player
+        p.resize(1100, 700)
+        p.show()
+        p.search.setText("unknown")       # the artist, the album and every song match
+        table = p.search_songs
+        self.assertTrue(wait_for(lambda: table.rowCount() == 8 and table.isVisible(), 5))
+        self.assertTrue(p.search_sections["artists"][1].isVisible() and p.search_sections["albums"][1].isVisible())
+        wait_for(lambda: False, 0.3)
+        self.assertGreaterEqual(table.viewport().height() // table.rowHeight(0), 5)
+
+
 if __name__ == "__main__":
     unittest.main()
