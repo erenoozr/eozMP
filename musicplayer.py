@@ -11790,7 +11790,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         year_start = time.mktime((time.localtime().tm_year, 1, 1, 0, 0, 0, 0, 0, -1))
         since = {"Last 7 days": now - 7 * 86400, "Last 30 days": now - 30 * 86400,
                  "This year": year_start}.get(self.stats_period.currentText(), 0)
-        info = {p: (t["title"], t["artist"], t["album"]) for p, (t, _k) in self.track_by_path.items()}
+        info = {p: (t["title"], song_artist(t), t["album"]) for p, (t, _k) in self.track_by_path.items()}
         st = summarize_stats(self.stats, info, since)
         secs = st["seconds"]
         self.stat_cards["time"].setText(f"{secs / 3600:.1f} h" if secs >= 3600 else f"{int(secs // 60)} min")
