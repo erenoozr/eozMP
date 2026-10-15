@@ -1903,25 +1903,30 @@ class FrameDelegate(QStyledItemDelegate):
             self._row_shape(painter, option, index, fill=QColor(self.hover_fn()))
         playing = self._is_playing_row(index)
         bars = playing and index.column() == 0 and getattr(self.view, "number_col", False)
-        if playing:
-            accent = QColor(self.color_fn())
-            opt.palette.setColor(QPalette.ColorRole.Text, accent)
-            opt.palette.setColor(QPalette.ColorRole.WindowText, accent)
+        ink = None
+        if selected:
+            # the table fills a selected row with the accent; the playing song's accent text vanished on it
+            ink = option.palette.color(QPalette.ColorRole.HighlightedText)
+        elif playing:
+            ink = QColor(self.color_fn())
+        if ink is not None:
+            opt.palette.setColor(QPalette.ColorRole.Text, ink)
+            opt.palette.setColor(QPalette.ColorRole.WindowText, ink)
         self._hide_text = bars
         super().paint(painter, opt, index)
         self._hide_text = False
         if bars:
-            self._draw_bars(painter, option.rect)
+            self._draw_bars(painter, option.rect, ink)
         if not selected:
             return
         self._row_shape(painter, option, index, fill=None)
 
-    def _draw_bars(self, painter, rect):
+    def _draw_bars(self, painter, rect, color=None):
         phase = self.phase_fn() if self.phase_fn else 0.0
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(self.color_fn()))
+        painter.setBrush(QColor(color or self.color_fn()))
         h = rect.height() * 0.5
         x = rect.left() + max(4, (rect.width() - 16) / 2)
         base = rect.top() + (rect.height() + h) / 2
