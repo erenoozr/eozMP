@@ -8696,16 +8696,18 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
 
     def build_menu(self):
         lib = self.menuBar().addMenu("&Library")
-        for text, fn in (
-            ("Add music folder...", self.add_folder),
-            ("Rescan library", self.rescan),
-            ("Remove all folders", self.clear_folders),
-            ("Find missing covers online", self.start_cover_batch),
-            ("Organize downloads now", self.organize_now),
-            ("Back up eozMP...", self.backup_data),
-            ("Restore from backup...", self.restore_data),
+        for text, fn, key in (
+            ("Add music folder...", self.add_folder, "Ctrl+O"),
+            ("Rescan library", self.rescan, "F5"),
+            ("Remove all folders", self.clear_folders, ""),
+            ("Find missing covers online", self.start_cover_batch, ""),
+            ("Organize downloads now", self.organize_now, ""),
+            ("Back up eozMP...", self.backup_data, ""),
+            ("Restore from backup...", self.restore_data, ""),
         ):
             act = QAction(text, self)
+            if key:
+                act.setShortcut(key)
             act.triggered.connect(fn)
             lib.addAction(act)
 

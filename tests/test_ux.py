@@ -92,5 +92,21 @@ class BrowseHeadingsTest(PlayerHarness):
             self.assertNotEqual(h.font().bold(), rows[0].font().bold())
 
 
+class MenuShortcutTest(PlayerHarness):
+    def test_library_menu_has_shortcuts_and_none_clash(self):
+        self.make_player(["One"])
+        p = self.player
+        lib = p.menuBar().actions()[0].menu()
+        keys = {a.text().replace("&", ""): a.shortcut().toString() for a in lib.actions()}
+        self.assertEqual(keys["Add music folder..."], "Ctrl+O")
+        self.assertEqual(keys["Rescan library"], "F5")
+        seen = {}
+        for a in p.findChildren(mp.QAction):
+            k = a.shortcut().toString()
+            if k:
+                self.assertNotIn(k, seen, f"{k}: {a.text()} and {seen.get(k)}")
+                seen[k] = a.text()
+
+
 if __name__ == "__main__":
     unittest.main()
