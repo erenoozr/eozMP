@@ -6998,7 +6998,7 @@ button{background:#26262d;color:var(--fg);border:0;border-radius:50%;width:58px;
 <div class="row">&#128264;<input id="vol" type="range" min="0" max="100"></div>
 <button id="phone" onclick="phoneMode()">Listen on this phone</button>
 <script>
-let st={},phone=false,lastId=null,seeking=false;const a=new Audio();
+let st={},phone=false,lastId=null,seeking=false,unmuting=false;const a=new Audio();
 const $=id=>document.getElementById(id);
 const fmt=ms=>{ms=Math.max(0,ms|0);const s=Math.floor(ms/1000);return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
 function cmd(d,v){return fetch('api/cmd?do='+d+(v!==undefined?'&value='+encodeURIComponent(v):'')).then(poll)}
@@ -7006,6 +7006,7 @@ async function poll(){try{const r=await fetch('api/state');st=await r.json();ren
 function render(){
  $('title').textContent=st.title||'Nothing playing';$('artist').textContent=st.artist?st.artist+' \\u00b7 '+st.album:'';
  $('line').textContent=st.line||'';$('fav').innerHTML=st.fav?'&#9829;':'&#9825;';
+ if(st.silent==='phone'&&!phone&&!unmuting){unmuting=true;cmd('mute',0).then(()=>unmuting=false)}
  if(st.id!==lastId){lastId=st.id;$('cover').src='cover?v='+st.id;if(phone)load()}
  const playing=phone?!a.paused:st.playing;$('play').innerHTML=playing?'&#10074;&#10074;':'&#9654;';
  $('seek').max=st.dur||1;if(!seeking){$('seek').value=phone?a.currentTime*1000:st.pos}
@@ -7016,7 +7017,6 @@ function toggle(){cmd('toggle');if(phone){if(a.paused)a.play();else a.pause()}}
 function phoneMode(){phone=!phone;$('phone').classList.toggle('on',phone);
  $('phone').textContent=phone?'Listening on this phone - tap to stop':'Listen on this phone';
  cmd('mute',phone?1:0);if(phone)load();else a.pause()}
-a.onended=()=>cmd('next');
 $('seek').oninput=()=>seeking=true;
 $('seek').onchange=()=>{seeking=false;const v=$('seek').value;cmd('seek',v);if(phone)a.currentTime=v/1000};
 $('vol').onchange=()=>cmd('vol',$('vol').value);
@@ -7035,12 +7035,14 @@ class RemoteServer(QObject):
         self.state, self.cover, self.files = {}, b"", {}
         self.httpd = None
         self.last_poll = 0.0       # when a phone last asked for the state
+        self.slots = threading.BoundedSemaphore(24)      # at most this many requests at once
 
     def start(self):
         owner = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
+            timeout = 20          # a connection that says nothing is dropped, not kept for ever
 
             def log_message(self, *a):
                 pass
@@ -7074,6 +7076,15 @@ class RemoteServer(QObject):
             req.wfile.write(body)
 
     def handle(self, req, head):
+        if not self.slots.acquire(blocking=False):
+            req.close_connection = True
+            return self.reply(req, 503, b"busy", "text/plain", head)
+        try:
+            self.handle_request(req, head)
+        finally:
+            self.slots.release()
+
+    def handle_request(self, req, head):
         try:
             path, _, query = req.path.partition("?")
             parts = path.strip("/").split("/")
@@ -7102,7 +7113,7 @@ class RemoteServer(QObject):
     def send_file(self, req, path, head):
         size = os.path.getsize(path)
         start, end, code = 0, size - 1, 200
-        m = re.match(r"bytes=(\d*)-(\d*)", req.headers.get("Range") or "")
+        m = re.fullmatch(r"bytes=(\d{0,15})-(\d{0,15})", (req.headers.get("Range") or "").strip())
         if m and (m.group(1) or m.group(2)):
             if m.group(1):
                 start = int(m.group(1))
@@ -7110,6 +7121,12 @@ class RemoteServer(QObject):
             else:
                 start = max(0, size - int(m.group(2)))
             end, code = min(end, size - 1), 206
+            if start > end or start >= size:
+                req.send_response(416)
+                req.send_header("Content-Range", f"bytes */{size}")
+                req.send_header("Content-Length", "0")
+                req.end_headers()
+                return
         req.send_response(code)
         req.send_header("Content-Type", AUDIO_MIME.get(os.path.splitext(path)[1].lower(), "application/octet-stream"))
         req.send_header("Accept-Ranges", "bytes")
@@ -7172,7 +7189,9 @@ def dlna_discover(seconds=3.0):
                 continue
             m = re.search(rb"(?im)^location:\s*(\S+)", data)
             if m:
-                locations.add(m.group(1).decode("utf-8", "replace"))
+                loc = m.group(1).decode("utf-8", "replace")
+                if device_url_ok(loc, _addr[0]):       # not file:// or a server somewhere else
+                    locations.add(loc)
     finally:
         sock.close()
     devices = []
@@ -7184,9 +7203,20 @@ def dlna_discover(seconds=3.0):
     return [d for d in devices if d.get("av")]
 
 
+def device_url_ok(url, host=None):
+    """Only plain http(s) pages, and (when given) only on the device's own address."""
+    try:
+        u = urllib.parse.urlparse(url)
+        return u.scheme in ("http", "https") and bool(u.hostname) and (host is None or u.hostname == host)
+    except ValueError:
+        return False
+
+
 def dlna_describe(location):
+    if not device_url_ok(location):
+        raise ValueError("not an http address")
     with urllib.request.urlopen(location, timeout=4) as r:
-        root = ET.fromstring(r.read())
+        root = ET.fromstring(r.read(1000000))
 
     def text(el, name):
         for c in el.iter():
@@ -7198,10 +7228,13 @@ def dlna_describe(location):
     for svc in root.iter():
         if svc.tag.endswith("service"):
             kind, ctrl = text(svc, "serviceType"), text(svc, "controlURL")
+            url = urllib.parse.urljoin(location, ctrl)
+            if not device_url_ok(url, urllib.parse.urlparse(location).hostname):
+                continue                       # the device sent us to some other machine
             if "AVTransport" in kind:
-                dev["av"] = urllib.parse.urljoin(location, ctrl)
+                dev["av"] = url
             elif "RenderingControl" in kind:
-                dev["rc"] = urllib.parse.urljoin(location, ctrl)
+                dev["rc"] = url
     return dev
 
 
@@ -7576,6 +7609,12 @@ class RemoteDialog(QDialog):
         self.refresh()
 
     def toggle(self, on):
+        if not on and self.main.cast:
+            self.on.blockSignals(True)
+            self.on.setChecked(True)
+            self.on.blockSignals(False)
+            self.main.statusBar().showMessage("The remote is needed while you play on a TV. Stop casting first.", 6000)
+            return
         self.main.set_remote(on)
         self.refresh()
 
@@ -7618,7 +7657,8 @@ class CastDialog(QDialog):
         row.addWidget(close)
         v.addLayout(row)
         note = QLabel("Works with smart TVs, Sonos and other speakers that support DLNA / UPnP. eozMP keeps "
-                      "playing silently here so the queue, lyrics and stats stay in step.")
+                      "playing silently here so the queue, lyrics and stats stay in step. The first time, Windows "
+                      "may ask whether eozMP may use the network - click Allow, or the TV can't fetch the song.")
         note.setWordWrap(True)
         note.setObjectName("sub")
         v.addWidget(note)
@@ -7818,6 +7858,11 @@ class TagFixDialog(QDialog):
         self.accept()
 
 
+class CastNotes(QObject):
+    """Lets the casting thread tell the window that the TV refused something."""
+    failed = pyqtSignal(str, str)      # the device's address, what went wrong
+
+
 class Extras2Mixin:
     """Phone remote, casting, Windows media controls, Last.fm, tag fixing and better-copy upgrades."""
     # defaults, because a resumed song can start before __init__ reaches init_extras2()
@@ -7825,6 +7870,7 @@ class Extras2Mixin:
     listen_started = 0.0
     silent_for = ""          # "cast" / "phone": the PC keeps time silently while they play
     _mute_before = False
+    remote_temp = False      # the remote server was started only for casting
 
     def go_silent(self, why):
         """The music plays somewhere else; mute the PC (and remember how it was)."""
@@ -7849,6 +7895,8 @@ class Extras2Mixin:
         self._cast_pool = None
         self.smtc = None
         self.listen_started = time.time()
+        self.cast_notes = CastNotes(self)
+        self.cast_notes.failed.connect(self.on_cast_failed)
         self.remote_timer = QTimer(self)
         self.remote_timer.setInterval(700)
         self.remote_timer.timeout.connect(self.update_remote_state)
@@ -7940,7 +7988,8 @@ class Extras2Mixin:
             self.toggle_play()
 
     # ----- phone remote
-    def set_remote(self, on):
+    def set_remote(self, on, persist=True):
+        """persist=False: casting needs the server for a while, but it is not the user's choice to keep it."""
         if on and self.remote is None:
             if not self.cfg["remote_token"]:
                 self.cfg["remote_token"] = uuid.uuid4().hex[:16]
@@ -7952,15 +8001,21 @@ class Extras2Mixin:
                 return
             srv.command.connect(self.on_remote_command)
             self.remote = srv
+            self.remote_temp = not persist
             self.remote_timer.start()
             if 0 <= self.index < len(self.queue):
                 self.on_track_started(*self.queue[self.index])
+        elif on and persist:
+            self.remote_temp = False
         elif not on and self.remote is not None and not self.cast:
             self.remote.stop()
             self.remote = None
+            self.remote_temp = False
             self.remote_timer.stop()
-        self.cfg["remote_on"] = self.remote is not None
-        save_config(self.cfg)
+            self.end_silent("phone")          # the phone can't be listening to a server that is off
+        if persist:
+            self.cfg["remote_on"] = self.remote is not None and not self.remote_temp
+            save_config(self.cfg)
 
     def update_remote_state(self):
         if self.remote is None:
@@ -7976,7 +8031,7 @@ class Extras2Mixin:
             "title": t["title"] if t else "", "artist": song_artist(t) if t else "", "album": t["album"] if t else "",
             "playing": self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState,
             "pos": int(self.player.position()), "dur": int(self.seek.maximum()), "vol": self.volume.value(),
-            "line": line, "fav": bool(t) and t["path"] in self.fav_set}
+            "line": line, "fav": bool(t) and t["path"] in self.fav_set, "silent": self.silent_for}
 
     def on_remote_command(self, do, value):
         try:
@@ -7987,9 +8042,13 @@ class Extras2Mixin:
             elif do == "prev":
                 self.prev_track()
             elif do == "seek":
-                self.player.setPosition(int(float(value)))
+                v = float(value)
+                if math.isfinite(v):
+                    self.player.setPosition(int(min(max(v, 0), 1e10)))
             elif do == "vol":
-                self.volume.setValue(int(float(value)))
+                v = float(value)
+                if math.isfinite(v):
+                    self.volume.setValue(int(min(max(v, 0), 100)))
             elif do == "fav":
                 self.toggle_favorite_current()
             elif do == "mute":            # "listen on this phone": the PC keeps time silently
@@ -7999,7 +8058,7 @@ class Extras2Mixin:
                     self.go_silent("phone")
                 else:
                     self.end_silent("phone")
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
         self.update_remote_state()
 
@@ -8007,7 +8066,7 @@ class Extras2Mixin:
     def start_cast(self, device):
         from concurrent.futures import ThreadPoolExecutor
         if self.remote is None:
-            self.set_remote(True)
+            self.set_remote(True, persist=False)
             if self.remote is None:
                 return
         if self.cast:
@@ -8020,25 +8079,39 @@ class Extras2Mixin:
             self.on_track_started(*self.queue[self.index])
         self.statusBar().showMessage(_t(f"Playing on {device['name']}"), 8000)
 
-    def stop_cast(self):
+    def stop_cast(self, send_stop=True, message="Stopped casting - playing on this PC again."):
         if not self.cast:
             return
-        self.cast_send("AVTransport", "Stop", [("InstanceID", 0)])
+        if send_stop:
+            self.cast_send("AVTransport", "Stop", [("InstanceID", 0)])
         self.cast = None
         self.end_silent("cast")
-        self.statusBar().showMessage(_t("Stopped casting - playing on this PC again."), 6000)
+        if self.remote_temp:               # the server was only there for the TV
+            self.set_remote(False, persist=False)
+        self.statusBar().showMessage(_t(message), 8000)
+
+    def on_cast_failed(self, location, why):
+        """The TV refused the song or can't be reached: don't leave the PC silent with nothing playing."""
+        if self.cast and self.cast["location"] == location:
+            name = self.cast["name"]
+            self.stop_cast(send_stop=False, message=f"Couldn't play on {name} ({why}). Playing on this PC again.")
 
     def cast_send(self, service, action, args):
         dev = self.cast
         if not dev or self._cast_pool is None:
             return
         url = dev["av"] if service == "AVTransport" else dev["rc"]
+        if not url:
+            return
+        critical = action in ("SetAVTransportURI", "Play")
+        notes, where = self.cast_notes, dev["location"]
 
         def run():
             try:
                 dlna_soap(url, service, action, args)
-            except Exception:
-                pass
+            except Exception as e:
+                if critical:
+                    notes.failed.emit(where, str(e)[:120])
         self._cast_pool.submit(run)
 
     def cast_load(self, track, fid):
@@ -8052,14 +8125,28 @@ class Extras2Mixin:
                        [("InstanceID", 0), ("CurrentURI", url), ("CurrentURIMetaData", meta)])
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.cast_send("AVTransport", "Play", [("InstanceID", 0), ("Speed", 1)])
+        pos = int(self.player.position())
+        if pos > 1500:                     # started in the middle of a song: the TV joins at the same place
+            self.cast_send("AVTransport", "Seek", [("InstanceID", 0), ("Unit", "REL_TIME"), ("Target", hms(pos))])
+
+    def cast_volume(self, value):
+        """The volume slider also sets the TV's own volume (the PC itself is silent)."""
+        if not (self.cast and self.cast.get("rc")):
+            return
+        if not hasattr(self, "_cast_vol_timer"):
+            self._cast_vol_timer = QTimer(self)
+            self._cast_vol_timer.setSingleShot(True)
+            self._cast_vol_timer.timeout.connect(lambda: self.cast_send(
+                "RenderingControl", "SetVolume",
+                [("InstanceID", 0), ("Channel", "Master"), ("DesiredVolume", self.volume.value())]))
+        self._cast_vol_timer.start(300)
 
     def cast_watch_position(self, pos):
         """Mirror seeks (a jump in position) to the TV."""
         if not self.cast:
             return
         prev, self._cast_prev = self._cast_prev, pos
-        # (a jump back to ~0 is just the next song starting; the TV gets that song separately)
-        if prev is not None and pos > 1500 and (pos - prev > 3000 or pos < prev - 1500):
+        if prev is not None and (pos - prev > 3000 or pos < prev - 1500):
             self.cast_send("AVTransport", "Seek", [("InstanceID", 0), ("Unit", "REL_TIME"), ("Target", hms(pos))])
 
     # ----- Last.fm
@@ -10085,6 +10172,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if value and self.audio.isMuted() and not self.silent_for:
             self.audio.setMuted(False)
         self.update_mute_icon()
+        self.cast_volume(value)
 
     def toggle_mute(self):
         if self.silent_for:      # the music plays on a TV / phone; this PC must stay quiet

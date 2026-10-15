@@ -8,7 +8,9 @@ from pathlib import Path
 from unittest import mock
 
 from test_core import TempDirTest, mp
+from test_mpv_engine import wait_for
 from test_player import PlayerHarness
+from test_silent_and_duplicates import FakeTV, free_port
 
 
 class FakeBar:
@@ -150,6 +152,108 @@ class TagFixDefaultsTest(PlayerHarness):
         self.assertFalse(buttons["Apply to ticked songs"].autoDefault())
         self.assertTrue(buttons["Cancel"].isDefault())
         dlg.deleteLater()
+
+
+class CastTest(PlayerHarness):
+    def setUp(self):
+        super().setUp()
+        self.make_player(["One", "Two"], seconds=5.0, remote_port=free_port())
+        self.p = self.player
+        self.tv = FakeTV()
+        self.addCleanup(self.tv.close)
+        self.addCleanup(lambda: self.p.set_remote(False))
+
+    def test_a_tv_that_refuses_gives_the_pc_its_sound_back(self):               # B23, U4
+        bad = FakeTV(fail=True)
+        self.addCleanup(bad.close)
+        self.p.play_from_library(0)
+        self.p.start_cast(bad.device)
+        self.assertTrue(self.p.audio.isMuted())
+        self.assertTrue(wait_for(lambda: self.p.cast is None, 5))
+        self.assertFalse(self.p.audio.isMuted())
+        self.assertIn("Couldn't play", self.p.statusBar().currentMessage())
+
+    def test_casting_does_not_leave_the_remote_on(self):                         # S7, U5
+        p = self.p
+        p.start_cast(self.tv.device)
+        self.assertIsNotNone(p.remote)
+        self.assertFalse(json.loads(mp.CONFIG_FILE.read_text(encoding="utf-8"))["remote_on"])
+        p.stop_cast()
+        self.assertIsNone(p.remote)
+        self.assertFalse(p.cfg["remote_on"])
+
+    def test_a_remote_you_turned_on_stays_after_casting(self):
+        p = self.p
+        p.set_remote(True)
+        p.start_cast(self.tv.device)
+        p.stop_cast()
+        self.assertIsNotNone(p.remote)
+        self.assertTrue(p.cfg["remote_on"])
+
+    def test_switching_the_remote_off_ends_phone_listening(self):                # B20
+        p = self.p
+        p.set_remote(True)
+        p.on_remote_command("mute", "1")
+        self.assertTrue(p.audio.isMuted())
+        p.set_remote(False)
+        self.assertFalse(p.audio.isMuted())
+
+    def test_the_tv_joins_a_song_in_the_middle(self):                            # B21
+        p = self.p
+        p.start_cast(self.tv.device)
+        p.player.position = lambda: 4000
+        track, _key = p.queue[0]
+        p.cast_load(track, "id")
+        self.assertTrue(wait_for(lambda: "Seek" in self.tv.actions, 3))
+
+    def test_the_volume_slider_reaches_the_tv(self):                             # U6
+        p = self.p
+        p.start_cast(self.tv.device)
+        p.volume.setValue(33)
+        self.assertTrue(wait_for(lambda: "SetVolume" in self.tv.actions, 3))
+
+    def test_odd_numbers_from_the_network_do_not_crash(self):                    # S6
+        p = self.p
+        for do, value in (("seek", "1e400"), ("seek", "nan"), ("vol", "1e30"), ("vol", "-inf"), ("seek", "x")):
+            p.on_remote_command(do, value)
+        p.on_remote_command("vol", "1e30")
+        self.assertEqual(p.volume.value(), 100)
+
+    def test_the_phone_page_does_not_skip_songs_itself(self):                    # B3
+        self.assertNotIn("onended", mp.REMOTE_PAGE)
+
+    def test_only_http_addresses_of_the_device_itself_are_trusted(self):         # S3
+        self.assertTrue(mp.device_url_ok("http://192.168.1.5:49152/d.xml", "192.168.1.5"))
+        self.assertFalse(mp.device_url_ok("file:///C:/Windows/win.ini"))
+        self.assertFalse(mp.device_url_ok("http://192.168.1.66/d.xml", "192.168.1.5"))
+        self.assertFalse(mp.device_url_ok("//192.168.1.66/share/x", "192.168.1.66"))
+
+
+class RemoteServerTest(TempDirTest):
+    def request(self, port, path, headers=None):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request("GET", path, headers=headers or {})
+        r = c.getresponse()
+        body = r.read()
+        c.close()
+        return r.status, body
+
+    def test_bad_ranges_get_an_answer(self):                                     # S8
+        song = self.tmp / "s.mp3"
+        song.write_bytes(b"x" * 1000)
+        port = free_port()
+        srv = mp.RemoteServer("tok", port)
+        srv.files["abc"] = str(song)
+        srv.start()
+        self.addCleanup(srv.stop)
+        url = "/tok/stream/abc.mp3"
+        self.assertEqual(self.request(port, url, {"Range": "bytes=10-5"})[0], 416)
+        self.assertEqual(self.request(port, url, {"Range": "bytes=5000-"})[0], 416)
+        self.assertEqual(self.request(port, url, {"Range": "bytes=" + "9" * 5000 + "-"})[0], 200)
+        status, body = self.request(port, url, {"Range": "bytes=10-19"})
+        self.assertEqual((status, len(body)), (206, 10))
+        self.assertEqual(self.request(port, url)[0], 200)
 
 
 if __name__ == "__main__":

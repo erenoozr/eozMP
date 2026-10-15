@@ -18,16 +18,49 @@ def free_port():
         return s.getsockname()[1]
 
 
+class FakeTV:
+    """Answers every UPnP request with OK (or with an error) and remembers what it was asked."""
+
+    def __init__(self, fail=False):
+        import http.server
+        import threading
+        self.actions = []
+        outer = self
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                outer.actions.append(self.headers.get("SOAPACTION", "").strip('"').split("#")[-1])
+                self.send_response(500 if fail else 200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        port = self.httpd.server_address[1]
+        self.device = {"name": "Fake TV", "location": f"http://127.0.0.1:{port}/d.xml",
+                       "av": f"http://127.0.0.1:{port}/av", "rc": f"http://127.0.0.1:{port}/rc"}
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
 class SilentWhileElsewhereTest(PlayerHarness):
     def setUp(self):
         super().setUp()
         self.make_player(["One"], remote_port=free_port())
         self.p = self.player
+        self.tv = FakeTV()
+        self.addCleanup(self.tv.close)
         self.assertFalse(self.p.audio.isMuted())
 
     def test_casting_keeps_the_pc_silent_until_it_stops(self):
         p = self.p
-        p.start_cast({"name": "Nowhere", "location": "x", "av": "http://127.0.0.1:9/av", "rc": ""})
+        p.start_cast(self.tv.device)
         self.assertTrue(p.audio.isMuted())
         p.volume.setValue(40)                    # moving the volume must not un-mute the PC
         p.toggle_mute()                          # neither may the mute button
@@ -50,7 +83,7 @@ class SilentWhileElsewhereTest(PlayerHarness):
     def test_a_muted_pc_stays_muted_after_casting(self):
         p = self.p
         p.toggle_mute()
-        p.start_cast({"name": "Nowhere", "location": "x", "av": "http://127.0.0.1:9/av", "rc": ""})
+        p.start_cast(self.tv.device)
         p.stop_cast()
         self.assertTrue(p.audio.isMuted())
         p.set_remote(False)
