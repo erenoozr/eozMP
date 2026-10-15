@@ -530,14 +530,57 @@ def main_artist(name, split_collabs=True, keep=()):
     return name or "Unknown Artist"
 
 
-def first(tags, key):
-    try:
-        val = tags.get(key)
-        if val:
-            return str(val[0]).strip()
-    except Exception:
-        pass
-    return ""
+VARIOUS_ARTISTS = "Various Artists"
+
+
+def artist_name(raw, group=True, split=True, keep=()):
+    """The library's name for an artist tag, following the grouping settings."""
+    return main_artist(raw, split, keep) if group else (raw.strip() or "Unknown Artist")
+
+
+def song_artist(t):
+    """Who sings the song; t["artist"] is whose album it is ("Various Artists" on a compilation)."""
+    return t.get("track_artist") or t["artist"]
+
+
+def assign_artists(tracks, group=True, split=True, keep=()):
+    """Sets every song's track_artist (who sings it: shown with the song, used for lyrics) and artist
+    (whose album it is: the library tree, covers) from its tags and the grouping settings. The album
+    artist is the ALBUMARTIST tag. Without it, the songs of one album in one folder stay together
+    under the artist of most of them, or "Various Artists", so a soundtrack or a compilation isn't
+    split into one album per singer."""
+    albums = {}
+    for t in tracks:
+        raw = t.get("artist_raw")
+        if raw is None:                   # a song made up without tags (tests)
+            t.setdefault("track_artist", t["artist"])
+            continue
+        album_raw = (t.get("album_artist_raw") or "").strip()
+        t["track_artist"] = artist_name(raw or album_raw, group, split, keep)
+        t["artist"] = artist_name(album_raw, group, split, keep) if album_raw else t["track_artist"]
+        if t["album"] != "Unknown Album":
+            albums.setdefault((os.path.dirname(t["path"]), t["album"].lower()), []).append(t)
+    for songs in albums.values():
+        loose = [t for t in songs if not (t.get("album_artist_raw") or "").strip()]
+        if not loose or len({t["artist"].lower() for t in songs}) < 2:
+            continue
+        owners = {}
+        if any(owners.setdefault((t["disc"], t["num"]), t["artist"].lower()) != t["artist"].lower()
+               for t in songs if t["num"] != 9999):
+            continue                      # two albums of the same name ('Greatest Hits'): their numbers clash
+        tagged = Counter(t["artist"] for t in songs if (t.get("album_artist_raw") or "").strip())
+        if tagged:
+            name = tagged.most_common(1)[0][0]
+        else:
+            spelled, mains = {}, Counter()
+            for t in loose:               # 'Drake' and 'Drake feat. X' count as the same artist here
+                main = main_artist(t["artist_raw"], split, keep)
+                spelled.setdefault(main.lower(), main)
+                mains[main.lower()] += 1
+            top, n = mains.most_common(1)[0]
+            name = spelled[top] if n * 2 > len(loose) else VARIOUS_ARTISTS
+        for t in loose:
+            t["artist"] = name
 
 
 def to_int(text, default=9999):
@@ -547,35 +590,314 @@ def to_int(text, default=9999):
         return default
 
 
+YEAR_IN_DATE_RE = re.compile(r"(?<!\d)(\d{4})(?:\d{4})?(?!\d)")
+
+
+def tag_year(text):
+    """'2019-05-03', '05/03/2019', '20190503' -> 2019 (taking the first four characters gave 5)."""
+    m = YEAR_IN_DATE_RE.search(str(text or ""))
+    return int(m.group(1)) if m else 0
+
+
+def decode_text(data):
+    """Text whose encoding nobody wrote down (lyrics files, old tags): a BOM if there is one, then
+    UTF-8, then Turkish Windows (cp1254, which reads plain Western text right too)."""
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data[3:].decode("utf-8", "replace")
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", "replace")
+    if len(data) >= 4 and data.count(0) * 3 > len(data):     # UTF-16 without a BOM: every other byte is 0
+        return data.decode("utf-16-be" if data[0::2].count(0) > data[1::2].count(0) else "utf-16-le", "replace")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("cp1254", "replace")
+
+
+# Where each tag format keeps what read_track wants; the first key that's there wins.
+TAG_KEYS = {
+    "id3": {"title": ("TIT2",), "artist": ("TPE1",), "albumartist": ("TPE2", "TXXX:ALBUM ARTIST", "TXXX:ALBUMARTIST"),
+            "album": ("TALB",), "genre": ("TCON",), "tracknumber": ("TRCK",), "discnumber": ("TPOS",),
+            "date": ("TDRC", "TDOR"), "bpm": ("TBPM",)},
+    "mp4": {"title": ("\xa9nam",), "artist": ("\xa9ART",), "albumartist": ("aART",), "album": ("\xa9alb",),
+            "genre": ("\xa9gen",), "tracknumber": ("trkn",), "discnumber": ("disk",), "date": ("\xa9day",),
+            "bpm": ("tmpo",)},
+    "asf": {"title": ("Title",), "artist": ("Author",), "albumartist": ("WM/AlbumArtist",),
+            "album": ("WM/AlbumTitle",), "genre": ("WM/Genre",), "tracknumber": ("WM/TrackNumber",),
+            "discnumber": ("WM/PartOfSet",), "date": ("WM/Year", "WM/OriginalReleaseYear"),
+            "bpm": ("WM/BeatsPerMinute",)},
+    "ape": {"title": ("Title",), "artist": ("Artist",), "albumartist": ("Album Artist", "AlbumArtist", "Album_Artist"),
+            "album": ("Album",), "genre": ("Genre",), "tracknumber": ("Track",), "discnumber": ("Disc", "DiscNumber"),
+            "date": ("Year", "Date"), "bpm": ("BPM",)},
+    "vorbis": {"title": ("title",), "artist": ("artist",),
+               "albumartist": ("albumartist", "album artist", "album_artist"), "album": ("album",),
+               "genre": ("genre",), "tracknumber": ("tracknumber", "track"), "discnumber": ("discnumber", "disc"),
+               "date": ("date", "year", "originaldate"), "bpm": ("bpm",)},
+    "riff": {"title": ("INAM",), "artist": ("IART",), "album": ("IPRD",), "genre": ("IGNR",),
+             "tracknumber": ("ITRK", "IPRT"), "date": ("ICRD",)},
+}
+
+
+def tag_kind(tags):
+    from mutagen._vorbis import VComment
+    from mutagen.apev2 import APEv2
+    from mutagen.asf import ASFTags
+    from mutagen.id3 import ID3
+    from mutagen.mp4 import MP4Tags
+    for cls, kind in ((ID3, "id3"), (MP4Tags, "mp4"), (ASFTags, "asf"), (APEv2, "ape"), (VComment, "vorbis")):
+        if isinstance(tags, cls):
+            return kind
+    return None
+
+
+def tag_text(value):
+    """The first text in a tag value, whatever the format wraps it in."""
+    if hasattr(value, "genres"):         # ID3 genre: '(17)' -> 'Rock'
+        value = value.genres
+    elif hasattr(value, "text"):         # other ID3 frames
+        value = value.text
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
+        if isinstance(value, tuple):     # MP4 track and disc numbers: (3, 12)
+            value = value[0] if value else ""
+    return str(value).split("\0")[0].strip() if value is not None else ""
+
+
+def riff_info(path):
+    """The LIST/INFO tags of a WAV file (INAM, IART...), which Windows and many rippers write and
+    mutagen doesn't read."""
+    names = {key: name for name, keys in TAG_KEYS["riff"].items() for key in keys}
+    out = {}
+    with open(path, "rb") as f:
+        head = f.read(12)
+        if head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+            return out
+        while True:
+            chunk = f.read(8)
+            if len(chunk) < 8:
+                break
+            size, start = int.from_bytes(chunk[4:], "little"), f.tell()
+            if chunk[:4] == b"LIST" and size >= 4 and f.read(4) == b"INFO":
+                body, pos = f.read(min(size - 4, 1 << 20)), 0
+                while pos + 8 <= len(body):
+                    key, n = body[pos:pos + 4].decode("latin-1"), int.from_bytes(body[pos + 4:pos + 8], "little")
+                    text = decode_text(body[pos + 8:pos + 8 + n].split(b"\0")[0]).strip()
+                    if key in names and text:
+                        out.setdefault(names[key], text)
+                    pos += 8 + n + (n & 1)
+            f.seek(start + size + (size & 1))
+    return out
+
+
+# Matroska element ids, marker bits included (as they're stored)
+MKV_SEGMENT, MKV_SEEKHEAD, MKV_SEEK, MKV_SEEK_ID, MKV_SEEK_POS = 0x18538067, 0x114D9B74, 0x4DBB, 0x53AB, 0x53AC
+MKV_INFO, MKV_SCALE, MKV_DURATION, MKV_TITLE, MKV_CLUSTER = 0x1549A966, 0x2AD7B1, 0x4489, 0x7BA9, 0x1F43B675
+MKV_TAGS, MKV_TAG, MKV_TARGETS, MKV_LEVEL, MKV_SIMPLE, MKV_NAME, MKV_STRING = (
+    0x1254C367, 0x7373, 0x63C0, 0x68CA, 0x67C8, 0x45A3, 0x4487)
+MKV_ATTACHMENTS, MKV_FILE, MKV_FILE_NAME, MKV_FILE_MIME, MKV_FILE_DATA = 0x1941A469, 0x61A7, 0x466E, 0x4660, 0x465C
+
+
+def _ebml_head(f):
+    """One element header -> (id, payload size); the size is None when unknown, (None, None) at the end."""
+    b = f.read(1)
+    if not b or not b[0]:
+        return None, None
+    n = 9 - b[0].bit_length()                 # the id's length is in its leading zero bits
+    raw = b + f.read(n - 1)
+    s = f.read(1)
+    if n > 4 or len(raw) < n or not s or not s[0]:
+        return None, None
+    m = 9 - s[0].bit_length()
+    rest = f.read(m - 1)
+    if len(rest) < m - 1:
+        return None, None
+    size = int.from_bytes(bytes([s[0] & (0xFF >> m)]) + rest, "big")
+    return int.from_bytes(raw, "big"), (None if size == (1 << 7 * m) - 1 else size)
+
+
+def _ebml_kids(f, start, size):
+    """[(id, payload offset, payload size)] of the elements inside one element."""
+    out, end = [], start + size
+    f.seek(start)
+    while f.tell() < end:
+        eid, n = _ebml_head(f)
+        if eid is None or n is None:
+            break
+        out.append((eid, f.tell(), n))
+        f.seek(f.tell() + n)
+    return out
+
+
+def _ebml_bytes(f, at, n):
+    f.seek(at)
+    return f.read(n)
+
+
+def _ebml_text(f, at, n):
+    return _ebml_bytes(f, at, n).split(b"\0")[0].decode("utf-8", "replace").strip()
+
+
+def read_matroska(path, cover=False):
+    """Tags, length and (if asked) the cover of a Matroska audio file, which mutagen can't read.
+    -> ({title, artist, ...} like read_tags, seconds, image bytes or None)"""
+    import struct
+    found, pics, info = [], [], {"scale": 1000000, "duration": 0.0}
+
+    def element(at):
+        """Reads the top-level element at `at` if it's one we want -> (id, where the next one starts)."""
+        first_time = at not in done
+        done.add(at)
+        f.seek(at)
+        eid, n = _ebml_head(f)
+        if eid is None or n is None:
+            return eid, None
+        start = f.tell()
+        if not first_time:
+            return eid, start + n
+        if eid == MKV_SEEKHEAD:
+            for sid, sat, sn in _ebml_kids(f, start, n):
+                if sid == MKV_SEEK:
+                    d = {k: _ebml_bytes(f, a, m) for k, a, m in _ebml_kids(f, sat, sn)}
+                    if int.from_bytes(d.get(MKV_SEEK_ID, b""), "big") in (MKV_INFO, MKV_TAGS, MKV_ATTACHMENTS,
+                                                                          MKV_SEEKHEAD):
+                        jumps.add(seg + int.from_bytes(d.get(MKV_SEEK_POS, b""), "big"))
+        elif eid == MKV_INFO:
+            for kid, kat, kn in _ebml_kids(f, start, n):
+                if kid == MKV_SCALE:
+                    info["scale"] = int.from_bytes(_ebml_bytes(f, kat, kn), "big") or 1000000
+                elif kid == MKV_DURATION and kn in (4, 8):
+                    info["duration"] = struct.unpack(">f" if kn == 4 else ">d", _ebml_bytes(f, kat, kn))[0]
+                elif kid == MKV_TITLE:
+                    info["title"] = _ebml_text(f, kat, kn)      # where ffmpeg puts the song's title
+        elif eid == MKV_TAGS:
+            for tid, tat, tn in _ebml_kids(f, start, n):
+                if tid != MKV_TAG:
+                    continue
+                level, names = 50, {}              # no target means the album level (50)
+                for cid, cat, cn in _ebml_kids(f, tat, tn):
+                    if cid == MKV_TARGETS:
+                        for xid, xat, xn in _ebml_kids(f, cat, cn):
+                            if xid == MKV_LEVEL:
+                                level = int.from_bytes(_ebml_bytes(f, xat, xn), "big")
+                    elif cid == MKV_SIMPLE:
+                        d = {k: (a, m) for k, a, m in _ebml_kids(f, cat, cn)}
+                        if MKV_NAME in d and MKV_STRING in d:
+                            names.setdefault(_ebml_text(f, *d[MKV_NAME]).upper(), _ebml_text(f, *d[MKV_STRING]))
+                found.append((level, names))
+        elif eid == MKV_ATTACHMENTS and cover:
+            for aid, aat, an in _ebml_kids(f, start, n):
+                d = {k: (a, m) for k, a, m in _ebml_kids(f, aat, an)} if aid == MKV_FILE else {}
+                if MKV_FILE_DATA in d and _ebml_text(f, *d.get(MKV_FILE_MIME, (0, 0))).startswith("image/"):
+                    pics.append((_ebml_text(f, *d.get(MKV_FILE_NAME, (0, 0))).lower(), *d[MKV_FILE_DATA]))
+        return eid, start + n
+
+    data = None
+    with open(path, "rb") as f:
+        end = os.fstat(f.fileno()).st_size
+        eid, n = _ebml_head(f)
+        if eid != 0x1A45DFA3 or n is None:
+            raise ValueError("not a Matroska file")
+        f.seek(f.tell() + n)
+        eid, n = _ebml_head(f)
+        if eid != MKV_SEGMENT:
+            raise ValueError("not a Matroska file")
+        seg = f.tell()
+        end = end if n is None else min(end, seg + n)
+        done, jumps, at = set(), set(), seg
+        while at is not None and at < end:
+            eid, at = element(at)
+            if eid == MKV_CLUSTER and jumps:
+                break                              # the rest is audio: the SeekHead says where the tags are
+        while jumps - done:
+            element(min(jumps - done))
+        if pics:
+            # Matroska names the front cover "cover.jpg"/"cover.png"
+            pics.sort(key=lambda p: (os.path.splitext(p[0])[0] != "cover", "cover" not in p[0] and "front" not in p[0]))
+            data = _ebml_bytes(f, pics[0][1], pics[0][2])
+
+    def merged(tags):
+        out = {}
+        for names in tags:
+            for k, v in names.items():
+                if v:
+                    out.setdefault(k, v)
+        return out
+
+    def pick(d, *keys):
+        return next((d[k] for k in keys if d.get(k)), "")
+
+    every = merged(names for _lv, names in found)
+    if any(lv < 50 for lv, _names in found):      # the album (50) and the song (30) tagged apart
+        album = merged(names for lv, names in found if lv >= 50)
+        song = merged(names for lv, names in found if lv < 50)
+        tags = {"title": song.get("TITLE", ""), "artist": pick(song, "ARTIST") or pick(album, "ARTIST"),
+                "albumartist": pick(album, "ARTIST", "ALBUM_ARTIST"), "album": pick(album, "TITLE", "ALBUM"),
+                "tracknumber": song.get("PART_NUMBER", ""), "discnumber": pick(every, "DISC", "DISCNUMBER")}
+    else:                                           # one flat list, as ffmpeg writes it
+        tags = {"title": every.get("TITLE", ""), "artist": pick(every, "ARTIST", "LEAD_PERFORMER"),
+                "albumartist": pick(every, "ALBUM_ARTIST", "ALBUMARTIST"), "album": every.get("ALBUM", ""),
+                "tracknumber": pick(every, "PART_NUMBER", "TRACKNUMBER", "TRACK"),
+                "discnumber": pick(every, "DISC", "DISCNUMBER")}
+    tags["title"] = tags["title"] or info.get("title", "")
+    tags.update(genre=every.get("GENRE", ""), bpm=every.get("BPM", ""),
+                date=pick(every, "DATE_RELEASED", "DATE", "DATE_RECORDED", "YEAR"))
+    seconds = info["duration"] * info["scale"] / 1e9
+    return {k: v for k, v in tags.items() if v}, max(0.0, seconds), data
+
+
+def read_tags(path):
+    """-> ({title, artist, albumartist, album, genre, tracknumber, discnumber, date, bpm: text}, seconds).
+    Every format keeps these under its own names; Matroska and WAV's RIFF INFO mutagen can't read."""
+    if path.lower().endswith(".mka"):
+        tags, length, _cover = read_matroska(path)
+        return tags, length
+    audio = MutagenFile(path)
+    if audio is None:
+        return {}, 0
+    length = (getattr(audio.info, "length", 0) or 0) if audio.info is not None else 0
+    out = {}
+    if audio.tags is not None:
+        kind = tag_kind(audio.tags)
+        for name, keys in TAG_KEYS.get(kind, TAG_KEYS["vorbis"]).items():
+            for key in keys:
+                try:
+                    text = tag_text(audio.tags.get(key))
+                except Exception:
+                    text = ""
+                if text:
+                    out[name] = text
+                    break
+    if path.lower().endswith(".wav"):
+        for name, text in riff_info(path).items():
+            out.setdefault(name, text)            # ID3 first: it's what taggers keep up to date
+    return out, length
+
+
 def read_track(path):
-    title = artist = album = genre = ""
-    num, disc, year, length, bpm = 9999, 1, 0, 0, 0
+    t, length = {}, 0
     failed = False
     try:
-        audio = MutagenFile(path, easy=True)
-        if audio is not None:
-            if audio.info is not None:
-                length = getattr(audio.info, "length", 0) or 0
-            if audio.tags is not None:
-                t = audio.tags
-                title = first(t, "title")
-                artist = first(t, "albumartist") or first(t, "artist")
-                genre = first(t, "genre")
-                album = first(t, "album")
-                num = to_int(first(t, "tracknumber"))
-                disc = to_int(first(t, "discnumber"), 1)
-                year = to_int(first(t, "date")[:4], 0)
-                bpm = to_int(first(t, "bpm"), 0)
+        t, length = read_tags(path)
     except Exception as e:
         # a file that's locked right now (a tagger, antivirus...) must be read again next scan,
         # not remembered as untagged (mutagen wraps the OSError in its own error)
         if isinstance(e, OSError) or isinstance(e.__cause__, OSError):
             failed = True
+    title = t.get("title", "")
+    artist, album_artist = t.get("artist", ""), t.get("albumartist", "")
+    genre = t.get("genre", "")
+    album = t.get("album", "")
+    num = to_int(t.get("tracknumber", ""))
+    disc = to_int(t.get("discnumber", ""), 1)
+    year = tag_year(t.get("date", ""))
+    bpm = to_int(t.get("bpm", ""), 0)
     return {
         "path": path,
         "title": title or Path(path).stem,
-        "artist": main_artist(artist),
+        "artist": main_artist(album_artist or artist),       # whose album it is (see assign_artists)
+        "track_artist": main_artist(artist or album_artist),  # who sings this song
         "artist_raw": artist,
+        "album_artist_raw": album_artist,
         "genre": genre,
         "album": album or "Unknown Album",
         "num": num,
@@ -585,6 +907,9 @@ def read_track(path):
         "bpm": bpm,
         **({"read_failed": True} if failed else {}),
     }
+
+
+TAGS_VERSION = 3   # raise it when read_track learns more: songs cached before are then read again
 
 
 def load_cache():
@@ -681,12 +1006,12 @@ def scan_folders(folders, cache=None):
                 continue
             prev = old.get(path)
             if (prev and prev.get("mtime") == st.st_mtime and prev.get("size") == st.st_size
-                    and "artist_raw" in prev and "genre" in prev and "bpm" in prev):
+                    and prev.get("tags_version") == TAGS_VERSION):
                 tracks.append(prev)
             else:
                 t = read_track(path)
                 if not t.pop("read_failed", False):   # no mtime/size = read it again next time
-                    t["mtime"], t["size"] = st.st_mtime, st.st_size
+                    t["mtime"], t["size"], t["tags_version"] = st.st_mtime, st.st_size, TAGS_VERSION
                 t["added"] = max(st.st_mtime, st.st_ctime)
                 tracks.append(t)
     # keep the songs of folders we couldn't reach, so an unplugged drive doesn't empty the library
@@ -698,23 +1023,55 @@ def scan_folders(folders, cache=None):
     return tracks
 
 
+def _asf_picture(raw):
+    """WMA's WM/Picture: type, size, mime type and description (UTF-16, zero-ended), then the image."""
+    kind, size, pos = raw[0], int.from_bytes(raw[1:5], "little"), 5
+    for _ in range(2):
+        while raw[pos:pos + 2] not in (b"\0\0", b""):
+            pos += 2
+        pos += 2
+    return kind, raw[pos:pos + size]
+
+
+def file_pictures(audio):
+    """[(picture type, image bytes)] of a mutagen file; type 3 is the front cover."""
+    import base64
+    from mutagen.flac import Picture
+    pics = [(p.type, p.data) for p in getattr(audio, "pictures", None) or []]      # FLAC
+    tags = audio.tags
+    kind = tag_kind(tags)
+    if kind == "id3":
+        pics += [(f.type, f.data) for f in tags.getall("APIC")]
+    elif kind == "mp4":
+        pics += [(3, bytes(c)) for c in tags.get("covr", [])]
+    elif kind == "vorbis":                       # Ogg Vorbis/Opus: a FLAC picture block in base64
+        for b64 in tags.get("metadata_block_picture", []):
+            try:
+                p = Picture(base64.b64decode(b64))
+                pics.append((p.type, p.data))
+            except Exception:
+                pass
+        pics += [(0, base64.b64decode(b64)) for b64 in tags.get("coverart", [])]   # the older way
+    elif kind == "ape":
+        for key, front in (("Cover Art (Front)", True), ("Cover Art (Other)", False), ("Cover Art (Back)", False)):
+            value = tags.get(key)
+            if value is not None and b"\0" in bytes(value.value):
+                pics.append((3 if front else 0, bytes(value.value).split(b"\0", 1)[1]))
+    elif kind == "asf":
+        pics += [_asf_picture(bytes(v.value)) for v in tags.get("WM/Picture", [])]
+    return pics
+
+
 def embedded_cover(path):
+    """The front cover stored in the file, or its first picture when none is marked as the front."""
     try:
+        if path.lower().endswith(".mka"):
+            return read_matroska(path, cover=True)[2]
         audio = MutagenFile(path)
         if audio is None:
             return None
-        pics = getattr(audio, "pictures", None)
-        if pics:
-            return pics[0].data
-        tags = audio.tags
-        if tags is None:
-            return None
-        if hasattr(tags, "getall"):
-            apic = tags.getall("APIC")
-            if apic:
-                return apic[0].data
-        if "covr" in tags:
-            return bytes(tags["covr"][0])
+        pics = [(kind, data) for kind, data in file_pictures(audio) if data]
+        return next((data for kind, data in pics if kind == 3), pics[0][1] if pics else None)
     except Exception:
         pass
     return None
@@ -750,14 +1107,23 @@ def fmt_size(n):
 LYRICS_DIR = Path.home() / ".simple_music_player_lyrics"
 TS_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]")
 META_RE = re.compile(r"^\[[A-Za-z]+:.*\]$")
+OFFSET_RE = re.compile(r"^\[offset:\s*([+-]?\d+)\s*\]$", re.IGNORECASE)
+WORD_TS_RE = re.compile(r"<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>")      # enhanced LRC: a time for every word
 NEG_CACHE_SECONDS = 7 * 24 * 3600
 
 
 def parse_lrc(text):
     """Return (synced, lines). lines = [(milliseconds or None, text)].
-    Understands .lrc timestamps like [01:23.45]; anything else is plain text."""
-    synced, plain = [], []
+    Understands .lrc timestamps like [01:23.45], the [offset:] tag and word times (<01:23.45>,
+    dropped: the line shows the words); anything else is plain text."""
+    synced, plain, offset = [], [], 0
     for raw in text.splitlines():
+        m = OFFSET_RE.match(raw.strip())
+        if m:
+            offset = int(m.group(1))      # milliseconds; a positive offset shows the lines earlier
+            continue
+        if WORD_TS_RE.search(raw):
+            raw = re.sub(r" {2,}", " ", WORD_TS_RE.sub("", raw))
         stamps = TS_RE.findall(raw)
         body = TS_RE.sub("", raw).strip()
         if stamps:
@@ -769,7 +1135,7 @@ def parse_lrc(text):
         elif not META_RE.match(raw.strip()):
             plain.append(raw.rstrip())
     if synced:
-        synced.sort(key=lambda x: x[0])
+        synced = sorted(((max(0, ms - offset), body) for ms, body in synced), key=lambda x: x[0])
         return True, synced
     while plain and not plain[-1].strip():
         plain.pop()
@@ -777,9 +1143,10 @@ def parse_lrc(text):
 
 
 def read_text_file(path):
+    """A lyrics file in whatever encoding it was saved in: UTF-8, UTF-16, Turkish Windows..."""
     try:
-        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-            return f.read()
+        with open(path, "rb") as f:
+            return decode_text(f.read()).replace("\r\n", "\n").replace("\r", "\n")
     except OSError:
         return ""
 
@@ -795,7 +1162,7 @@ def embedded_lyrics(path):
                 text = str(frame.text).strip()
                 if text:
                     return text
-        for key in ("\xa9lyr", "lyrics", "unsyncedlyrics", "LYRICS", "UNSYNCEDLYRICS"):
+        for key in ("\xa9lyr", "lyrics", "unsyncedlyrics", "LYRICS", "UNSYNCEDLYRICS", "WM/Lyrics"):
             try:
                 val = tags.get(key)
             except Exception:
@@ -809,10 +1176,11 @@ def embedded_lyrics(path):
     return ""
 
 
+USER_AGENT = f"eozMP/{APP_VERSION} ( https://github.com/erenoozr/eozMP )"   # MusicBrainz wants a contact
+
+
 def http_json(url):
-    req = urllib.request.Request(
-        url, headers={"User-Agent": f"eozMP/{APP_VERSION} (personal music player)"}
-    )
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8", "replace"))
 
@@ -850,61 +1218,87 @@ def fetch_lrclib(artist, title, album, duration):
 
 
 def lyrics_cache_path(track):
-    raw = f"{track['artist']}|{track['title']}|{track['album']}".lower()
+    raw = f"{song_artist(track)}|{track['title']}|{track['album']}".lower()
     key = hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:24]
     return LYRICS_DIR / f"{key}.json"
 
 
-def get_lyrics(track, online, save_files, force=False):
-    """Runs in a background thread. Order: .lrc/.txt next to the song,
-    lyrics embedded in the file, saved earlier lookup, then the internet."""
-    path = track["path"]
-    stem = os.path.splitext(path)[0]
+def local_lyrics(track, cached):
+    """Lyrics we already have: a .lrc/.txt next to the song, in its tags, or found online before."""
+    stem = os.path.splitext(track["path"])[0]
     for ext in (".lrc", ".txt"):
         text = read_text_file(stem + ext)
         if text.strip():
             return {"text": text, "source": f"from {os.path.basename(stem + ext)}"}
-    text = embedded_lyrics(path)
+    text = embedded_lyrics(track["path"])
     if text:
         return {"text": text, "source": "embedded in the file"}
-
-    cpath = lyrics_cache_path(track)
-    cached = None
-    try:
-        cached = json.loads(cpath.read_text(encoding="utf-8"))
-    except Exception:
-        pass
     if cached and cached.get("found"):
         return {
             "text": cached.get("lrc") or cached.get("plain") or "",
             "instrumental": bool(cached.get("instrumental")),
             "source": "lrclib.net (saved)",
         }
-    if not online or track["artist"] == "Unknown Artist":
-        return {"text": "", "source": ""}
+    return None
+
+
+def save_lyrics_file(stem, text, synced, ours, create):
+    """Puts lyrics found online next to the song. A file eozMP saved before (it still holds what was
+    found then, `ours`) is overwritten; one you made or changed yourself is never touched."""
+    existing = [stem + ext for ext in (".lrc", ".txt") if os.path.exists(stem + ext)]
+    if existing:
+        target = existing[0]                  # the one that's shown
+        if not ours or read_text_file(target).strip() != ours.replace("\r\n", "\n").strip():
+            return
+    elif create:
+        target = stem + (".lrc" if synced else ".txt")
+    else:
+        return
+    try:
+        Path(target).write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def get_lyrics(track, online, save_files, force=False):
+    """Runs in a background thread. Order: .lrc/.txt next to the song, lyrics embedded in the
+    file, saved earlier lookup, then the internet. force ("Search online") asks the internet even
+    when there are lyrics and replaces the ones eozMP saved before. When it finds nothing or can't
+    get through, what we had is kept ("missed" / "error" say why)."""
+    cpath = lyrics_cache_path(track)
+    cached = None
+    try:
+        cached = json.loads(cpath.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    have = local_lyrics(track, cached)
+    if have and not force:
+        return have
+    if not online or song_artist(track) == "Unknown Artist":
+        return have or {"text": "", "source": ""}
     if cached and not force and time.time() - cached.get("ts", 0) < NEG_CACHE_SECONDS:
         return {"text": "", "source": ""}
 
     try:
-        res = fetch_lrclib(track["artist"], track["title"], track["album"], track["length"])
+        res = fetch_lrclib(song_artist(track), track["title"], track["album"], track["length"])
     except Exception as e:
-        return {"text": "", "source": "", "error": str(e)}
+        return {**(have or {"text": "", "source": ""}), "error": str(e)}
+    had_found = bool(cached and cached.get("found"))
+    ours = (cached.get("lrc") or cached.get("plain") or "") if had_found else ""
     try:
         LYRICS_DIR.mkdir(exist_ok=True)
         if res and (res["lrc"] or res["plain"] or res["instrumental"]):
             cpath.write_text(json.dumps({"found": True, **res}), encoding="utf-8")
-        else:
+        elif not had_found:                   # lyrics found before aren't thrown away for a miss now
             cpath.write_text(json.dumps({"found": False, "ts": time.time()}), encoding="utf-8")
     except Exception:
         pass
     if not res or not (res["lrc"] or res["plain"]):
+        if have:
+            return {**have, "missed": True}
         return {"text": "", "source": "", "instrumental": bool(res and res["instrumental"])}
     text = res["lrc"] or res["plain"]
-    if save_files:
-        try:
-            Path(stem + (".lrc" if res["lrc"] else ".txt")).write_text(text, encoding="utf-8")
-        except OSError:
-            pass
+    save_lyrics_file(os.path.splitext(track["path"])[0], text, bool(res["lrc"]), ours, save_files)
     return {"text": text, "source": "lrclib.net"}
 
 
@@ -2166,23 +2560,25 @@ def _organize_downloads(src_root, dest_root, group_featured, split_collabs, keep
         return 0
     went_to = {}   # download folder -> album folders its songs went to
     for root, _dirs, files in os.walk(src_root):
+        songs = []
         for name in files:
-            ext = Path(name).suffix.lower()
-            if ext not in AUDIO_EXTS:
+            if Path(name).suffix.lower() not in AUDIO_EXTS:
                 continue
+            t = read_track(os.path.join(root, name))
+            untagged = not (t["artist_raw"] or t["album_artist_raw"]).strip()
+            if untagged or t["album"] == "Unknown Album":   # the folder name tells
+                f_artist, f_album = names_from_folder(root, src_root)
+                t["artist_raw"] = f_artist if untagged else t["artist_raw"]
+                t["album"] = f_album if t["album"] == "Unknown Album" and f_album else t["album"]
+            songs.append((name, t))
+        # like the library: a compilation's songs go into one album folder, not one per singer
+        assign_artists([t for _n, t in songs], group_featured, split_collabs, keep)
+        for name, t in songs:
+            ext = Path(name).suffix.lower()
             src = os.path.join(root, name)
             try:
-                t = read_track(src)
-                raw = t.get("artist_raw") or ""
-                album = t["album"]
-                if not raw.strip() or album == "Unknown Album":   # untagged: the folder name tells
-                    f_artist, f_album = names_from_folder(root, src_root)
-                    raw = raw if raw.strip() else f_artist
-                    album = f_album if album == "Unknown Album" and f_album else album
-                artist = (main_artist(raw, split_collabs, keep) if group_featured
-                          else (raw.strip() or "Unknown Artist"))
-                folder = os.path.join(dest_root, safe_name(artist, "Unknown Artist"),
-                                      safe_name(album, "Unknown Album"))
+                folder = os.path.join(dest_root, safe_name(t["artist"], "Unknown Artist"),
+                                      safe_name(t["album"], "Unknown Album"))
                 base = safe_name(t["title"], Path(name).stem)
                 if t["num"] != 9999:
                     base = f"{t['num']:02d} - {base}"
@@ -2874,7 +3270,7 @@ def accent_from_pixmap(pix):
 
 
 def http_bytes(url, timeout=15):
-    req = urllib.request.Request(url, headers={"User-Agent": f"eozMP/{APP_VERSION} (personal music player)"})
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
 
@@ -2887,39 +3283,61 @@ def looks_like_image(data):
     return bool(data) and (data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n")
 
 
+EDITION_RE = re.compile(r"\s*(?:[(\[][^()\[\]]*[)\]]|\s-\s.*)\s*$")
+
+
+def same_album(mine, theirs):
+    """Whole titles, give or take an edition: 'Abbey Road' is 'Abbey Road (Remastered)', but '1' is
+    not '1967-1970' (a piece of a title matched before)."""
+    def core(name):
+        name = str(name)
+        while EDITION_RE.search(name) and EDITION_RE.sub("", name).strip():
+            name = EDITION_RE.sub("", name)
+        return _words(name)
+    a, b = _words(mine), _words(theirs)
+    return bool(a) and (a == b or core(mine) == core(theirs))
+
+
 def fetch_cover_bytes(artist, album):
-    """Album art from Apple's iTunes search, falling back to MusicBrainz + Cover Art Archive."""
-    a, b = _norm(artist), _norm(album)
-    if not a or not b:
+    """Album art from Apple's iTunes search, falling back to MusicBrainz + Cover Art Archive.
+    None means they answered and have no cover. When one couldn't be asked (no internet, a service
+    down) and nothing was found, the error is raised, so it isn't remembered as "no cover"."""
+    a = _words(artist)                    # any script: 'Кино' was searched as nothing before
+    if not a or not _words(album):
         return None
+    failed = None
     try:
         url = "https://itunes.apple.com/search?" + urllib.parse.urlencode(
             {"term": f"{artist} {album}", "entity": "album", "limit": 10})
         for r in http_json(url).get("results", []):
-            name = _norm(r.get("collectionName", ""))
-            if a in _norm(r.get("artistName", "")) and (b in name or (name and name in b)):
+            if has_words(_words(r.get("artistName", "")), a) and same_album(album, r.get("collectionName", "")):
                 art = r.get("artworkUrl100", "")
                 if art:
                     data = http_bytes(art.replace("100x100bb", "600x600bb"))
                     if looks_like_image(data):
                         return data
-    except Exception:
-        pass
+    except Exception as e:
+        failed = e
     try:
-        query = f'releasegroup:"{album}" AND artist:"{artist}"'
-        data = http_json("https://musicbrainz.org/ws/2/release-group/?" + urllib.parse.urlencode(
-            {"query": query, "fmt": "json", "limit": 5}))
+        clean = lambda text: re.sub(r'["\\]', " ", text)
+        data = mb_json("release-group/", query=f'releasegroup:"{clean(album)}" AND artist:"{clean(artist)}"', limit=5)
         for rg in data.get("release-groups", []):
-            if int(rg.get("score", 0)) < 80:
+            if int(rg.get("score", 0)) < 80 or not same_album(album, rg.get("title", "")):
                 continue
             try:
                 img = http_bytes(f"https://coverartarchive.org/release-group/{rg['id']}/front-500")
                 if looks_like_image(img):
                     return img
-            except Exception:
-                continue
-    except Exception:
-        pass
+            except urllib.error.HTTPError as e:
+                e.close()
+                if e.code != 404:             # 404: this one has no front cover
+                    failed = failed or e
+            except Exception as e:
+                failed = failed or e
+    except Exception as e:
+        failed = failed or e
+    if failed is not None:
+        raise failed
     return None
 
 
@@ -2935,8 +3353,24 @@ def read_cached_cover(artist, album):
         return None
 
 
+def album_folder(paths):
+    """The folder of these songs if it holds no other songs, so a cover.jpg there is theirs alone."""
+    if not paths:
+        return None
+    folder, mine = os.path.dirname(paths[0]), {norm_path(p) for p in paths}
+    try:
+        with os.scandir(folder) as entries:
+            for e in entries:
+                if os.path.splitext(e.name)[1].lower() in AUDIO_EXTS and norm_path(e.path) not in mine:
+                    return None
+    except OSError:
+        return None
+    return folder
+
+
 def download_cover(artist, album, folder=None):
-    """Runs in a background thread. Saves the cover and returns True if one was found."""
+    """Runs in a background thread. Saves the cover and returns True if one was found, False if
+    there's none; raises when the services couldn't be asked. folder: see album_folder."""
     data = fetch_cover_bytes(artist, album)
     if not data:
         return False
@@ -2962,7 +3396,7 @@ class CoverBatch(QThread):
 
     def __init__(self, jobs, to_folder):
         super().__init__()
-        self.jobs = jobs            # [(key, artist, album, first song path)]
+        self.jobs = jobs            # [(key, artist, album, the album's song paths)]
         self.to_folder = to_folder
         self.missed = []
         self._stop = False
@@ -2973,20 +3407,21 @@ class CoverBatch(QThread):
     def run(self):
         got = 0
         total = len(self.jobs)
-        for i, (key, artist, album, first) in enumerate(self.jobs):
+        for i, (key, artist, album, paths) in enumerate(self.jobs):
             if self._stop:
                 break
+            first = paths[0]
             if embedded_cover(first) or folder_cover(first) or read_cached_cover(artist, album):
                 continue
             self.progress.emit(f"Finding covers {i + 1}/{total}: {artist} - {album}")
             try:
-                ok = download_cover(artist, album, os.path.dirname(first) if self.to_folder else None)
+                ok = download_cover(artist, album, album_folder(paths) if self.to_folder else None)
             except Exception:
-                ok = False
+                ok = None             # no internet or a service down: ask again next time
             if ok:
                 got += 1
                 self.found.emit(key)
-            else:
+            elif ok is False:
                 self.missed.append(f"{artist}|{album}".lower())
             for _ in range(30):   # be polite to the free services: ~3 s per album
                 if self._stop:
@@ -3960,10 +4395,23 @@ def album_key(name, artist):
     return years[-1] if years else a
 
 
+def copy_rank(group, most):
+    """How good one Soulseek copy (a folder) of an album is; bigger is better. most = the most songs
+    any copy of this album has. A copy missing songs loses, unless it's just a bonus track or two
+    (up to a tenth of the album). Then lossless beats lossy, a higher bitrate (in steps of 32k, so
+    V0 and 256k are alike) beats a lower one, a free upload slot beats waiting in a queue, and the
+    more songs and the faster the uploader, the better."""
+    lossless = sum(1 for f in group if f["ext"] in LOSSLESS_EXTS) * 2 > len(group)
+    rates = [f["bitrate"] for f in group if f["bitrate"]]
+    kbps = sum(rates) / len(rates) if rates else 0
+    complete = len(group) >= most - most // 10
+    return complete, lossless, int(kbps // 32), group[0]["free"], len(group), group[0]["speed"]
+
+
 def pick_discography(rows, artist):
-    """From raw Soulseek results, pick the best folder for every album by this artist."""
+    """From raw Soulseek results, pick the best folder for every album by this artist (see copy_rank)."""
     a = _words(artist)
-    best = {}
+    copies = {}
     for group in group_by_folder(rows):
         if len(group) < 3:
             continue
@@ -3982,12 +4430,13 @@ def pick_discography(rows, artist):
         if not key:
             continue
         key = f"{key} {disc}".strip()
-        lossless = sum(1 for f in group if f["ext"] in LOSSLESS_EXTS) * 2 > len(group)
-        score = (group[0]["free"], len(group), lossless, group[0]["speed"])
-        if key not in best or score > best[key]["score"]:
-            best[key] = {"score": score, "key": album_key(name, artist),
-                         "name": name + (f" ({parts[-1]})" if disc else ""), "files": group}
-    return sorted(best.values(), key=lambda d: d["name"].lower())
+        copies.setdefault(key, []).append({"key": album_key(name, artist),
+                                           "name": name + (f" ({parts[-1]})" if disc else ""), "files": group})
+    best = []
+    for found in copies.values():
+        most = max(len(c["files"]) for c in found)
+        best.append(max(found, key=lambda c: copy_rank(c["files"], most)))   # the first one on a tie
+    return sorted(best, key=lambda d: d["name"].lower())
 
 
 class DiscographyDialog(QDialog):
@@ -4853,7 +5302,7 @@ class SongInfoDialog(QDialog):
         title = QLabel(_raw(t["title"]))
         title.setObjectName("heading2")
         title.setWordWrap(True)
-        sub = QLabel(f"{t['artist']}  ·  {t['album']}")
+        sub = QLabel(_raw(f"{song_artist(t)}  ·  {t['album']}"))
         sub.setObjectName("sub")
         sub.setWordWrap(True)
         names.addStretch(1)
@@ -5439,7 +5888,7 @@ def find_duplicates(tracks):
     """Groups of the same song (same artist + title, lengths within 3 s), best copy first."""
     by_key = {}
     for t in tracks:
-        by_key.setdefault((_norm(t["artist"]), _norm(t["title"])), []).append(t)
+        by_key.setdefault((_norm(song_artist(t)), _norm(t["title"])), []).append(t)
     groups = []
     for same in by_key.values():
         if len(same) < 2:
@@ -5454,7 +5903,7 @@ def find_duplicates(tracks):
                 cluster.sort(key=lambda x: track_quality_score(x)[0], reverse=True)
                 groups.append(cluster)
             cluster = [t] if t is not None else []
-    groups.sort(key=lambda g: (g[0]["artist"].lower(), g[0]["title"].lower()))
+    groups.sort(key=lambda g: (song_artist(g[0]).lower(), g[0]["title"].lower()))
     return groups
 
 
@@ -5769,7 +6218,7 @@ class DuplicatesDialog(QDialog):
         self.tree.setHeaderLabels(["Song / file", "Folder", "Quality", "Size"])
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for g in groups:
-            top = QTreeWidgetItem([f"{g[0]['artist']} - {g[0]['title']}   ({len(g)} copies)", "", "", ""])
+            top = QTreeWidgetItem([f"{song_artist(g[0])} - {g[0]['title']}   ({len(g)} copies)", "", "", ""])
             self.tree.addTopLevelItem(top)
             for i, t in enumerate(g):
                 _s, size, kbps = track_quality_score(t)
@@ -5883,11 +6332,11 @@ class QualityDialog(QDialog):
                 bad, text = quality_verdict(t, e)
                 if bad or not self.only_bad.isChecked():
                     rows.append((not bad, t, e, text))
-        rows.sort(key=lambda r: (r[0], r[1]["artist"].lower(), r[1]["title"].lower()))
+        rows.sort(key=lambda r: (r[0], song_artist(r[1]).lower(), r[1]["title"].lower()))
         self.table.setRowCount(len(rows))
         for r, (_ok, t, e, text) in enumerate(rows):
             ext = os.path.splitext(t["path"])[1].lower().lstrip(".").upper()
-            vals = (t["title"], t["artist"], ext, f"{e['cutoff'] / 1000:.1f} kHz", text)
+            vals = (t["title"], song_artist(t), ext, f"{e['cutoff'] / 1000:.1f} kHz", text)
             for c, val in enumerate(vals):
                 self.table.setItem(r, c, QTableWidgetItem(val))
             self.table.item(r, 0).setData(KEY_ROLE, t["path"])
@@ -6209,12 +6658,12 @@ class ExtrasMixin:
         for _ts, path, _s in self.stats["events"][-3000:]:
             hit = self.track_by_path.get(path)
             if hit:
-                counts[hit[0]["artist"]] += 1
+                counts[song_artist(hit[0])] += 1
         for p in self.stats["favorites"]:
             hit = self.track_by_path.get(p)
             if hit:
-                counts[hit[0]["artist"]] += 3
-        artists = [a for a, _n in counts.most_common(12) if a != "Unknown Artist"]
+                counts[song_artist(hit[0])] += 3
+        artists = [a for a, _n in counts.most_common(12) if a not in ("Unknown Artist", VARIOUS_ARTISTS)]
         if not artists:
             if loud:
                 self.statusBar().showMessage("Play or like some music first, so eozMP knows your artists.")
@@ -6553,7 +7002,7 @@ def dlna_didl(url, track, cover_url, mime):
     e = html.escape
     return ('<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" '
             'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item id="1" parentID="0" restricted="1">'
-            f'<dc:title>{e(track["title"])}</dc:title><upnp:artist>{e(track["artist"])}</upnp:artist>'
+            f'<dc:title>{e(track["title"])}</dc:title><upnp:artist>{e(song_artist(track))}</upnp:artist>'
             f'<upnp:album>{e(track["album"])}</upnp:album><upnp:albumArtURI>{e(cover_url)}</upnp:albumArtURI>'
             '<upnp:class>object.item.audioItem.musicTrack</upnp:class>'
             f'<res protocolInfo="http-get:*:{mime}:*">{e(url)}</res></item></DIDL-Lite>')
@@ -7176,7 +7625,7 @@ class Extras2Mixin:
                     Path(cover_file).write_bytes(cover)
                 except OSError:
                     cover_file = ""
-            self.smtc.set_track(track["title"], track["artist"], track["album"], cover_file)
+            self.smtc.set_track(track["title"], song_artist(track), track["album"], cover_file)
         if self.cast:
             self.cast_load(track, fid)
         if self.lastfm_ready():
@@ -7241,7 +7690,7 @@ class Extras2Mixin:
             line = self.lyric_lines[self.lyric_idx]
         self.remote.state = {
             "id": file_id(t["path"]) if t else "", "ext": os.path.splitext(t["path"])[1].lower() if t else "",
-            "title": t["title"] if t else "", "artist": t["artist"] if t else "", "album": t["album"] if t else "",
+            "title": t["title"] if t else "", "artist": song_artist(t) if t else "", "album": t["album"] if t else "",
             "playing": self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState,
             "pos": int(self.player.position()), "dur": int(self.seek.maximum()), "vol": self.volume.value(),
             "line": line, "fav": bool(t) and t["path"] in self.fav_set}
@@ -8716,11 +9165,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         group = bool(self.cfg["group_featured"])
         split = bool(self.cfg["split_collabs"])
         keep = {k.strip().lower() for k in self.cfg["keep_together"] if k.strip()}
+        assign_artists(tracks, group, split, keep)
         for t in tracks:
-            raw = t.get("artist_raw")
-            if raw is not None:
-                t["artist"] = (main_artist(raw, split, keep) if group
-                               else (raw.strip() or "Unknown Artist"))
             akey, alkey = t["artist"].lower(), t["album"].lower()
             self.artists.setdefault(akey, t["artist"])
             alb = self.albums.get((akey, alkey))
@@ -8734,7 +9180,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             years = [t["year"] for t in alb["tracks"] if t["year"]]
             alb["year"] = min(years) if years else 0
             alb["search"] = [
-                f"{alb['artist']} {alb['album']} {t['title']}".lower() for t in alb["tracks"]
+                f"{alb['artist']} {alb['album']} {t['title']} {song_artist(t)}".lower() for t in alb["tracks"]
             ]
         self.genres, self.decades = {}, {}
         for key, alb in self.albums.items():
@@ -8804,7 +9250,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                 a_item.setExpanded(True)
         self.index = self.qindex.get(playing, -1) if playing else -1
         self.track_by_path = {t["path"]: (t, key) for t, key in self.queue}
-        self.song_index = [(f"{t['title']} {t['artist']} {t['album']}".lower(), t["path"]) for t, _k in self.queue]
+        self.song_index = [(f"{t['title']} {song_artist(t)} {t['album']} {t['artist']}".lower(), t["path"])
+                           for t, _k in self.queue]
         if self.list_covers():
             for akey, a_item in self.tree_artists.items():
                 a_item.setIcon(0, self.artist_icon(akey, 28))
@@ -8923,7 +9370,9 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         for r, t in enumerate(alb["tracks"]):
             num = str(t["num"]) if t["num"] != 9999 else ""
             count = plays.get(t["path"], {}).get("count", 0)
-            vals = (num, "", t["title"], str(count) if count else "", fmt_time(t["length"] * 1000))
+            singer = song_artist(t)
+            title = t["title"] if singer.lower() == alb["artist"].lower() else f"{t['title']}  ·  {singer}"
+            vals = (num, "", title, str(count) if count else "", fmt_time(t["length"] * 1000))
             for c, val in enumerate(vals):
                 self.track_table.setItem(r, c, QTableWidgetItem(val))
         self.refresh_album_hearts()
@@ -9242,7 +9691,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.queue_list.clear()
         for path in self.up_next:
             t, _ = self.track_by_path[path]
-            item = QListWidgetItem(f"{t['title']}  -  {t['artist']}")
+            item = QListWidgetItem(f"{t['title']}  -  {song_artist(t)}")
             item.setData(KEY_ROLE, path)
             self.queue_list.addItem(item)
         n = len(self.up_next)
@@ -10041,7 +10490,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                     text = f"{alb['album']}\n{alb['artist']}"
                 else:
                     t = self.track_by_path[value][0]
-                    text = f"{t['title']}\n{t['artist']}"
+                    text = f"{t['title']}\n{song_artist(t)}"
                 self.add_tile(lst, "home", kind, value, text, 120)
             lab.setVisible(bool(items))
             lst.setVisible(bool(items))
@@ -10094,7 +10543,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.search_songs.setRowCount(len(songs))
         for r, path in enumerate(songs):
             t = self.track_by_path[path][0]
-            for c, val in enumerate((t["title"], t["artist"], t["album"], fmt_time(t["length"] * 1000))):
+            for c, val in enumerate((t["title"], song_artist(t), t["album"], fmt_time(t["length"] * 1000))):
                 self.search_songs.setItem(r, c, QTableWidgetItem(val))
         lab, _tbl = self.search_sections["songs"]
         lab.setVisible(bool(songs))
@@ -10445,14 +10894,19 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if self.drawer.isVisible():
             self.close_drawer()
 
+    def artist_page(self, t):
+        """The artist page a song links to: its singer's, or its album artist's when the singer has none."""
+        a = song_artist(t).lower()
+        return a if a in self.artists else t["artist"].lower()
+
     def set_now_playing(self, track):
         col = self.scheme["text"]
-        akey = urllib.parse.quote(track["artist"].lower())
+        akey = urllib.parse.quote(self.artist_page(track))
         path = urllib.parse.quote(track["path"])
         sep = html.escape("  -  ")
         self.now_playing.setText(
             self.link(f"album:{path}", track["title"], col) + sep
-            + self.link(f"artist:{akey}", track["artist"], col) + sep
+            + self.link(f"artist:{akey}", song_artist(track), col) + sep
             + self.link(f"album:{path}", track["album"], col))
 
     def set_lyrics_header(self):
@@ -10467,7 +10921,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if getattr(self, "lyrics_info_path", None) != path:
             info = ""
         self.lyrics_source.setText(
-            self.link(f"artist:{urllib.parse.quote(t['artist'].lower())}", t["artist"], soft)
+            self.link(f"artist:{urllib.parse.quote(self.artist_page(t))}", song_artist(t), soft)
             + (html.escape(f"  •  {info}") if info else ""))
 
     # ----- back / forward history
@@ -10616,7 +11070,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if 0 <= self.index < len(self.queue):
             t, key = self.queue[self.index]
             self.drawer_title.setText(_raw(t["title"]))
-            self.drawer_artist.setText(f"{t['artist']}  ·  {t['album']}")
+            self.drawer_artist.setText(_raw(f"{song_artist(t)}  ·  {t['album']}"))
             self.drawer_cover.setPixmap(self.thumb_pixmap(key, 48, self.radius(8)))
         else:
             self.drawer_title.setText("Nothing playing")
@@ -10742,7 +11196,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if 0 <= self.index < len(self.queue):
             t = self.queue[self.index][0]
             fs.title.setText(_raw(t["title"]))
-            fs.artist.setText(f"{t['artist']}  ·  {t['album']}")
+            fs.artist.setText(_raw(f"{song_artist(t)}  ·  {t['album']}"))
         else:
             fs.title.setText("Nothing playing")
             fs.artist.setText("")
@@ -11150,9 +11604,9 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if time.time() - self.stats["cover_misses"].get(miss_key, 0) < 30 * 86400:
             return
         self.cover_fetching.add(key)
-        folder = os.path.dirname(alb["tracks"][0]["path"]) if self.cfg["covers_to_folder"] else None
+        paths, to_folder = [t["path"] for t in alb["tracks"]], bool(self.cfg["covers_to_folder"])
         artist, album = alb["artist"], alb["album"]
-        w = Worker(lambda: download_cover(artist, album, folder))
+        w = Worker(lambda: download_cover(artist, album, album_folder(paths) if to_folder else None))
         w.ok.connect(lambda ok: self.on_cover_fetched(key, miss_key, ok))
         w.fail.connect(lambda _m: self.cover_fetching.discard(key))
         self.keep(w)
@@ -11186,7 +11640,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if self.cover_batch is not None and self.cover_batch.isRunning():
             self.statusBar().showMessage("Already looking for covers...")
             return
-        jobs = [(k, a["artist"], a["album"], a["tracks"][0]["path"]) for k, a in self.albums.items()
+        jobs = [(k, a["artist"], a["album"], [t["path"] for t in a["tracks"]]) for k, a in self.albums.items()
                 if a["album"] != "Unknown Album" and a["artist"] != "Unknown Artist"]
         if not jobs:
             self.statusBar().showMessage("No albums to check.")
@@ -11252,8 +11706,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.mini.accent = self.scheme["accent"]
         if 0 <= self.index < len(self.queue):
             t = self.queue[self.index][0]
-            self.mini.set_track(t["title"], t["artist"], cover, self.backdrop_for(key),
-                                href="artist:" + urllib.parse.quote(t["artist"].lower()))
+            self.mini.set_track(t["title"], song_artist(t), cover, self.backdrop_for(key),
+                                href="artist:" + urllib.parse.quote(self.artist_page(t)))
         else:
             self.mini.set_track("Nothing playing", "", cover, self.backdrop_for(None))
         self.mini.lyric.setVisible(bool(self.cfg["show_lyric_line"]))
@@ -11290,7 +11744,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                 return "That's the last song"
             path = self.ctx_paths[pos]
         hit = self.track_by_path.get(path)
-        return f"Next: {hit[0]['title']}  -  {hit[0]['artist']}" if hit else ""
+        return f"Next: {hit[0]['title']}  -  {song_artist(hit[0])}" if hit else ""
 
     def seek_fraction(self, fraction):
         dur = self.seek.maximum()
@@ -11392,8 +11846,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.tray_play.setText("Pause" if playing else "Play")
         if 0 <= self.index < len(self.queue):
             t = self.queue[self.index][0]
-            text = f"{t['title']} - {t['artist']}"
-            self.tray_now.setText(text if len(text) < 60 else text[:57] + "...")
+            text = f"{t['title']} - {song_artist(t)}"
+            self.tray_now.setText(_raw(text if len(text) < 60 else text[:57] + "..."))
             self.tray.setToolTip(f"eozMP\n{text}"[:120])
 
     # ----- keyboard media keys
@@ -11664,7 +12118,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.pl_table.setRowCount(0)   # refilling old rows re-measures every row for each cell
         self.pl_table.setRowCount(len(tracks))
         for r, (t, _key) in enumerate(tracks):
-            vals = (str(r + 1), t["title"], t["artist"], t["album"], fmt_time(t["length"] * 1000))
+            vals = (str(r + 1), t["title"], song_artist(t), t["album"], fmt_time(t["length"] * 1000))
             for c, v in enumerate(vals):
                 self.pl_table.setItem(r, c, QTableWidgetItem(v))
         if switch:
@@ -11878,7 +12332,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
     def load_lyrics(self, track, force_online=False):
         token = track["path"]
         self.lyrics_token = token
-        self.lyrics_artist = track["artist"]
+        self.lyrics_artist = song_artist(track)
         self.lyrics_path = track["path"]
         self.set_lyrics_header()
         lkey = (track["artist"].lower(), track["album"].lower())
@@ -11896,6 +12350,10 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if token != self.lyrics_token:
             return  # an older song's answer arriving late
         text = res.get("text", "")
+        if res.get("missed"):                 # "Search online" found nothing else: what we had stays
+            self.statusBar().showMessage("No other lyrics found online.", 8000)
+        elif res.get("error") and text.strip():
+            self.statusBar().showMessage(f"Couldn't get lyrics ({res['error']})", 8000)
         if not text.strip():
             if res.get("instrumental"):
                 msg = "Instrumental - no lyrics."
