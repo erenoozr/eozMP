@@ -1,6 +1,7 @@
 """
 Errors nobody expected must not close the player: they go to a log file and the status bar.
 """
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -115,6 +116,40 @@ class OrganizeTimingTest(PlayerHarness):
         self.assertEqual(calls, [1])
         p.on_downloads(self.downloads(3, 0))
         self.assertEqual(calls, [1])                # and it is not repeated
+
+
+class RestoreTest(unittest.TestCase):
+    def test_a_backup_cannot_change_what_is_loaded_or_opened_to_the_network(self):    # S1
+        theirs = json.dumps({"volume": 40, "mpv_dir": r"\\evil\share", "remote_on": True,
+                             "remote_token": "known", "slskd_url": "http://evil:5030",
+                             "downloads_dir": r"Z:\x"}).encode()
+        mine = {"volume": 10, "mpv_dir": "C:/mpv", "remote_on": False, "slskd_url": "http://localhost:5030"}
+        out = json.loads(mp.keep_local_settings(theirs, mine))
+        self.assertEqual(out["volume"], 40)                       # ordinary settings do come back
+        self.assertEqual(out["mpv_dir"], "C:/mpv")
+        self.assertFalse(out["remote_on"])
+        self.assertNotIn("remote_token", out)
+        self.assertEqual(out["slskd_url"], "http://localhost:5030")
+        self.assertNotIn("downloads_dir", out)
+
+    def test_backup_file_names_must_be_plain(self):                                      # S2
+        for bad in ("D:planted.json", r"..\x.json", "a/b.json", "x.json:stream", "con:.json", "x.txt", ".json"):
+            self.assertFalse(mp.safe_backup_name(bad), bad)
+        for good in ("Song Name.json", "it's (live) & more.json", "Gül - Şarkı.json"):
+            self.assertTrue(mp.safe_backup_name(good), good)
+
+
+class TagFixDefaultsTest(PlayerHarness):
+    def test_enter_does_not_apply_the_tags(self):                                       # U2
+        from PyQt6.QtWidgets import QPushButton as Btn
+        self.make_player(["One"])
+        t = self.player.all_tracks[0]
+        new = {"artist": "A", "title": "T", "album": "Al", "tracknumber": "1", "date": "2000"}
+        dlg = mp.TagFixDialog(self.player, [t], {t["path"]: ("rid", new)}, {"rid": {"title": "Al"}})
+        buttons = {b.text(): b for b in dlg.findChildren(Btn)}
+        self.assertFalse(buttons["Apply to ticked songs"].autoDefault())
+        self.assertTrue(buttons["Cancel"].isDefault())
+        dlg.deleteLater()
 
 
 if __name__ == "__main__":

@@ -4976,6 +4976,30 @@ class MiniPlayer(QWidget):
 # ---------------------------------------------------------------- library list, drag & drop, dialogs
 EOZ_MIME = "application/x-eozmp-songs"
 BACKUP_FILES = {"settings.json": CONFIG_FILE, "playlists.json": PLAYLIST_FILE, "stats.json": STATS_FILE}
+# A backup may come from someone else: these decide what code gets loaded and who can reach the player,
+# so a restore keeps this PC's own values.
+LOCAL_ONLY_SETTINGS = ("mpv_dir", "remote_on", "remote_port", "remote_token", "slskd_url", "slskd_key",
+                       "downloads_dir", "organize_root")
+
+
+def safe_backup_name(name):
+    """A plain file name: no folders, no drive letters ('D:x.json' lands on drive D:), no odd characters."""
+    return bool(re.fullmatch(r"[\w .,'()&\-]{1,120}\.json", name))
+
+
+def keep_local_settings(data, mine):
+    try:
+        theirs = json.loads(data.decode("utf-8-sig"))
+    except Exception:
+        return data
+    if isinstance(theirs, dict):
+        for key in LOCAL_ONLY_SETTINGS:
+            if key in mine:
+                theirs[key] = mine[key]
+            else:
+                theirs.pop(key, None)
+        data = json.dumps(theirs).encode("utf-8")
+    return data
 
 
 def songs_mime(paths):
@@ -7750,10 +7774,12 @@ class TagFixDialog(QDialog):
         row = QHBoxLayout()
         go = QPushButton("Apply to ticked songs")
         go.setObjectName("primary")
+        go.setAutoDefault(False)          # Enter in the table must not write to the files
         go.clicked.connect(self.apply)
         row.addWidget(go)
         row.addStretch(1)
         close = QPushButton("Cancel")
+        close.setDefault(True)
         close.clicked.connect(self.reject)
         row.addWidget(close)
         v.addLayout(row)
@@ -7763,6 +7789,11 @@ class TagFixDialog(QDialog):
         for r, t in enumerate(self.rows):
             if self.table.item(r, 0).checkState() == Qt.CheckState.Checked:
                 jobs.append((t["path"], *self.plans[t["path"]]))
+        if not jobs:
+            return
+        if QMessageBox.question(self, "Fix tags and cover", _t(f"Change the tags of {len(jobs)} file(s)? "
+                                "This writes to the files themselves and can't be undone."))                 != QMessageBox.StandardButton.Yes:
+            return
         want_cover = self.cover.isChecked()
 
         def job():
@@ -11164,6 +11195,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             "Replace your current settings, playlists, favorites and listening stats with this backup?")
         if answer != QMessageBox.StandardButton.Yes:
             return
+        mine = dict(self.cfg)
         try:
             with zipfile.ZipFile(path) as z:
                 names = z.namelist()
@@ -11171,11 +11203,14 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                     raise ValueError("This doesn't look like an eozMP backup.")
                 for name, dst in BACKUP_FILES.items():
                     if name in names:
-                        dst.write_bytes(z.read(name))
+                        data = z.read(name)
+                        if dst == CONFIG_FILE:
+                            data = keep_local_settings(data, mine)
+                        dst.write_bytes(data)
                 LYRICS_DIR.mkdir(exist_ok=True)
                 for n in names:
-                    if n.startswith("lyrics/") and n.endswith(".json"):
-                        (LYRICS_DIR / os.path.basename(n)).write_bytes(z.read(n))
+                    if n.startswith("lyrics/") and n.endswith(".json") and safe_backup_name(n[len("lyrics/"):]):
+                        (LYRICS_DIR / n[len("lyrics/"):]).write_bytes(z.read(n))
         except Exception as e:
             QMessageBox.warning(self, "Restore", f"Couldn't restore:\n{e}")
             return
