@@ -530,16 +530,6 @@ def main_artist(name, split_collabs=True, keep=()):
     return name or "Unknown Artist"
 
 
-def first(tags, key):
-    try:
-        val = tags.get(key)
-        if val:
-            return str(val[0]).strip()
-    except Exception:
-        pass
-    return ""
-
-
 def to_int(text, default=9999):
     try:
         return int(str(text).split("/")[0])
@@ -547,30 +537,307 @@ def to_int(text, default=9999):
         return default
 
 
+YEAR_IN_DATE_RE = re.compile(r"(?<!\d)(\d{4})(?:\d{4})?(?!\d)")
+
+
+def tag_year(text):
+    """'2019-05-03', '05/03/2019', '20190503' -> 2019 (taking the first four characters gave 5)."""
+    m = YEAR_IN_DATE_RE.search(str(text or ""))
+    return int(m.group(1)) if m else 0
+
+
+def decode_text(data):
+    """Text whose encoding nobody wrote down (lyrics files, old tags): a BOM if there is one, then
+    UTF-8, then Turkish Windows (cp1254, which reads plain Western text right too)."""
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data[3:].decode("utf-8", "replace")
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", "replace")
+    if len(data) >= 4 and data.count(0) * 3 > len(data):     # UTF-16 without a BOM: every other byte is 0
+        return data.decode("utf-16-be" if data[0::2].count(0) > data[1::2].count(0) else "utf-16-le", "replace")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("cp1254", "replace")
+
+
+# Where each tag format keeps what read_track wants; the first key that's there wins.
+TAG_KEYS = {
+    "id3": {"title": ("TIT2",), "artist": ("TPE1",), "albumartist": ("TPE2", "TXXX:ALBUM ARTIST", "TXXX:ALBUMARTIST"),
+            "album": ("TALB",), "genre": ("TCON",), "tracknumber": ("TRCK",), "discnumber": ("TPOS",),
+            "date": ("TDRC", "TDOR"), "bpm": ("TBPM",)},
+    "mp4": {"title": ("\xa9nam",), "artist": ("\xa9ART",), "albumartist": ("aART",), "album": ("\xa9alb",),
+            "genre": ("\xa9gen",), "tracknumber": ("trkn",), "discnumber": ("disk",), "date": ("\xa9day",),
+            "bpm": ("tmpo",)},
+    "asf": {"title": ("Title",), "artist": ("Author",), "albumartist": ("WM/AlbumArtist",),
+            "album": ("WM/AlbumTitle",), "genre": ("WM/Genre",), "tracknumber": ("WM/TrackNumber",),
+            "discnumber": ("WM/PartOfSet",), "date": ("WM/Year", "WM/OriginalReleaseYear"),
+            "bpm": ("WM/BeatsPerMinute",)},
+    "ape": {"title": ("Title",), "artist": ("Artist",), "albumartist": ("Album Artist", "AlbumArtist", "Album_Artist"),
+            "album": ("Album",), "genre": ("Genre",), "tracknumber": ("Track",), "discnumber": ("Disc", "DiscNumber"),
+            "date": ("Year", "Date"), "bpm": ("BPM",)},
+    "vorbis": {"title": ("title",), "artist": ("artist",),
+               "albumartist": ("albumartist", "album artist", "album_artist"), "album": ("album",),
+               "genre": ("genre",), "tracknumber": ("tracknumber", "track"), "discnumber": ("discnumber", "disc"),
+               "date": ("date", "year", "originaldate"), "bpm": ("bpm",)},
+    "riff": {"title": ("INAM",), "artist": ("IART",), "album": ("IPRD",), "genre": ("IGNR",),
+             "tracknumber": ("ITRK", "IPRT"), "date": ("ICRD",)},
+}
+
+
+def tag_kind(tags):
+    from mutagen._vorbis import VComment
+    from mutagen.apev2 import APEv2
+    from mutagen.asf import ASFTags
+    from mutagen.id3 import ID3
+    from mutagen.mp4 import MP4Tags
+    for cls, kind in ((ID3, "id3"), (MP4Tags, "mp4"), (ASFTags, "asf"), (APEv2, "ape"), (VComment, "vorbis")):
+        if isinstance(tags, cls):
+            return kind
+    return None
+
+
+def tag_text(value):
+    """The first text in a tag value, whatever the format wraps it in."""
+    if hasattr(value, "genres"):         # ID3 genre: '(17)' -> 'Rock'
+        value = value.genres
+    elif hasattr(value, "text"):         # other ID3 frames
+        value = value.text
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
+        if isinstance(value, tuple):     # MP4 track and disc numbers: (3, 12)
+            value = value[0] if value else ""
+    return str(value).split("\0")[0].strip() if value is not None else ""
+
+
+def riff_info(path):
+    """The LIST/INFO tags of a WAV file (INAM, IART...), which Windows and many rippers write and
+    mutagen doesn't read."""
+    names = {key: name for name, keys in TAG_KEYS["riff"].items() for key in keys}
+    out = {}
+    with open(path, "rb") as f:
+        head = f.read(12)
+        if head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+            return out
+        while True:
+            chunk = f.read(8)
+            if len(chunk) < 8:
+                break
+            size, start = int.from_bytes(chunk[4:], "little"), f.tell()
+            if chunk[:4] == b"LIST" and f.read(4) == b"INFO":
+                body, pos = f.read(size - 4), 0
+                while pos + 8 <= len(body):
+                    key, n = body[pos:pos + 4].decode("latin-1"), int.from_bytes(body[pos + 4:pos + 8], "little")
+                    text = decode_text(body[pos + 8:pos + 8 + n].split(b"\0")[0]).strip()
+                    if key in names and text:
+                        out.setdefault(names[key], text)
+                    pos += 8 + n + (n & 1)
+            f.seek(start + size + (size & 1))
+    return out
+
+
+# Matroska element ids, marker bits included (as they're stored)
+MKV_SEGMENT, MKV_SEEKHEAD, MKV_SEEK, MKV_SEEK_ID, MKV_SEEK_POS = 0x18538067, 0x114D9B74, 0x4DBB, 0x53AB, 0x53AC
+MKV_INFO, MKV_SCALE, MKV_DURATION, MKV_TITLE, MKV_CLUSTER = 0x1549A966, 0x2AD7B1, 0x4489, 0x7BA9, 0x1F43B675
+MKV_TAGS, MKV_TAG, MKV_TARGETS, MKV_LEVEL, MKV_SIMPLE, MKV_NAME, MKV_STRING = (
+    0x1254C367, 0x7373, 0x63C0, 0x68CA, 0x67C8, 0x45A3, 0x4487)
+MKV_ATTACHMENTS, MKV_FILE, MKV_FILE_NAME, MKV_FILE_MIME, MKV_FILE_DATA = 0x1941A469, 0x61A7, 0x466E, 0x4660, 0x465C
+
+
+def _ebml_head(f):
+    """One element header -> (id, payload size); the size is None when unknown, (None, None) at the end."""
+    b = f.read(1)
+    if not b or not b[0]:
+        return None, None
+    n = 9 - b[0].bit_length()                 # the id's length is in its leading zero bits
+    raw = b + f.read(n - 1)
+    s = f.read(1)
+    if n > 4 or len(raw) < n or not s or not s[0]:
+        return None, None
+    m = 9 - s[0].bit_length()
+    rest = f.read(m - 1)
+    if len(rest) < m - 1:
+        return None, None
+    size = int.from_bytes(bytes([s[0] & (0xFF >> m)]) + rest, "big")
+    return int.from_bytes(raw, "big"), (None if size == (1 << 7 * m) - 1 else size)
+
+
+def _ebml_kids(f, start, size):
+    """[(id, payload offset, payload size)] of the elements inside one element."""
+    out, end = [], start + size
+    f.seek(start)
+    while f.tell() < end:
+        eid, n = _ebml_head(f)
+        if eid is None or n is None:
+            break
+        out.append((eid, f.tell(), n))
+        f.seek(f.tell() + n)
+    return out
+
+
+def _ebml_bytes(f, at, n):
+    f.seek(at)
+    return f.read(n)
+
+
+def _ebml_text(f, at, n):
+    return _ebml_bytes(f, at, n).split(b"\0")[0].decode("utf-8", "replace").strip()
+
+
+def read_matroska(path, cover=False):
+    """Tags, length and (if asked) the cover of a Matroska audio file, which mutagen can't read.
+    -> ({title, artist, ...} like read_tags, seconds, image bytes or None)"""
+    import struct
+    found, pics, info = [], [], {"scale": 1000000, "duration": 0.0}
+
+    def element(at):
+        """Reads the top-level element at `at` if it's one we want -> (id, where the next one starts)."""
+        first_time = at not in done
+        done.add(at)
+        f.seek(at)
+        eid, n = _ebml_head(f)
+        if eid is None or n is None:
+            return eid, None
+        start = f.tell()
+        if not first_time:
+            return eid, start + n
+        if eid == MKV_SEEKHEAD:
+            for sid, sat, sn in _ebml_kids(f, start, n):
+                if sid == MKV_SEEK:
+                    d = {k: _ebml_bytes(f, a, m) for k, a, m in _ebml_kids(f, sat, sn)}
+                    if int.from_bytes(d.get(MKV_SEEK_ID, b""), "big") in (MKV_INFO, MKV_TAGS, MKV_ATTACHMENTS,
+                                                                          MKV_SEEKHEAD):
+                        jumps.add(seg + int.from_bytes(d.get(MKV_SEEK_POS, b""), "big"))
+        elif eid == MKV_INFO:
+            for kid, kat, kn in _ebml_kids(f, start, n):
+                if kid == MKV_SCALE:
+                    info["scale"] = int.from_bytes(_ebml_bytes(f, kat, kn), "big") or 1000000
+                elif kid == MKV_DURATION and kn in (4, 8):
+                    info["duration"] = struct.unpack(">f" if kn == 4 else ">d", _ebml_bytes(f, kat, kn))[0]
+                elif kid == MKV_TITLE:
+                    info["title"] = _ebml_text(f, kat, kn)      # where ffmpeg puts the song's title
+        elif eid == MKV_TAGS:
+            for tid, tat, tn in _ebml_kids(f, start, n):
+                if tid != MKV_TAG:
+                    continue
+                level, names = 50, {}              # no target means the album level (50)
+                for cid, cat, cn in _ebml_kids(f, tat, tn):
+                    if cid == MKV_TARGETS:
+                        for xid, xat, xn in _ebml_kids(f, cat, cn):
+                            if xid == MKV_LEVEL:
+                                level = int.from_bytes(_ebml_bytes(f, xat, xn), "big")
+                    elif cid == MKV_SIMPLE:
+                        d = {k: (a, m) for k, a, m in _ebml_kids(f, cat, cn)}
+                        if MKV_NAME in d and MKV_STRING in d:
+                            names.setdefault(_ebml_text(f, *d[MKV_NAME]).upper(), _ebml_text(f, *d[MKV_STRING]))
+                found.append((level, names))
+        elif eid == MKV_ATTACHMENTS and cover:
+            for aid, aat, an in _ebml_kids(f, start, n):
+                d = {k: (a, m) for k, a, m in _ebml_kids(f, aat, an)} if aid == MKV_FILE else {}
+                if MKV_FILE_DATA in d and _ebml_text(f, *d.get(MKV_FILE_MIME, (0, 0))).startswith("image/"):
+                    pics.append((_ebml_text(f, *d.get(MKV_FILE_NAME, (0, 0))).lower(), *d[MKV_FILE_DATA]))
+        return eid, start + n
+
+    data = None
+    with open(path, "rb") as f:
+        end = os.fstat(f.fileno()).st_size
+        eid, n = _ebml_head(f)
+        if eid != 0x1A45DFA3 or n is None:
+            raise ValueError("not a Matroska file")
+        f.seek(f.tell() + n)
+        eid, n = _ebml_head(f)
+        if eid != MKV_SEGMENT:
+            raise ValueError("not a Matroska file")
+        seg = f.tell()
+        end = end if n is None else min(end, seg + n)
+        done, jumps, at = set(), set(), seg
+        while at is not None and at < end:
+            eid, at = element(at)
+            if eid == MKV_CLUSTER and jumps:
+                break                              # the rest is audio: the SeekHead says where the tags are
+        while jumps - done:
+            element(min(jumps - done))
+        if pics:
+            # Matroska names the front cover "cover.jpg"/"cover.png"
+            pics.sort(key=lambda p: (os.path.splitext(p[0])[0] != "cover", "cover" not in p[0] and "front" not in p[0]))
+            data = _ebml_bytes(f, pics[0][1], pics[0][2])
+
+    def merged(tags):
+        out = {}
+        for names in tags:
+            for k, v in names.items():
+                if v:
+                    out.setdefault(k, v)
+        return out
+
+    def pick(d, *keys):
+        return next((d[k] for k in keys if d.get(k)), "")
+
+    every = merged(names for _lv, names in found)
+    if any(lv < 50 for lv, _names in found):      # the album (50) and the song (30) tagged apart
+        album = merged(names for lv, names in found if lv >= 50)
+        song = merged(names for lv, names in found if lv < 50)
+        tags = {"title": song.get("TITLE", ""), "artist": pick(song, "ARTIST") or pick(album, "ARTIST"),
+                "albumartist": pick(album, "ARTIST", "ALBUM_ARTIST"), "album": pick(album, "TITLE", "ALBUM"),
+                "tracknumber": song.get("PART_NUMBER", ""), "discnumber": pick(every, "DISC", "DISCNUMBER")}
+    else:                                           # one flat list, as ffmpeg writes it
+        tags = {"title": every.get("TITLE", ""), "artist": pick(every, "ARTIST", "LEAD_PERFORMER"),
+                "albumartist": pick(every, "ALBUM_ARTIST", "ALBUMARTIST"), "album": every.get("ALBUM", ""),
+                "tracknumber": pick(every, "PART_NUMBER", "TRACKNUMBER", "TRACK"),
+                "discnumber": pick(every, "DISC", "DISCNUMBER")}
+    tags["title"] = tags["title"] or info.get("title", "")
+    tags.update(genre=every.get("GENRE", ""), bpm=every.get("BPM", ""),
+                date=pick(every, "DATE_RELEASED", "DATE", "DATE_RECORDED", "YEAR"))
+    seconds = info["duration"] * info["scale"] / 1e9
+    return {k: v for k, v in tags.items() if v}, max(0.0, seconds), data
+
+
+def read_tags(path):
+    """-> ({title, artist, albumartist, album, genre, tracknumber, discnumber, date, bpm: text}, seconds).
+    Every format keeps these under its own names; Matroska and WAV's RIFF INFO mutagen can't read."""
+    if path.lower().endswith(".mka"):
+        tags, length, _cover = read_matroska(path)
+        return tags, length
+    audio = MutagenFile(path)
+    if audio is None:
+        return {}, 0
+    length = (getattr(audio.info, "length", 0) or 0) if audio.info is not None else 0
+    out = {}
+    if audio.tags is not None:
+        kind = tag_kind(audio.tags)
+        for name, keys in TAG_KEYS.get(kind, TAG_KEYS["vorbis"]).items():
+            for key in keys:
+                try:
+                    text = tag_text(audio.tags.get(key))
+                except Exception:
+                    text = ""
+                if text:
+                    out[name] = text
+                    break
+    if path.lower().endswith(".wav"):
+        for name, text in riff_info(path).items():
+            out.setdefault(name, text)            # ID3 first: it's what taggers keep up to date
+    return out, length
+
+
 def read_track(path):
-    title = artist = album = genre = ""
-    num, disc, year, length, bpm = 9999, 1, 0, 0, 0
+    t, length = {}, 0
     failed = False
     try:
-        audio = MutagenFile(path, easy=True)
-        if audio is not None:
-            if audio.info is not None:
-                length = getattr(audio.info, "length", 0) or 0
-            if audio.tags is not None:
-                t = audio.tags
-                title = first(t, "title")
-                artist = first(t, "albumartist") or first(t, "artist")
-                genre = first(t, "genre")
-                album = first(t, "album")
-                num = to_int(first(t, "tracknumber"))
-                disc = to_int(first(t, "discnumber"), 1)
-                year = to_int(first(t, "date")[:4], 0)
-                bpm = to_int(first(t, "bpm"), 0)
+        t, length = read_tags(path)
     except Exception as e:
         # a file that's locked right now (a tagger, antivirus...) must be read again next scan,
         # not remembered as untagged (mutagen wraps the OSError in its own error)
         if isinstance(e, OSError) or isinstance(e.__cause__, OSError):
             failed = True
+    title = t.get("title", "")
+    artist = t.get("albumartist") or t.get("artist", "")
+    genre = t.get("genre", "")
+    album = t.get("album", "")
+    num = to_int(t.get("tracknumber", ""))
+    disc = to_int(t.get("discnumber", ""), 1)
+    year = tag_year(t.get("date", ""))
+    bpm = to_int(t.get("bpm", ""), 0)
     return {
         "path": path,
         "title": title or Path(path).stem,
@@ -585,6 +852,9 @@ def read_track(path):
         "bpm": bpm,
         **({"read_failed": True} if failed else {}),
     }
+
+
+TAGS_VERSION = 2   # raise it when read_track learns more: songs cached before are then read again
 
 
 def load_cache():
@@ -681,12 +951,12 @@ def scan_folders(folders, cache=None):
                 continue
             prev = old.get(path)
             if (prev and prev.get("mtime") == st.st_mtime and prev.get("size") == st.st_size
-                    and "artist_raw" in prev and "genre" in prev and "bpm" in prev):
+                    and prev.get("tags_version") == TAGS_VERSION):
                 tracks.append(prev)
             else:
                 t = read_track(path)
                 if not t.pop("read_failed", False):   # no mtime/size = read it again next time
-                    t["mtime"], t["size"] = st.st_mtime, st.st_size
+                    t["mtime"], t["size"], t["tags_version"] = st.st_mtime, st.st_size, TAGS_VERSION
                 t["added"] = max(st.st_mtime, st.st_ctime)
                 tracks.append(t)
     # keep the songs of folders we couldn't reach, so an unplugged drive doesn't empty the library
