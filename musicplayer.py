@@ -98,6 +98,15 @@ class _Raw(str):
     """Song, artist, album and playlist names: shown as they are, never translated."""
 
 
+def run_dialog(dlg):
+    """exec() a dialog and let it go afterwards: a dialog made with the window as its parent otherwise
+    stays in memory (a quality check on a big library kept ~70 MB each time)."""
+    try:
+        return dlg.exec()
+    finally:
+        dlg.deleteLater()
+
+
 def _raw(text):
     return _Raw(text)
 
@@ -109,7 +118,11 @@ def _t(text):
     hit = _TR.get(text)
     if hit is not None:
         return hit
-    for rx, tpl in _TR_PATTERNS:
+    if len(text) > 400:        # a long text with changing parts is a name or a message, not interface text:
+        return text            # trying every pattern on it can freeze the window for seconds
+    for rx, tpl, pre, suf in _TR_PATTERNS:
+        if not (text.startswith(pre) and text.endswith(suf)):
+            continue
         m = rx.match(text)
         if m:
             return re.sub(r"\{(\d+)\}", lambda k: m.group(int(k.group(1)) + 1), tpl)
@@ -140,7 +153,8 @@ def set_ui_language(code):
             # map placeholder numbers to regex groups, so the translation may reorder them
             tpl = re.sub(r"\{(\d+)\}", lambda m: "{%d}" % order.index(int(m.group(1))) if int(m.group(1)) in order
                          else m.group(0), v.replace("{{", "{").replace("}}", "}"))
-            _TR_PATTERNS.append((rx, tpl))
+            plain = re.split(r"\{\d+\}", k.replace("{{", "{").replace("}}", "}"))
+            _TR_PATTERNS.append((rx, tpl, plain[0], plain[-1]))
         else:
             _TR[k] = v
     _TR_PATTERNS.sort(key=lambda p: -len(p[0].pattern))
@@ -1590,6 +1604,17 @@ def contrast_ratio(a, b):
     return (hi + 0.05) / (lo + 0.05)
 
 
+def readable_accent(accent, backgrounds, dark):
+    """The accent, moved lighter (dark theme) or darker (light theme) until it reads as text (4.5:1) on
+    the given backgrounds: yellow or lime links were nearly invisible on the light theme."""
+    c = QColor(accent)
+    for _ in range(40):
+        if all(contrast_ratio(c, bg) >= 4.5 for bg in backgrounds):
+            break
+        c = c.lighter(108) if dark else c.darker(108)
+    return c.name()
+
+
 def text_on(color):
     """Text/icon colour for something filled with `color`: white when it reads well (4.5:1), else
     near-black; black for the few mid-tones where neither quite does."""
@@ -1619,6 +1644,7 @@ def make_scheme(dark, accent):
     dim.setAlpha(105)
     sc["lyric_dim"] = dim
     sc["dark"] = dark
+    sc["accent_text"] = readable_accent(accent, (sc["bg"], sc["panel"]), dark)    # accent-coloured text/links
     sc["accent_soft"] = f"rgba({c.red()}, {c.green()}, {c.blue()}, {70 if dark else 52})"
     return sc
 
@@ -1710,7 +1736,7 @@ QLabel#brand { font-family: "@display_font@"; font-size: 19px; font-weight: 800;
 QPushButton#seg { background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0px; padding: 6px 9px; color: @sub@; font-weight: 600; }
 QPushButton#seg:hover { color: @text@; background: transparent; }
 QPushButton#seg:checked { color: @text@; border-bottom: 2px solid @accent@; }
-QPushButton#link { background: transparent; border: none; padding: 0px 2px; color: @accent@; font-size: 12px; }
+QPushButton#link { background: transparent; border: none; padding: 0px 2px; color: @accent_text@; font-size: 12px; }
 QPushButton#link:hover { text-decoration: underline; background: transparent; }
 QListWidget#lyrics { background: transparent; border: none; }
 QWidget#drawer QListWidget { background: transparent; border: none; }
@@ -1779,7 +1805,7 @@ def apply_look(app, theme, accent_name, system_dark, tokens=None):
     return sc
 
 
-ACCENT_TOKENS = ("@accent@", "@accent_hover@", "@on_accent@")
+ACCENT_TOKENS = ("@accent@", "@accent_hover@", "@on_accent@", "@accent_text@")
 ACCENT_MARK = "/* accent */ "
 
 
@@ -1806,7 +1832,7 @@ def accent_qss(sc):
     """Only the accent colours, for the few widgets that show them. A widget's own sheet beats the
     app's, so they follow the album-art accent without restyling every widget in the app."""
     qss = ACCENT_MARK + " ".join(f"{sel} {{ {decls}; }}" for sel, decls in ACCENT_RULES)
-    for key in ("accent_hover", "on_accent", "accent"):
+    for key in ("accent_hover", "on_accent", "accent_text", "accent"):
         qss = qss.replace(f"@{key}@", sc[key])
     return qss
 
@@ -3455,6 +3481,23 @@ def fetch_cover_bytes(artist, album):
     if failed is not None:
         raise failed
     return None
+
+
+class CoverCache(dict):
+    """Full-size covers: only the most recently used ones stay in memory (60 albums of big covers were
+    over half a gigabyte, and shuffle visits them all)."""
+    LIMIT = 24
+
+    def __getitem__(self, key):
+        value = super().pop(key)
+        super().__setitem__(key, value)        # most recently used goes last
+        return value
+
+    def __setitem__(self, key, value):
+        super().pop(key, None)
+        super().__setitem__(key, value)
+        while len(self) > self.LIMIT:
+            super().pop(next(iter(self)))
 
 
 def cover_cache_file(artist, album):
@@ -6378,6 +6421,7 @@ class MissingDialog(QDialog):
         v = QVBoxLayout(self)
         head = QLabel(f"<b>{html.escape(album)}</b> - {html.escape(artist)}<br>"
                       f"You have {total - len(missing)} of {total} songs (edition: {html.escape(release)}).")
+        head.setTextFormat(Qt.TextFormat.RichText)      # the labels are plain text unless told otherwise
         head.setWordWrap(True)
         v.addWidget(head)
         self.list = QListWidget()
@@ -6473,16 +6517,22 @@ class DuplicatesDialog(QDialog):
         if QMessageBox.question(self, "Move duplicates", f"Move {len(paths)} file(s) to\n"
                                 f"{os.path.join(root, DUPLICATES_FOLDER)} ?") != QMessageBox.StandardButton.Yes:
             return
-        try:
-            done, dest = move_aside(paths, root)
-        except OSError as e:
-            QMessageBox.warning(self, "Move duplicates",
-                                f"Couldn't use the folder {os.path.join(root, DUPLICATES_FOLDER)}:\n{e}")
-            return
-        self.main.carry_over_paths({a: self.keeper[a] for a, _b in done if a in self.keeper})
-        self.main.statusBar().showMessage(f"Moved {len(done)} duplicate(s) to {dest}", 10000)
+        main, keeper = self.main, dict(self.keeper)      # the window outlives this dialog
+        folder = os.path.join(root, DUPLICATES_FOLDER)
+
+        def finished(res):
+            done, dest = res
+            main.carry_over_paths({a: keeper[a] for a, _b in done if a in keeper})
+            main.statusBar().showMessage(f"Moved {len(done)} duplicate(s) to {dest}", 10000)
+            main.rescan()
+
+        w = Worker(lambda: move_aside(paths, root))     # a copy on another drive is really copied: slow
+        w.ok.connect(finished)
+        w.fail.connect(lambda m: QMessageBox.warning(main, "Move duplicates",
+                                                     f"Couldn't use the folder {folder}:\n{m}"))
+        main.keep(w)
+        main.statusBar().showMessage("Moving the copies...", 0)
         self.accept()
-        self.main.rescan()
 
 
 class QualityDialog(QDialog):
@@ -6776,7 +6826,7 @@ class ExtrasMixin:
     # ----- wishlist
     def open_wishlist(self):
         self.wish_dlg = WishlistDialog(self)
-        self.wish_dlg.exec()
+        run_dialog(self.wish_dlg)
         self.wish_dlg = None
 
     def wishlist_add(self, text):
@@ -6791,9 +6841,15 @@ class ExtrasMixin:
         self.statusBar().showMessage(f'Added "{text}" to your Soulseek wishlist.', 6000)
 
     def wishlist_check(self):
-        pending = [w["q"] for w in self.cfg["wishlist"] if not w.get("found")][:4]
-        if not pending or self._wish_busy or not self.slskd_ready():
+        open_wishes = [w for w in self.cfg["wishlist"] if not w.get("found")]
+        if not open_wishes or self._wish_busy or not self.slskd_ready():
             return
+        # four per round, the ones looked at longest ago first, so a long list is searched in turns
+        turn = sorted(open_wishes, key=lambda w: w.get("checked", 0))[:4]
+        for w in turn:
+            w["checked"] = time.time()
+        save_config(self.cfg)
+        pending = [w["q"] for w in turn]
         self._wish_busy = True
         client, fmt = self.client(), self.cfg["soul_quality"]
 
@@ -6840,7 +6896,7 @@ class ExtrasMixin:
             elif not res[2]:
                 QMessageBox.information(self, "Missing songs", f"You have every song of this album ({res[1]}).")
             else:
-                MissingDialog(self, artist, album, res[0], res[1], res[2]).exec()
+                run_dialog(MissingDialog(self, artist, album, res[0], res[1], res[2]))
 
         w.ok.connect(done)
         w.fail.connect(lambda m: self.statusBar().showMessage(f"Couldn't check the album ({m})", 8000))
@@ -6852,10 +6908,10 @@ class ExtrasMixin:
         if not groups:
             QMessageBox.information(self, "Duplicate songs", "No duplicate songs found.")
             return
-        DuplicatesDialog(self, groups).exec()
+        run_dialog(DuplicatesDialog(self, groups))
 
     def open_quality(self):
-        QualityDialog(self).exec()
+        run_dialog(QualityDialog(self))
 
     # ----- moods
     def compute_moods(self):
@@ -6918,7 +6974,7 @@ class ExtrasMixin:
         items = self.cfg.get("new_releases", {}).get("items", [])[:12]
         self.home_new_label.setVisible(bool(items))
         self.home_new.setVisible(bool(items))
-        col = self.scheme["accent"]
+        col = self.scheme["accent_text"]
         self.home_new.setText("<br>".join(
             self.link("newrel:" + urllib.parse.quote(f"{i['artist']}|{i['title']}"),
                       f"{i['artist']} - {i['title']}", col)
@@ -7750,25 +7806,41 @@ class LastfmDialog(QDialog):
         if not key or not secret:
             self.status.setText(_t("Paste the API key and shared secret first."))
             return
-        try:
-            self.token = lastfm_call("auth.getToken", {}, key, secret)["token"]
-        except Exception as e:
-            self.status.setText(_t(f"Last.fm said: {e}"))
-            return
+        self.ask(lambda: lastfm_call("auth.getToken", {}, key, secret)["token"], self.got_token)
+
+    def ask(self, call, done):
+        """Last.fm can take seconds to answer: do it off the window's thread."""
+        self.connect_btn.setEnabled(False)
+        self.finish_btn.setEnabled(False)
+        self.status.setText(_t("Connecting to Last.fm..."))
+        w = Worker(call)
+        w.ok.connect(done)
+        w.fail.connect(self.said)
+        self.main.keep(w)
+
+    def said(self, message):
+        self.connect_btn.setEnabled(True)
+        self.finish_btn.setEnabled(bool(self.token))
+        self.status.setText(_t(f"Last.fm said: {message}"))
+
+    def got_token(self, token):
+        self.token = token
+        key = self.key.text().strip()
+        self.connect_btn.setEnabled(True)
         QDesktopServices.openUrl(QUrl(f"https://www.last.fm/api/auth/?api_key={key}&token={self.token}"))
         self.status.setText(_t("Allow eozMP in the browser page that opened, then click \"I allowed it - finish\"."))
         self.finish_btn.setEnabled(True)
 
     def finish(self):
         key, secret = self.key.text().strip(), self.secret.text().strip()
-        try:
-            s = lastfm_call("auth.getSession", {"token": self.token}, key, secret)["session"]
-        except Exception as e:
-            self.status.setText(_t(f"Last.fm said: {e}"))
-            return
+        self.ask(lambda: lastfm_call("auth.getSession", {"token": self.token}, key, secret)["session"],
+                 lambda session: self.got_session(session, key, secret))
+
+    def got_session(self, s, key, secret):
         self.main.cfg.update({"lastfm_session": s["key"], "lastfm_user": s["name"], "lastfm_key": key,
                               "lastfm_secret": secret})
         save_config(self.main.cfg)
+        self.connect_btn.setEnabled(True)
         self.finish_btn.setEnabled(False)
         self.show_status()
 
@@ -7918,9 +7990,9 @@ class Extras2Mixin:
 
     def build_connect_menu(self):
         menu = self.menuBar().addMenu("&Connect")
-        for text, fn in (("Phone remote...", lambda: RemoteDialog(self).exec()),
-                         ("Play on a TV or speaker...", lambda: CastDialog(self).exec()),
-                         ("Last.fm...", lambda: LastfmDialog(self).exec()),
+        for text, fn in (("Phone remote...", lambda: run_dialog(RemoteDialog(self))),
+                         ("Play on a TV or speaker...", lambda: run_dialog(CastDialog(self))),
+                         ("Last.fm...", lambda: run_dialog(LastfmDialog(self))),
                          ("AcoustID key (for fixing tags)...", self.ask_acoustid_key)):
             act = QAction(text, self)
             act.triggered.connect(lambda checked=False, f=fn: f())
@@ -8205,7 +8277,7 @@ class Extras2Mixin:
             if self.current_artist != akey:
                 return
             names = [a["name"] for a in res.get("similarartists", {}).get("artist", [])][:8]
-            col = self.scheme["accent"]
+            col = self.scheme["accent_text"]
             links = [self.link(f"artist:{urllib.parse.quote(n.lower())}", n, col) if n.lower() in self.artists
                      else self.link("newrel:" + urllib.parse.quote(n + "|"), n, self.scheme["sub"]) for n in names]
             if links:
@@ -8244,7 +8316,7 @@ class Extras2Mixin:
             if not plans:
                 QMessageBox.information(self, "Fix tags", "MusicBrainz didn't recognise these songs.")
                 return
-            TagFixDialog(self, tracks, plans, releases).exec()
+            run_dialog(TagFixDialog(self, tracks, plans, releases))
 
         w.ok.connect(done)
         w.fail.connect(lambda m: self.statusBar().showMessage(_t(f"Couldn't look the songs up ({m})"), 10000))
@@ -8342,7 +8414,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.qindex = {}        # path -> index in queue
         self.index = -1
         self.current_album = None
-        self.cover_cache = {}
+        self.cover_cache = CoverCache()
         self.search_worker = None
         self.last_done = None
         self.poll_busy = False
@@ -9552,7 +9624,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
     def on_scan_done(self, tracks):
         self.scanning = False
         if tracks and same_tracks(tracks, self.built_tracks):
-            self.cover_cache = {}    # cover files may have been added; songs are as they were
+            self.cover_cache = CoverCache()    # cover files may have been added; songs are as they were
             self.statusBar().showMessage(f"{len(tracks)} tracks - {len(self.artists)} artists - {len(self.albums)} albums")
         else:
             self.build_library(tracks)
@@ -9575,7 +9647,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             for i in range(self.tree.topLevelItemCount())
             if self.tree.topLevelItem(i).isExpanded()
         }
-        self.albums, self.artists, self.cover_cache, self.by_artist = {}, {}, {}, {}
+        self.albums, self.artists, self.cover_cache, self.by_artist = {}, {}, CoverCache(), {}
         group = bool(self.cfg["group_featured"])
         split = bool(self.cfg["split_collabs"])
         keep = {k.strip().lower() for k in self.cfg["keep_together"] if k.strip()}
@@ -10273,7 +10345,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
     # ----- settings
     def open_settings(self, tab=None):
         dlg = PreferencesDialog(self.cfg, self, tab)
-        if not dlg.exec():
+        if not run_dialog(dlg):
             return False
         self.apply_prefs(dlg.values())
         return True
@@ -10479,7 +10551,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             if item is None:
                 continue
             item.setTextAlignment(self.lyric_align)
-            item.setText(self.lyric_lines[i] or gap)
+            item.setText(_raw(self.lyric_lines[i]) if self.lyric_lines[i] else gap)
         self.restyle_lyrics()
 
     def update_lyrics_backdrop(self, key):
@@ -11087,8 +11159,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
     def refresh_browse_list(self):
         self.browse_list.clear()
 
-        def add(text, data=None, heading=False):
-            item = QListWidgetItem(_t(text))
+        def add(text, data=None, heading=False, name=False):
+            item = QListWidgetItem(text if name else _t(text))     # name: a genre or decade, never translated
             if data is None:
                 item.setFlags(Qt.ItemFlag.NoItemFlags)    # drawn grey by the stylesheet: not a row to pick
             else:
@@ -11106,12 +11178,12 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         add("Genres", heading=True)
         for gk in sorted(self.genres, key=lambda k: self.genres[k]["name"].lower()):
             g = self.genres[gk]
-            add(f"{g['name']}   ({len(g['albums'])})", ("genre", gk))
+            add(_raw(f"{g['name']}   ({len(g['albums'])})"), ("genre", gk), name=True)
         if not self.genres:
             add("No genre tags found in your music yet.")
         add("Decades", heading=True)
         for dk in sorted(self.decades, reverse=True):
-            add(f"{dk}   ({len(self.decades[dk])})", ("decade", dk))
+            add(_raw(f"{dk}   ({len(self.decades[dk])})"), ("decade", dk), name=True)
 
     def on_browse_clicked(self, item):
         data = item.data(KEY_ROLE)
@@ -11125,10 +11197,10 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             title = _t(f"{_t(value)} mood")
         elif kind == "genre":
             keys = list(self.genres.get(value, {}).get("albums", []))
-            title = self.genres.get(value, {}).get("name", value)
+            title = _raw(self.genres.get(value, {}).get("name", value))
         else:
             keys = list(self.decades.get(value, []))
-            title = f"The {value}"
+            title = _raw(value)
         keys = [k for k in keys if k in self.albums]
         keys.sort(key=lambda k: (self.albums[k]["artist"].lower(), self.albums[k]["year"] or 9999))
         self.browse_paths = [p for k in keys for p in self.album_paths(k)]
@@ -11200,11 +11272,11 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if pix is None:
             self.statusBar().showMessage("There's no cover for this album yet.", 5000)
             return
-        CoverViewer(self, pix).exec()
+        run_dialog(CoverViewer(self, pix))
 
     def show_song_info(self, path):
         if path in self.track_by_path:
-            SongInfoDialog(self, path).exec()
+            run_dialog(SongInfoDialog(self, path))
 
     def show_in_folder(self, path):
         if sys.platform == "win32":
@@ -12298,7 +12370,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             t = self.queue[self.index][0]
             text = f"{t['title']} - {song_artist(t)}"
             self.tray_now.setText(_raw(text if len(text) < 60 else text[:57] + "..."))
-            self.tray.setToolTip(f"eozMP\n{text}"[:120])
+            self.tray.setToolTip(_raw(f"eozMP\n{text}"[:120]))
 
     # ----- keyboard media keys
     def register_media_keys(self):
@@ -12373,7 +12445,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         a = _words(artist)
         owned = {album_key(alb["album"], artist) for alb in self.albums.values() if _words(alb["artist"]) == a}
         dlg = DiscographyDialog(self, artist, picks, owned)
-        if dlg.exec():
+        if run_dialog(dlg):
             files = [f for pk in dlg.selected() for f in pk["files"]]
             if files:
                 self.enqueue_downloads(files)
@@ -12390,7 +12462,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             pass
 
     def open_equalizer(self):
-        EqualizerDialog(self).exec()
+        run_dialog(EqualizerDialog(self))
 
     # ----- playlists and right-click menus
     def set_left_view(self, tab):
@@ -12438,7 +12510,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             menu.addAction("Show in folder").triggered.connect(lambda: self.show_in_folder(paths[0]))
         sub = menu.addMenu("Add to playlist")
         for name in self.playlists:
-            sub.addAction(name).triggered.connect(
+            sub.addAction(_raw(name)).triggered.connect(
                 lambda checked=False, n=name: self.add_to_playlist(n, paths))
         if self.playlists:
             sub.addSeparator()
@@ -12823,7 +12895,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             self.lyrics_list.addItem(self.lyric_spacer())
         for ms, line in lines:
             gap = "♪" if self.cfg["lyrics_style"] == "Classic" else "• • •"
-            item = QListWidgetItem(line if line else gap)
+            item = QListWidgetItem(_raw(line) if line else gap)
             item.setTextAlignment(self.lyric_align)
             self.style_lyric_item(item, False, synced)
             self.lyrics_list.addItem(item)
@@ -12880,7 +12952,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             if self.cfg["lyrics_style"] == "Classic":
                 self.lyrics_list.doItemsLayout()   # the current line got bigger
             self.scroll_lyrics_to(item)
-            self.set_lyric_line(self.lyric_lines[i] or "♪")
+            self.set_lyric_line(_raw(self.lyric_lines[i]) if self.lyric_lines[i] else "♪")
         else:
             self.set_lyric_line("")
 

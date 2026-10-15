@@ -256,5 +256,86 @@ class RemoteServerTest(TempDirTest):
         self.assertEqual(self.request(port, url)[0], 200)
 
 
+class MemoryAndSpeedTest(unittest.TestCase):
+    def test_the_cover_cache_keeps_only_the_latest_covers(self):                 # P1
+        cache = mp.CoverCache()
+        for i in range(100):
+            cache[i] = object()
+        self.assertEqual(len(cache), mp.CoverCache.LIMIT)
+        self.assertIn(99, cache)
+        self.assertNotIn(0, cache)
+        cache[76]                                     # used again: now it outlives older ones
+        cache[100] = object()
+        self.assertIn(76, cache)
+
+    def test_long_texts_do_not_freeze_the_translation(self):                     # S4
+        import time as _time
+        mp.set_ui_language("tr")
+        self.addCleanup(mp.set_ui_language, "en")
+        name = " shown (" * 600
+        t0 = _time.perf_counter()
+        out = mp._t(f"Playing on {name}")
+        self.assertLess(_time.perf_counter() - t0, 1.0)
+        self.assertEqual(out, f"Playing on {name}")
+
+    def test_patterns_still_translate_short_texts(self):
+        mp.set_ui_language("tr")
+        self.addCleanup(mp.set_ui_language, "en")
+        self.assertNotEqual(mp._t("Moved 3 duplicate(s) to X"), "Moved 3 duplicate(s) to X")
+
+    def test_accent_text_is_readable_on_both_themes(self):                       # U8
+        for dark in (False, True):
+            for name, accent in mp.ACCENTS.items():
+                sc = mp.make_scheme(dark, accent)
+                for bg in (sc["bg"], sc["panel"]):
+                    self.assertGreaterEqual(mp.contrast_ratio(sc["accent_text"], bg), 4.5, (dark, name))
+
+
+class DialogsAndNamesTest(PlayerHarness):
+    def test_a_closed_dialog_is_deleted(self):                                   # P2
+        from PyQt6 import sip
+        from PyQt6.QtCore import QEvent, QTimer
+        from PyQt6.QtWidgets import QApplication, QDialog
+        self.make_player(["One"])
+        dlg = QDialog(self.player)
+        QTimer.singleShot(50, dlg.accept)
+        mp.run_dialog(dlg)
+        QApplication.sendPostedEvents(dlg, QEvent.Type.DeferredDelete)
+        self.assertTrue(sip.isdeleted(dlg))
+
+    def test_genre_names_are_not_translated(self):                               # B9
+        self.make_player(["One"])
+        mp.set_ui_language("tr")
+        self.addCleanup(mp.set_ui_language, "en")
+        p = self.player
+        p.genres = {"classical": {"name": "Classical", "albums": []}}
+        p.refresh_browse_list()
+        texts = [p.browse_list.item(i).text() for i in range(p.browse_list.count())]
+        self.assertTrue(any(t.startswith("Classical") for t in texts), texts)
+
+    def test_the_missing_songs_header_is_formatted(self):                        # U3
+        from PyQt6.QtWidgets import QLabel as Lab
+        self.make_player(["One"])
+        dlg = mp.MissingDialog(self.player, "Radiohead", "OK Computer", "Collector's Edition", 3, ["Airbag"])
+        head = dlg.findChildren(Lab)[0]
+        self.assertEqual(head.textFormat(), mp.Qt.TextFormat.RichText)
+        dlg.deleteLater()
+
+    def test_a_long_wishlist_is_searched_in_turns(self):                         # U7, B16
+        self.make_player(["One"], wishlist=[{"q": f"song {i}", "added": 1} for i in range(10)])
+        p = self.player
+        asked = []
+        mp.STOP_BG.clear()           # an earlier test's shutdown leaves it set
+        p.slskd_ready = lambda: True
+        p.client = lambda: None
+        real = mp.soul_search_sync
+        mp.soul_search_sync = lambda client, q: asked.append(q) or []
+        self.addCleanup(setattr, mp, "soul_search_sync", real)
+        for _ in range(3):
+            p.wishlist_check()
+            self.assertTrue(wait_for(lambda: not p._wish_busy, 5))
+        self.assertEqual(sorted(set(asked)), sorted(f"song {i}" for i in range(10)))
+
+
 if __name__ == "__main__":
     unittest.main()
