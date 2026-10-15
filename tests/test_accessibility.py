@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import Qt  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import QApplication  # noqa: E402
+from PyQt6.QtWidgets import QAbstractButton, QAbstractSlider, QApplication, QWidget  # noqa: E402
 
 from test_mpv_engine import wait_for  # noqa: E402
 from test_player import PlayerHarness, mp  # noqa: E402
@@ -150,6 +150,52 @@ class TabKeyTest(WindowTest):                                             # C13
             self.focus(w)
             after = w.grab().toImage()
             self.assertNotEqual(before, after, f"no focus mark on {w.objectName() or type(w).__name__}")
+
+
+
+def spoken_name(w):
+    """What a screen reader says for a control: its accessible name, or else a button's own text."""
+    name = w.accessibleName()
+    if not name and isinstance(w, QAbstractButton):
+        name = w.text().replace("&", "")
+    return name.strip()
+
+
+class ScreenReaderNameTest(WindowTest):                                   # C8
+    def unnamed(self, root):
+        return [f"{type(w).__name__} {w.toolTip()!r}" for w in root.findChildren(QWidget)
+                if w.isVisibleTo(root) and isinstance(w, (QAbstractButton, QAbstractSlider))
+                and not spoken_name(w)]
+
+    def test_every_control_in_the_main_window_has_a_name(self):
+        p = self.player
+        for page in (0, 1, 2, 3, 6, 7, 8, 9, 10):
+            p.stack.setCurrentIndex(page)
+            wait_for(lambda: False, 0.3)
+            self.assertEqual(self.unnamed(p), [], f"page {page}")
+        p.open_drawer()
+        wait_for(lambda: False, 0.4)
+        self.assertEqual(self.unnamed(p.drawer), [])
+
+    def test_mini_and_fullscreen_players_name_their_controls(self):
+        p = self.player
+        p.toggle_mini()
+        self.assertTrue(wait_for(lambda: p.mini is not None and p.mini.isVisible(), 3))
+        self.assertEqual(self.unnamed(p.mini), [])
+        p.toggle_mini()
+        p.toggle_fullscreen()
+        self.assertTrue(wait_for(lambda: p.fs is not None and p.fs.isVisible(), 3))
+        self.assertEqual(self.unnamed(p.fs), [])
+        p.exit_fullscreen()
+
+    def test_names_follow_what_the_button_does_now(self):
+        p = self.player
+        self.assertEqual(p.play_btn.accessibleName(), "Play")
+        self.start("One")
+        self.assertTrue(wait_for(lambda: p.play_btn.accessibleName() == "Pause", 5))
+        self.assertEqual(p.fav_btn.accessibleName(), "Add to Favorites")
+        p.toggle_favorite_current()
+        self.assertEqual(p.fav_btn.accessibleName(), "Remove from Favorites")
 
 
 if __name__ == "__main__":

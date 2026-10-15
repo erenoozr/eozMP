@@ -180,6 +180,7 @@ def install_ui_translation():
     for cls, name, idx in (
         (QLabel, "setText", (1,)), (QAbstractButton, "setText", (1,)), (QAction, "setText", (1,)),
         (QWidget, "setToolTip", (1,)), (QAction, "setToolTip", (1,)), (QWidget, "setWindowTitle", (1,)),
+        (QWidget, "setAccessibleName", (1,)),
         (QLineEdit, "setPlaceholderText", (1,)), (QMenu, "addAction", (1, 2)), (QMenu, "addMenu", (1, 2)),
         (QMenu, "setTitle", (1,)), (QMenuBar, "addMenu", (1, 2)), (QMenuBar, "addAction", (1,)),
         (QTabWidget, "addTab", (2, 3)), (QTabWidget, "setTabText", (2,)), (QFormLayout, "addRow", (1,)),
@@ -4290,6 +4291,7 @@ class MiniPlayer(QWidget):
             b.setFixedSize(34, 34)
             b.setIconSize(QSize(18, 18))
             b.setToolTip(tip)
+            b.setAccessibleName(tip)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setStyleSheet("QPushButton { background: transparent; border: none; border-radius: 17px; }"
                             "QPushButton:hover { background: rgba(255, 255, 255, 46); }"
@@ -5071,6 +5073,7 @@ class FullPlayer(QWidget):
         self.pos_label = QLabel("0:00")
         self.pos_label.setObjectName("fssub")
         self.seek = SeekSlider()
+        self.seek.setAccessibleName("Song position")
         self.seek.seekRequested.connect(lambda v: self.main.player.setPosition(v))
         self.len_label = QLabel("0:00")
         self.len_label.setObjectName("fssub")
@@ -5086,10 +5089,13 @@ class FullPlayer(QWidget):
         self.next = QPushButton()
         self.repeat = QPushButton()
         self.heart = QPushButton()
-        for b in (self.shuffle, self.prev, self.play, self.next, self.repeat, self.heart):
+        for b, tip in ((self.shuffle, "Shuffle"), (self.prev, "Previous"), (self.play, "Play / pause"),
+                       (self.next, "Next"), (self.repeat, "Repeat"), (self.heart, "Add to / remove from Favorites")):
             b.setFixedSize(46, 46)
             b.setIconSize(QSize(22, 22))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setToolTip(tip)
+            b.setAccessibleName(tip)
             btns.addWidget(b)
         self.play.setObjectName("fsplay")
         self.play.setFixedSize(64, 64)
@@ -5099,7 +5105,10 @@ class FullPlayer(QWidget):
         self.vol_btn.setFixedSize(40, 40)
         self.vol_btn.setIconSize(QSize(20, 20))
         self.vol_btn.clicked.connect(lambda: self.main.toggle_mute())
+        self.vol_btn.setToolTip("Mute / unmute")
+        self.vol_btn.setAccessibleName("Mute / unmute")
         self.vol = QSlider(Qt.Orientation.Horizontal)
+        self.vol.setAccessibleName("Volume")
         self.vol.setRange(0, 100)
         self.vol.setFixedWidth(110)
         self.vol.valueChanged.connect(lambda v: self.main.volume.setValue(v))
@@ -5139,10 +5148,12 @@ class FullPlayer(QWidget):
         wb.setSpacing(6)
         self.min_btn = QPushButton()
         self.min_btn.setToolTip("Leave fullscreen")
+        self.min_btn.setAccessibleName("Leave fullscreen")
         self.min_btn.clicked.connect(lambda: self.main.exit_fullscreen())
         self.close_btn = QPushButton()
         self.close_btn.setObjectName("fsclose")
         self.close_btn.setToolTip("Close eozMP")
+        self.close_btn.setAccessibleName("Close eozMP")
         self.close_btn.clicked.connect(lambda: self.main.quit_app())
         for b in (self.min_btn, self.close_btn):
             b.setFixedSize(40, 40)
@@ -7826,12 +7837,13 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         brand.addStretch(1)
         self.nav_back_btn = QPushButton()
         self.nav_fwd_btn = QPushButton()
-        for b, tip, fn in ((self.nav_back_btn, "Back (Alt+Left)", lambda: self.go_back()),
-                           (self.nav_fwd_btn, "Forward (Alt+Right)", lambda: self.go_forward())):
+        for b, tip, name, fn in ((self.nav_back_btn, "Back (Alt+Left)", "Back", lambda: self.go_back()),
+                                 (self.nav_fwd_btn, "Forward (Alt+Right)", "Forward", lambda: self.go_forward())):
             b.setObjectName("transport")
             b.setFixedSize(30, 30)
             b.setIconSize(QSize(16, 16))
             b.setToolTip(tip)
+            b.setAccessibleName(name)     # icon-only: this is what a screen reader says
             b.clicked.connect(fn)
             brand.addWidget(b)
         lv.addLayout(brand)
@@ -7846,9 +7858,11 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.search.returnPressed.connect(self.on_enter)
         self.soul_btn = QPushButton()
         self.soul_btn.setToolTip("Search Soulseek")
+        self.soul_btn.setAccessibleName("Search Soulseek")
         self.soul_btn.clicked.connect(self.soulseek_search)
         self.dl_nav_btn = QPushButton()
         self.dl_nav_btn.setToolTip("Downloads")
+        self.dl_nav_btn.setAccessibleName("Downloads")
         self.dl_nav_btn.clicked.connect(lambda: self.open_downloads())
         for b in (self.soul_btn, self.dl_nav_btn):
             b.setObjectName("transport")
@@ -7890,6 +7904,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.sort_btn.setObjectName("link")
         self.sort_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.sort_btn.setToolTip("Sort artists")
+        self.sort_btn.setAccessibleName("Sort artists")     # its text is only "A-Z"
         sort_menu = QMenu(self)
         for mode in ("A-Z", "Recently added", "Most played"):
             sort_menu.addAction(mode).triggered.connect(lambda checked=False, m=mode: self.set_library_sort(m))
@@ -8167,6 +8182,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.drawer_close.setFixedSize(30, 30)
         self.drawer_close.setIconSize(QSize(16, 16))
         self.drawer_close.setToolTip("Close (Esc)")
+        self.drawer_close.setAccessibleName("Close")
         self.drawer_close.clicked.connect(lambda: self.close_drawer())
         dh.addWidget(self.queue_title, 1)
         dh.addWidget(self.drawer_close)
@@ -8539,6 +8555,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.time_label = QLabel("0:00")
         self.time_label.setObjectName("sub")
         self.seek = SeekSlider()
+        self.seek.setAccessibleName("Song position")
         self.seek.setRange(0, 0)
         self.seek.seekRequested.connect(lambda v: self.player.setPosition(v))
         self.seek.sliderMoved.connect(lambda v: self.time_label.setText(fmt_time(v)))
@@ -8555,12 +8572,13 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.prev_btn = QPushButton()
         self.play_btn = QPushButton()
         self.next_btn = QPushButton()
-        for b, size, icon, tip in ((self.prev_btn, 40, 20, "Previous (Ctrl+Left)"),
-                                   (self.play_btn, 46, 22, "Play (Ctrl+P)"),
-                                   (self.next_btn, 40, 20, "Next (Ctrl+Right)")):
+        for b, size, icon, tip, name in ((self.prev_btn, 40, 20, "Previous (Ctrl+Left)", "Previous"),
+                                         (self.play_btn, 46, 22, "Play (Ctrl+P)", "Play"),
+                                         (self.next_btn, 40, 20, "Next (Ctrl+Right)", "Next")):
             b.setFixedSize(size, size)
             b.setIconSize(QSize(icon, icon))
             b.setToolTip(tip)
+            b.setAccessibleName(name)
         self.prev_btn.setObjectName("transport")
         self.play_btn.setObjectName("play")
         self.next_btn.setObjectName("transport")
@@ -8568,6 +8586,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.play_btn.clicked.connect(self.toggle_play)
         self.next_btn.clicked.connect(lambda: self.next_track(auto=False))
         self.shuffle = QPushButton()
+        self.shuffle.setAccessibleName("Shuffle")    # on/off is read out from its pressed state
         self.shuffle.setCheckable(True)
         self.shuffle.setChecked(bool(self.cfg["shuffle_on"]))
         self.shuffle.toggled.connect(self.on_shuffle_toggled)
@@ -8578,6 +8597,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             b.setFixedSize(40, 40)
             b.setIconSize(QSize(20, 20))
         self.volume = QSlider(Qt.Orientation.Horizontal)
+        self.volume.setAccessibleName("Volume")
         self.volume.setRange(0, 100)
         self.volume.setValue(self.cfg["volume"])
         self.volume.setFixedWidth(120)
@@ -8598,16 +8618,19 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.mute_btn.setIconSize(QSize(20, 20))
         self.mute_btn.setObjectName("transport")
         self.mute_btn.setToolTip("Mute / unmute (Ctrl+M)")
+        self.mute_btn.setAccessibleName("Mute / unmute")
         self.mute_btn.clicked.connect(self.toggle_mute)
         self.eq_btn = QPushButton("EQ")
         self.eq_btn.setObjectName("transport")
         self.eq_btn.setToolTip("Equalizer (Ctrl+E)")
+        self.eq_btn.setAccessibleName("Equalizer")
         self.eq_btn.clicked.connect(self.open_equalizer)
         self.mini_btn = QPushButton()
         self.mini_btn.setObjectName("transport")
         self.mini_btn.setFixedSize(40, 40)
         self.mini_btn.setIconSize(QSize(20, 20))
         self.mini_btn.setToolTip("Mini player (Ctrl+Shift+M)")
+        self.mini_btn.setAccessibleName("Mini player")
         self.mini_btn.clicked.connect(self.toggle_mini)
         self.vol_label = QLabel(f"{self.cfg['volume']}%")
         self.vol_label.setObjectName("sub")
@@ -8621,6 +8644,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.fs_btn.setFixedSize(40, 40)
         self.fs_btn.setIconSize(QSize(20, 20))
         self.fs_btn.setToolTip("Fullscreen player (F11)")
+        self.fs_btn.setAccessibleName("Fullscreen player")
         self.fs_btn.clicked.connect(lambda: self.toggle_fullscreen())
         controls.addWidget(self.fs_btn)
         controls.addWidget(self.mute_btn)
@@ -9447,6 +9471,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         playing = state == QMediaPlayer.PlaybackState.PlayingState
         self.play_btn.setIcon(make_icon("pause" if playing else "play", self.scheme["on_accent"]))
         self.play_btn.setToolTip("Pause (Ctrl+P)" if playing else "Play (Ctrl+P)")
+        self.play_btn.setAccessibleName("Pause" if playing else "Play")
         if self.mini is not None:
             self.mini.set_icons(playing)
         self.update_tray()
@@ -10229,6 +10254,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         b.setFixedSize(34, 34)
         b.setIconSize(QSize(18, 18))
         b.setToolTip("Back")
+        b.setAccessibleName("Back")
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         self.back_buttons.append((b, light))
         return b
@@ -10261,6 +10287,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.repeat_btn.setIcon(make_icon("repeat_one" if mode == "one" else "repeat",
                                           self.scheme["accent"] if mode != "off" else self.icon_fg))
         self.repeat_btn.setToolTip({"all": "Repeat: all", "one": "Repeat: this song"}.get(mode, "Repeat: off"))
+        self.repeat_btn.setAccessibleName(self.repeat_btn.toolTip())
         self.update_fullscreen()
 
     # ----- browse by genre / decade
@@ -11089,6 +11116,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         color = self.scheme["accent"] if fav else self.icon_fg
         self.fav_btn.setIcon(make_icon("heart_fill" if fav else "heart", color))
         self.fav_btn.setToolTip("Remove from Favorites (Ctrl+D)" if fav else "Add to Favorites (Ctrl+D)")
+        self.fav_btn.setAccessibleName("Remove from Favorites" if fav else "Add to Favorites")
         self.fav_btn.setEnabled(path is not None)
         self.update_fullscreen()
         if self.mini is not None:
