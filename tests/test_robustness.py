@@ -69,5 +69,20 @@ class StatsArtistTest(PlayerHarness):
         self.assertEqual(names, ["Singer A"])
 
 
+class DuplicatesDialogTest(PlayerHarness):
+    def test_other_album_copies_start_unticked(self):                  # B13
+        self.make_player(["One"])
+        a = {"title": "Intro", "artist": "Band", "album": "First", "disc": 1, "num": 1, "length": 30,
+             "path": "a.flac", "size": 9}
+        same = dict(a, path="b.mp3")
+        other = dict(a, album="Second", path="c.mp3")
+        dlg = mp.DuplicatesDialog(self.player, [[a, same, other]])
+        top = dlg.tree.topLevelItem(0)
+        states = {top.child(i).data(0, mp.KEY_ROLE): top.child(i).checkState(0) for i in range(1, 3)}
+        self.assertEqual(states["b.mp3"], mp.Qt.CheckState.Checked)
+        self.assertEqual(states["c.mp3"], mp.Qt.CheckState.Unchecked)
+        dlg.deleteLater()
+
+
 if __name__ == "__main__":
     unittest.main()

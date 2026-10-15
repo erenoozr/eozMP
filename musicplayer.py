@@ -2673,6 +2673,7 @@ def _organize_downloads(src_root, dest_root, group_featured, split_collabs, keep
         return 0
     went_to = {}   # download folder -> album folders its songs went to
     for root, _dirs, files in os.walk(src_root):
+        _dirs[:] = [d for d in _dirs if d != DUPLICATES_FOLDER]   # moved-aside copies stay aside
         songs = []
         for name in files:
             if Path(name).suffix.lower() not in AUDIO_EXTS:
@@ -6035,6 +6036,26 @@ def track_quality_score(t):
     return (10000 if ext in LOSSLESS_EXTS else 0) + kbps, size, kbps
 
 
+def file_identity(path):
+    """Same value for the same file however it is reached; the normalized path if it can't be read."""
+    try:
+        st = os.stat(path)
+        if st.st_ino:
+            return (st.st_dev, st.st_ino)
+    except OSError:
+        pass
+    return norm_path(path)
+
+
+def same_recording(a, b):
+    """Two copies of one song: the same album and the same place on it. 'Intro' on two albums, or two
+    'Interlude's on discs 1 and 2, are different songs that just share a name."""
+    if _words(a.get("album", "")) != _words(b.get("album", "")):
+        return False
+    return not (a.get("num", 9999) != 9999 and b.get("num", 9999) != 9999
+                and (a.get("disc", 1), a.get("num")) != (b.get("disc", 1), b.get("num")))
+
+
 def find_duplicates(tracks):
     """Groups of the same song (same artist + title, lengths within 3 s), best copy first."""
     by_key = {}
@@ -6044,6 +6065,15 @@ def find_duplicates(tracks):
         by_key.setdefault((_words(song_artist(t)), _words(t["title"])), []).append(t)
     groups = []
     for same in by_key.values():
+        if len(same) < 2:
+            continue
+        seen, distinct = set(), []
+        for t in same:           # one file seen through two paths (junction, mapped drive, NAS) is no copy
+            fid = file_identity(t["path"])
+            if fid not in seen:
+                seen.add(fid)
+                distinct.append(t)
+        same = distinct
         if len(same) < 2:
             continue
         same.sort(key=lambda t: t.get("length") or 0)
@@ -6368,23 +6398,27 @@ class DuplicatesDialog(QDialog):
         note.setObjectName("sub")
         v.addWidget(note)
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Song / file", "Folder", "Quality", "Size"])
+        self.tree.setHeaderLabels(["Song / file", "Album", "Folder", "Quality", "Size"])
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.keeper = {}                  # path of a copy -> path of the copy kept
         for g in groups:
-            top = QTreeWidgetItem([_t(f"{song_artist(g[0])} - {g[0]['title']}   ({len(g)} copies)"), "", "", ""])
+            top = QTreeWidgetItem([_t(f"{song_artist(g[0])} - {g[0]['title']}   ({len(g)} copies)"), "", "", "", ""])
             self.tree.addTopLevelItem(top)
             for i, t in enumerate(g):
                 _s, size, kbps = track_quality_score(t)
                 ext = os.path.splitext(t["path"])[1].lower().lstrip(".")
                 q = ext.upper() if ext in LOSSLESS_EXTS else f"{ext.upper()} ~{kbps:.0f}k"
                 row = QTreeWidgetItem([os.path.basename(t["path"]) + (_t("   (best - kept)") if i == 0 else ""),
-                                       os.path.dirname(t["path"]), q, fmt_size(size)])
+                                       t.get("album", ""), os.path.dirname(t["path"]), q, fmt_size(size)])
                 row.setData(0, KEY_ROLE, t["path"])
                 if i == 0:
                     row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
                 else:
+                    self.keeper[t["path"]] = g[0]["path"]
                     row.setFlags(row.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                    row.setCheckState(0, Qt.CheckState.Checked)
+                    # a same-named song from another album or disc is only ticked if you do it yourself
+                    row.setCheckState(0, Qt.CheckState.Checked if same_recording(g[0], t)
+                                      else Qt.CheckState.Unchecked)
                 top.addChild(row)
             top.setExpanded(True)
         v.addWidget(self.tree, 1)
@@ -6415,8 +6449,14 @@ class DuplicatesDialog(QDialog):
         if QMessageBox.question(self, "Move duplicates", f"Move {len(paths)} file(s) to\n"
                                 f"{os.path.join(root, DUPLICATES_FOLDER)} ?") != QMessageBox.StandardButton.Yes:
             return
-        moved, dest = move_to_duplicates(paths, root)
-        self.main.statusBar().showMessage(f"Moved {moved} duplicate(s) to {dest}", 10000)
+        try:
+            done, dest = move_aside(paths, root)
+        except OSError as e:
+            QMessageBox.warning(self, "Move duplicates",
+                                f"Couldn't use the folder {os.path.join(root, DUPLICATES_FOLDER)}:\n{e}")
+            return
+        self.main.carry_over_paths({a: self.keeper[a] for a, _b in done if a in self.keeper})
+        self.main.statusBar().showMessage(f"Moved {len(done)} duplicate(s) to {dest}", 10000)
         self.accept()
         self.main.rescan()
 
@@ -7409,23 +7449,79 @@ def embed_cover(path, data):
         f.save()
 
 
-def move_to_duplicates(paths, root):
-    """Move files (never delete) into <root>/_eozMP duplicates. Returns (moved, folder)."""
+def move_aside(paths, root):
+    """Move files (never delete) into <root>/_eozMP duplicates, keeping their folder layout under root,
+    and note where each came from in moved.json. Returns ([(from, to)], folder). Raises OSError if the
+    folder can't be made (a USB stick that isn't plugged in, a NAS that is off)."""
     dest = os.path.join(root, DUPLICATES_FOLDER)
     os.makedirs(dest, exist_ok=True)
-    moved = 0
+    done = []
     for p in paths:
         try:
-            name, n = os.path.basename(p), 1
-            target = os.path.join(dest, name)
+            if is_inside(norm_path(p), norm_path(root)):
+                rel = os.path.relpath(p, root)
+            else:
+                rel = os.path.join(os.path.basename(os.path.dirname(p)), os.path.basename(p))
+            target = os.path.join(dest, rel)
+            base, ext = os.path.splitext(target)
+            n = 1
             while os.path.exists(target):
                 n += 1
-                target = os.path.join(dest, f"{os.path.splitext(name)[0]} ({n}){os.path.splitext(name)[1]}")
+                target = f"{base} ({n}){ext}"
+            os.makedirs(os.path.dirname(target), exist_ok=True)
             shutil.move(p, target)
-            moved += 1
+            done.append((p, target))
         except OSError:
             pass
-    return moved, dest
+    if done:
+        manifest = Path(dest) / "moved.json"
+        try:
+            old = read_json(manifest, list, quarantine=False) or []
+            write_json_atomic(manifest, old + [{"from": a, "to": b, "when": round(time.time())} for a, b in done],
+                              indent=1)
+        except Exception:
+            pass
+    return done, dest
+
+
+def move_to_duplicates(paths, root):
+    """Returns (how many moved, folder)."""
+    done, dest = move_aside(paths, root)
+    return len(done), dest
+
+
+def carry_over(playlists, stats, mapping):
+    """Playlists, favorites and play counts that pointed at a moved-aside copy now point at the copy kept.
+    mapping: old path -> kept path. Returns True if anything changed."""
+    changed = False
+    for name, paths in playlists.items():
+        out = []
+        for p in paths:
+            q = mapping.get(p, p)
+            changed |= q != p
+            if q != p and (q in paths or q in out):
+                continue                 # the kept copy is already on this playlist
+            out.append(q)
+        playlists[name] = out
+    favs = []
+    for p in stats["favorites"]:
+        q = mapping.get(p, p)
+        changed |= q != p
+        if q not in favs:
+            favs.append(q)
+    stats["favorites"] = favs
+    for old, new in mapping.items():
+        entry = stats["plays"].pop(old, None)
+        if entry:
+            keep = stats["plays"].setdefault(new, {"count": 0, "last": 0, "seconds": 0})
+            keep["count"] += entry.get("count", 0)
+            keep["last"] = max(keep["last"], entry.get("last", 0))
+            keep["seconds"] = round(keep["seconds"] + entry.get("seconds", 0), 1)
+            changed = True
+    for ev in stats["events"]:
+        if ev[1] in mapping:
+            ev[1] = mapping[ev[1]]
+    return changed
 
 
 class RemoteDialog(QDialog):
@@ -8049,6 +8145,13 @@ class Extras2Mixin:
         self.statusBar().showMessage(_t("Pick a lossless copy and download it - when it arrives, eozMP offers "
                                         "to put the old files aside."), 15000)
 
+    def carry_over_paths(self, mapping):
+        """Moved-aside copies: playlists, favorites and play counts follow to the copy that was kept."""
+        if mapping and carry_over(self.playlists, self.stats, mapping):
+            save_playlists(self.playlists)
+            save_stats(self.stats)
+            self.fav_set = set(self.stats["favorites"])
+
     def check_upgrades(self):
         """After a rescan: did a better copy of an album we wanted to upgrade arrive?"""
         if not self.cfg["upgrades"]:
@@ -8069,7 +8172,11 @@ class Extras2Mixin:
                     self, "Better copy arrived",
                     _t(f"A better copy of \"{album}\" is in your library. Move the {len(old)} old file(s) "
                        "to the _eozMP duplicates folder?")) == QMessageBox.StandardButton.Yes:
-                moved, folder = move_to_duplicates(old, root)
+                try:
+                    moved, folder = move_to_duplicates(old, root)
+                except OSError as e:
+                    self.statusBar().showMessage(_t(f"Couldn't move the old files ({e})"), 10000)
+                    continue
                 self.statusBar().showMessage(_t(f"Moved {moved} duplicate(s) to {folder}"), 10000)
                 QTimer.singleShot(0, self.rescan)
         save_config(self.cfg)
