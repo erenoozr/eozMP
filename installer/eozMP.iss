@@ -1,7 +1,7 @@
 ﻿; eozMP installer (Inno Setup 6). Build with build_setup.bat in the eozMP folder.
 ; Asks step by step: what to install (eozMP, Soulseek/slskd, VLC), shortcuts, and the Soulseek account.
 
-#define AppVersion "1.3"
+#define AppVersion "1.4"
 #define VlcUrl "https://get.videolan.org/vlc/3.0.24/win64/vlc-3.0.24-win64.exe"
 #define VlcSha256 "d711e1e1fe52052748c39080c7dce63f6b7e4c315efedf1774a3f1957b782ff3"
 

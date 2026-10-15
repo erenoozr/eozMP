@@ -298,7 +298,7 @@ AUDIO_EXTS = {
 }
 COVER_NAMES = ("cover", "folder", "front", "album", "albumart")
 COVER_EXTS = (".jpg", ".jpeg", ".png")
-APP_VERSION = "1.3"   # raise it with every release; the release tag is "v" + this (see MANUAL)
+APP_VERSION = "1.4"   # raise it with every release; the release tag is "v" + this (see MANUAL)
 CONFIG_FILE = Path.home() / ".simple_music_player.json"
 CRASH_FILE = Path.home() / ".simple_music_player_crash.log"
 CACHE_FILE =Path.home() / ".simple_music_player_cache.json"

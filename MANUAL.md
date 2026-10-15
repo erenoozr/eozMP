@@ -8,7 +8,7 @@ step by step.
 [Finding your way around](#finding-your-way-around) · [Playing music](#playing-music) ·
 [Lyrics, mini player and fullscreen](#lyrics-mini-player-and-fullscreen) ·
 [Playlists, Browse, Search, Home and Stats](#playlists-browse-search-home-and-stats) ·
-[New in 1.3](#new-in-13) ·
+[New in 1.4](#new-in-14) · [New in 1.3](#new-in-13) ·
 [Soulseek](#soulseek-logging-in-and-downloading) · [Preferences](#making-it-yours-preferences) ·
 [Optional extras](#optional-extras-mpv-vlc-equalizer-and-visualizer) · [Backups and updates](#backups-updates-and-your-data) ·
 [Troubleshooting](#troubleshooting) · [Shortcuts](#keyboard-and-mouse-shortcuts)
@@ -18,7 +18,7 @@ step by step.
 | Item | Needed? | Where it comes from |
 | --- | --- | --- |
 | A Windows 10 or 11 PC | Yes | |
-| `eozMP-Setup-1.3.exe` | Yes | The [latest release](../../releases/latest) of this repository |
+| `eozMP-Setup-1.4.exe` | Yes | The [latest release](../../releases/latest) of this repository |
 | Your music files (mp3, flac, m4a, wav, ogg and more) | Yes | Your own folders |
 | An internet connection | For lyrics and covers | |
 | Python 3 | Only to build eozMP yourself | [python.org/downloads](https://www.python.org/downloads/) |
@@ -32,7 +32,7 @@ A Soulseek account is free. slskd creates it for you the first time it connects 
 
 ### The easy way: the installer
 
-1. Open the [latest release](../../releases/latest) and download **eozMP-Setup-1.3.exe** under *Assets*.
+1. Open the [latest release](../../releases/latest) and download **eozMP-Setup-1.4.exe** under *Assets*.
 2. Double-click it. If Windows shows a blue **Windows protected your PC** box, click **More info**, then
    **Run anyway**. This happens because the app is new and unsigned.
 3. Pick a language (English or Türkçe). Setup then asks, step by step, what to install:
@@ -267,6 +267,25 @@ web:
   anything except folders it left empty.
 
 Soulseek is a file-sharing network. Only download music you're allowed to have.
+
+## New in 1.4
+
+- **Errors are logged, not fatal.** If something unexpected goes wrong, eozMP shows a short message and writes the
+  details to `.simple_music_player_crash.log` in your user folder instead of closing. Send that file when you report a bug.
+- **Space** plays and pauses. It presses a button only if you got to it with Tab, and it types a space only while
+  you are in a text field.
+- **Duplicate songs:** copies of a song on another album or disc are no longer ticked for you, and the list shows
+  the album. Moved copies keep their folders under `_eozMP duplicates`, with a `moved.json` that says where each came from.
+  Playlists, favorites and play counts that pointed at a moved copy now point at the copy you kept.
+- **Fix tags and cover** asks before it writes to your files, and Enter no longer applies it.
+- **Soulseek downloads** are sorted into Artist / Album folders once the download queue is idle, so an album from
+  various artists isn't split while it is still arriving.
+- **Phone remote and TV:**
+  - Casting no longer leaves the phone remote switched on.
+  - A TV that refuses the song gives the sound back to the PC.
+  - The volume slider and seeking reach the TV.
+  - "Listen on this phone" no longer skips every other song.
+- **Restoring a backup** keeps this PC's own mpv folder, phone remote and Soulseek connection settings.
 
 ## New in 1.3
 

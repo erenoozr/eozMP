@@ -21,6 +21,17 @@ synced lyrics, and can find and download music through Soulseek.
 - **Sound (with mpv):** gapless playback, ReplayGain, output device and exclusive mode
 - Media keys, system tray, drag and drop, backup and restore
 
+### New in 1.4
+
+- **Steadier:** a mistake in one feature no longer closes the player (it is written to `.simple_music_player_crash.log`)
+- **Space** plays and pauses again after you click around; it only presses a button you reached with Tab
+- **Duplicate finder** is safer: the same file seen through two paths isn't a copy, copies keep their folders,
+  playlists and favorites follow the copy that stays
+- **TV and phone:** a TV that refuses a song gives the sound back to the PC, the TV gets volume and seeking,
+  the remote isn't left open after casting
+- **Backup restore** keeps this PC's own program and network settings
+- Smaller memory use, readable links on the light theme, long wishlists searched in turns
+
 ### New in 1.3
 
 - **12 languages:** the whole app in English, Türkçe, Español, Deutsch, Français, Português, Русский, العربية, 中文,
@@ -38,7 +49,7 @@ synced lyrics, and can find and download music through Soulseek.
 
 ## Download
 
-Get **`eozMP-Setup-1.3.exe`** from the [latest release](../../releases/latest) and double-click it. Setup asks
+Get **`eozMP-Setup-1.4.exe`** from the [latest release](../../releases/latest) and double-click it. Setup asks
 step by step what to install (eozMP, Soulseek support, VLC for the equalizer, a desktop shortcut) and, if you want
 Soulseek, your Soulseek name and password, then sets everything up. No Python needed.
 Windows may show a blue *"Windows protected your PC"* box because the app is new and unsigned:
