@@ -77,5 +77,20 @@ class RemoveFoldersTest(PlayerHarness):
         self.assertEqual(p.cfg["folders"], [])
 
 
+class BrowseHeadingsTest(PlayerHarness):
+    def test_headings_are_not_rows(self):
+        self.make_player(["One"])
+        p = self.player
+        p.refresh_browse_list()
+        items = [p.browse_list.item(i) for i in range(p.browse_list.count())]
+        heads = [it for it in items if it.data(mp.KEY_ROLE) is None and it.text() in ("Moods", "Genres", "Decades")]
+        self.assertEqual([h.text() for h in heads], ["Moods", "Genres", "Decades"])   # translatable, unlike "MOODS"
+        rows = [it for it in items if it.data(mp.KEY_ROLE) is not None]
+        for h in heads:
+            self.assertFalse(h.flags() & mp.Qt.ItemFlag.ItemIsEnabled)
+            self.assertTrue(h.font().bold())
+            self.assertNotEqual(h.font().bold(), rows[0].font().bold())
+
+
 if __name__ == "__main__":
     unittest.main()

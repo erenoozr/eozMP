@@ -1301,6 +1301,7 @@ QHeaderView::section { background: @panel@; color: @sub@; border: none; border-b
 QListWidget::item { padding: @pad_list@; border-radius: @r_sm@; border: 1px solid transparent; }
 QListWidget::item:hover { background: @hover@; }
 QListWidget::item:selected { background: transparent; border: 1px solid @accent@; color: @text@; }
+QListWidget::item:disabled, QListWidget::item:disabled:hover { color: @sub@; background: transparent; }
 QLabel#brand { font-family: "@display_font@"; font-size: 19px; font-weight: 800; }
 QPushButton#seg { background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0px; padding: 6px 9px; color: @sub@; font-weight: 600; }
 QPushButton#seg:hover { color: @text@; background: transparent; }
@@ -10339,25 +10340,29 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
     def refresh_browse_list(self):
         self.browse_list.clear()
 
-        def add(text, data=None):
+        def add(text, data=None, heading=False):
             item = QListWidgetItem(_t(text))
             if data is None:
-                item.setFlags(Qt.ItemFlag.NoItemFlags)
+                item.setFlags(Qt.ItemFlag.NoItemFlags)    # drawn grey by the stylesheet: not a row to pick
             else:
                 item.setData(KEY_ROLE, data)
+            if heading:
+                font = QFont(self.browse_list.font())
+                font.setBold(True)
+                item.setFont(font)
             self.browse_list.addItem(item)
 
         self.compute_moods()
-        add("MOODS")
+        add("Moods", heading=True)
         for m in MOOD_WORDS:
             add(_t(f"{_t(m)}   ({len(self.mood_tracks.get(m, []))} songs)"), ("mood", m))
-        add("GENRES")
+        add("Genres", heading=True)
         for gk in sorted(self.genres, key=lambda k: self.genres[k]["name"].lower()):
             g = self.genres[gk]
             add(f"{g['name']}   ({len(g['albums'])})", ("genre", gk))
         if not self.genres:
             add("No genre tags found in your music yet.")
-        add("DECADES")
+        add("Decades", heading=True)
         for dk in sorted(self.decades, reverse=True):
             add(f"{dk}   ({len(self.decades[dk])})", ("decade", dk))
 
