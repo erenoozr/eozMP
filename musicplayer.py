@@ -240,6 +240,10 @@ class QComboBox(QComboBox):
         super().__init__(*a, **k)
         self.setFocusPolicy(CLICK_KEEPS_FOCUS)
 
+    def setEditable(self, on):
+        super().setEditable(on)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus if on else CLICK_KEEPS_FOCUS)   # typing needs click focus
+
     def addItem(self, *a):
         if a and isinstance(a[0], str):
             super().addItem(_t(a[0]), a[1] if len(a) > 1 else a[0])
