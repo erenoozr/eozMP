@@ -263,7 +263,7 @@ AUDIO_EXTS = {
 }
 COVER_NAMES = ("cover", "folder", "front", "album", "albumart")
 COVER_EXTS = (".jpg", ".jpeg", ".png")
-APP_VERSION = "1.3.1"   # raise it with every release; the release tag is "v" + this (see MANUAL)
+APP_VERSION = "1.3"   # raise it with every release; the release tag is "v" + this (see MANUAL)
 CONFIG_FILE = Path.home() / ".simple_music_player.json"
 CACHE_FILE = Path.home() / ".simple_music_player_cache.json"
 LOSSLESS_EXTS = {"flac", "wav", "aiff", "aif", "ape", "wv"}
@@ -5562,28 +5562,6 @@ def check_new_releases(artists, known_ids, owned, since):
     return {"ids": ids, "items": items}
 
 
-SLSKD_YML = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "slskd" / "slskd.yml"
-
-
-def secure_installer_slskd(path=SLSKD_YML):
-    """eozMP 1.3's installer gave slskd's web page the password "slskd", and slskd listens on the whole
-    network. Swap it for a random one - only in the file that installer wrote, never in one you made."""
-    try:
-        text = path.read_text(encoding="utf-8-sig")
-    except OSError:
-        return False
-    if not text.startswith("# Written by the eozMP installer") or "\n    password: slskd\n" not in text:
-        return False
-    text = text.replace("\n    password: slskd\n", f"\n    password: {uuid.uuid4().hex}\n", 1)
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        return False
-    return True
-
-
 def slskd_running(url):
     """True if anything answers at the slskd address."""
     try:
@@ -6001,8 +5979,6 @@ class ExtrasMixin:
             except Exception:
                 pass
         exe = APP_DIR / "slskd" / "slskd.exe"
-        if exe.exists():
-            secure_installer_slskd()
         url = self.cfg["slskd_url"]
         if not (exe.exists() and self.cfg.get("slskd_autostart", True)
                 and ("localhost" in url or "127.0.0.1" in url)):

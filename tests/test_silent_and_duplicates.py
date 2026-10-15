@@ -1,6 +1,5 @@
 """
-1.3.1 fixes: the PC stays silent while the music plays on a TV or phone, moved-aside duplicates stay out of
-the library, and the installer's slskd web page never keeps the well-known password.
+The PC stays silent while the music plays on a TV or phone, and moved-aside duplicates stay out of the library.
 Nothing here plays a song, so no sound comes out.
 """
 import time
@@ -59,29 +58,6 @@ class DuplicatesFolderTest(TempDirTest):
         self.assertTrue((music / mp.DUPLICATES_FOLDER / "song (2).wav").exists())   # moved, not deleted
         scanned = [t["path"] for t in mp.scan_folders([str(music)])]
         self.assertEqual([p.replace("\\", "/").rsplit("/", 1)[1] for p in scanned], ["song.wav"])
-
-
-class InstallerSlskdPasswordTest(TempDirTest):
-    YML = ('﻿# Written by the eozMP installer. See "Soulseek Guide.txt" in the eozMP folder.\r\n'
-           'soulseek:\r\n  username: "me123"\r\n  password: "slskd"\r\n\r\nweb:\r\n  authentication:\r\n'
-           '    username: slskd\r\n    password: slskd\r\n    api_keys:\r\n')
-
-    def test_the_well_known_web_password_is_replaced(self):
-        path = self.tmp / "slskd.yml"
-        path.write_text(self.YML, encoding="utf-8", newline="")
-        self.assertTrue(mp.secure_installer_slskd(path))
-        text = path.read_text(encoding="utf-8")
-        self.assertNotIn("    password: slskd\n", text)
-        self.assertIn('  password: "slskd"', text)          # the Soulseek login is left alone
-        self.assertFalse(mp.secure_installer_slskd(path))   # and only once
-
-    def test_a_file_you_wrote_yourself_is_never_touched(self):
-        path = self.tmp / "slskd.yml"
-        mine = self.YML.replace("# Written by the eozMP installer", "# my own settings")
-        path.write_text(mine, encoding="utf-8", newline="")
-        self.assertFalse(mp.secure_installer_slskd(path))
-        with open(path, encoding="utf-8", newline="") as f:
-            self.assertEqual(f.read(), mine)
 
 
 if __name__ == "__main__":
