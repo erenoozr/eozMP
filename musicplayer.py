@@ -1001,11 +1001,11 @@ def enqueue_files(client, files):
 
 def enqueue_report(queued, failed, ok_msg):
     """Status bar text for enqueue_files' result."""
-    msg = ok_msg.format(n=queued) if queued else "Nothing could be queued."
-    if failed:
-        users = ", ".join(sorted(failed)[:3]) + (" and others" if len(failed) > 3 else "")
-        msg += (f" {sum(failed.values())} couldn't be queued: {users} may be offline or no longer "
-                "sharing them. Try other results.")
+    msg = _t(ok_msg.format(n=queued) if queued else "Nothing could be queued.")
+    if failed:   # the parts are translated one by one: the joined text matches no translation
+        users = ", ".join(sorted(failed)[:3]) + (_t(" and others") if len(failed) > 3 else "")
+        msg += _t(f" {sum(failed.values())} couldn't be queued: {users} may be offline or no longer "
+                  "sharing them. Try other results.")
     return msg
 
 
@@ -1081,7 +1081,8 @@ class Worker(QThread):
 
 
 def answered_text(n):
-    return f"{n} {'person has' if n == 1 else 'people have'} answered so far." if n else "No answers yet."
+    """Already translated: it is put inside other texts, and those only match a translation as a whole."""
+    return _t(f"{n} {'person has' if n == 1 else 'people have'} answered so far." if n else "No answers yet.")
 
 
 def searching_text(answered):
@@ -2519,11 +2520,12 @@ class PreferencesDialog(QDialog):
         using = getattr(parent, "engine_name", "Qt")
         problem = getattr(parent, "vlc_error", "") or ENGINE_ERROR
         names = {"mpv": "mpv", "VLC": "VLC"}
-        info = QLabel(
-            f"Now playing through: {names.get(using, 'the built-in Qt engine')}.\n"
-            f"mpv: {MPV_STATUS}.  VLC: {VLC_STATUS}." + (f"\nLast problem: {problem}" if problem else "") + "\n"
-            "mpv gives the cleanest sound; the equalizer works with mpv and VLC. If neither is there, "
-            "eozMP uses the built-in engine."
+        info = QLabel(   # translated part by part: the joined text would match no translation
+            _t(f"Now playing through: {names.get(using, _t('the built-in Qt engine'))}.\n"
+               f"mpv: {_t(MPV_STATUS)}.  VLC: {_t(VLC_STATUS)}.") + (_t(f"\nLast problem: {problem}") if problem else "")
+            + _t("\n"
+                 "mpv gives the cleanest sound; the equalizer works with mpv and VLC. If neither is there, "
+                 "eozMP uses the built-in engine.")
         )
         info.setWordWrap(True)
         info.setObjectName("sub")
@@ -2563,8 +2565,8 @@ class PreferencesDialog(QDialog):
         self.viz_style.setCurrentText(cfg["visualizer"])
         uf.addRow("Visualizer (lyrics page and fullscreen)", self.viz_style)
         viz_note = QLabel(
-            f"Visualizer: {VIZ_STATUS}. It works with the built-in engine"
-            + ("" if np is not None else "; install numpy (pip install numpy) for a real frequency spectrum")
+            _t(f"Visualizer: {_t(VIZ_STATUS)}. It works with the built-in engine")
+            + ("" if np is not None else _t("; install numpy (pip install numpy) for a real frequency spectrum"))
             + ".")
         viz_note.setWordWrap(True)
         viz_note.setObjectName("sub")
@@ -3772,7 +3774,7 @@ class EqualizerDialog(QDialog):
         self.setWindowTitle("Equalizer")
         lay = QVBoxLayout(self)
         if not hasattr(main.player, "set_equalizer"):
-            reason = main.vlc_error or ENGINE_ERROR or f"mpv: {MPV_STATUS}. VLC: {VLC_STATUS}"
+            reason = main.vlc_error or ENGINE_ERROR or f"mpv: {_t(MPV_STATUS)}. VLC: {_t(VLC_STATUS)}"
             note = QLabel(
                 "The equalizer needs the mpv or VLC audio engine.\n\n"
                 f"Status: {reason}\n\n"
@@ -3998,9 +4000,9 @@ class DiscographyDialog(QDialog):
         self.picks = picks
         lay = QVBoxLayout(self)
         have = sum(1 for pk in picks if pk["key"] in owned)
-        info = QLabel(f"Found {len(picks)} albums by {artist} on Soulseek."
-                      + (f" {have} you already have are unticked." if have else "")
-                      + " Pick what to download:")
+        info = QLabel(_t(f"Found {len(picks)} albums by {artist} on Soulseek.")
+                      + (_t(f" {have} you already have are unticked.") if have else "")
+                      + _t(" Pick what to download:"))
         info.setWordWrap(True)
         lay.addWidget(info)
         self.table = QTableWidget(len(picks), 5)
@@ -4013,7 +4015,7 @@ class DiscographyDialog(QDialog):
             hh.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
         for r, pk in enumerate(picks):
             owned_it = pk["key"] in owned
-            first = QTableWidgetItem(pk["name"] + ("   (you have it)" if owned_it else ""))
+            first = QTableWidgetItem(pk["name"] + (_t("   (you have it)") if owned_it else ""))
             first.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
             first.setCheckState(Qt.CheckState.Unchecked if owned_it else Qt.CheckState.Checked)
             self.table.setItem(r, 0, first)
@@ -4290,7 +4292,8 @@ class MiniPlayer(QWidget):
         self.lyric.setText(_raw(text))
 
     def set_next(self, text):
-        self.next_label.setText(self.next_label.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, 230))
+        # translate before cutting it short: a shortened text no longer matches its translation
+        self.next_label.setText(_raw(self.next_label.fontMetrics().elidedText(_t(text), Qt.TextElideMode.ElideRight, 230)))
 
     def set_progress(self, fraction):
         fraction = max(0.0, min(1.0, fraction))
@@ -4873,7 +4876,7 @@ class SongInfoDialog(QDialog):
             ("Track", str(t["num"]) if t["num"] != 9999 else "-"), ("Year", str(t["year"]) if t["year"] else "-"),
             ("Genre", t.get("genre") or "-"), ("Plays", str(play.get("count", 0))),
             ("Last played", last), ("Added", time.strftime("%d %b %Y", time.localtime(added)) if added else "-"),
-            ("Favorite", "Yes" if path in main.fav_set else "No"), ("File", path),
+            ("Favorite", _t("Yes") if path in main.fav_set else _t("No")), ("File", path),
         )
         form = QFormLayout()
         for label, value in rows:
@@ -5769,13 +5772,13 @@ class DuplicatesDialog(QDialog):
         self.tree.setHeaderLabels(["Song / file", "Folder", "Quality", "Size"])
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for g in groups:
-            top = QTreeWidgetItem([f"{g[0]['artist']} - {g[0]['title']}   ({len(g)} copies)", "", "", ""])
+            top = QTreeWidgetItem([_t(f"{g[0]['artist']} - {g[0]['title']}   ({len(g)} copies)"), "", "", ""])
             self.tree.addTopLevelItem(top)
             for i, t in enumerate(g):
                 _s, size, kbps = track_quality_score(t)
                 ext = os.path.splitext(t["path"])[1].lower().lstrip(".")
                 q = ext.upper() if ext in LOSSLESS_EXTS else f"{ext.upper()} ~{kbps:.0f}k"
-                row = QTreeWidgetItem([os.path.basename(t["path"]) + ("   (best - kept)" if i == 0 else ""),
+                row = QTreeWidgetItem([os.path.basename(t["path"]) + (_t("   (best - kept)") if i == 0 else ""),
                                        os.path.dirname(t["path"]), q, fmt_size(size)])
                 row.setData(0, KEY_ROLE, t["path"])
                 if i == 0:
@@ -6054,7 +6057,7 @@ class ExtrasMixin:
         self.soulseek_search()
 
     def notify(self, title, text):
-        self.statusBar().showMessage(f"{title}: {text}", 15000)
+        self.statusBar().showMessage(f"{_t(title)}: {_t(text)}", 15000)
         if self.tray is not None:
             self.tray.showMessage(title, text, QSystemTrayIcon.MessageIcon.Information, 8000)
 
@@ -6244,7 +6247,7 @@ class ExtrasMixin:
         self.render_new_releases()
         if fresh:
             names = ", ".join(f"{i['artist']} - {i['title']}" for i in fresh[:3])
-            self.notify("New releases", names + (f" and {len(fresh) - 3} more" if len(fresh) > 3 else ""))
+            self.notify("New releases", _raw(names + (_t(f" and {len(fresh) - 3} more") if len(fresh) > 3 else "")))
         elif loud:
             self.statusBar().showMessage("No new releases from your artists.", 6000)
 
@@ -9971,9 +9974,9 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.artist_paths = [t["path"] for t in tracks]
         plays = self.stats["plays"]
         total_plays = sum(plays.get(p, {}).get("count", 0) for p in self.artist_paths)
-        sub = f"{len(keys)} album{'s' if len(keys) != 1 else ''}  ·  {len(tracks)} songs"
+        sub = _t(f"{len(keys)} album{'s' if len(keys) != 1 else ''}  ·  {len(tracks)} songs")
         if total_plays:
-            sub += f"  ·  {total_plays} plays"
+            sub += _t(f"  ·  {total_plays} plays")
         self.artist_title.setText(_raw(self.artists[akey]))
         self.artist_sub.setText(sub)
         self.artist_avatar_key = self.artist_cover_key(akey)
@@ -10352,8 +10355,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         for r, (what, key) in enumerate(rows):
-            table.setItem(r, 0, QTableWidgetItem(what))
-            table.setItem(r, 1, QTableWidgetItem(key))
+            table.setItem(r, 0, QTableWidgetItem(_t(what)))     # table items are not translated by themselves
+            table.setItem(r, 1, QTableWidgetItem(_t(key)))
         lay.addWidget(table)
         ok = QPushButton("Close")
         ok.clicked.connect(dlg.accept)
@@ -10973,7 +10976,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                 notice = "Now playing through VLC - the equalizer is available."
             else:
                 why = ENGINE_ERROR or ("" if vlc is not None else VLC_STATUS)
-                notice = "Now using the built-in engine." + (f" ({why})" if why else "")
+                notice = _t("Now using the built-in engine.") + (f" ({_t(why)})" if why else "")
         self.statusBar().showMessage(notice, 12000)
 
     def set_lyric_line(self, text):
@@ -11653,9 +11656,9 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.pl_paths = [t["path"] for t, _ in tracks]
         total = sum(t["length"] for t, _ in tracks)
         missing = len(self.playlist_source(name)) - len(tracks)
-        sub = f"{len(tracks)} songs - {fmt_time(total * 1000)}"
+        sub = _t(f"{len(tracks)} songs - {fmt_time(total * 1000)}")
         if missing:
-            sub += f"  ({missing} not found in your library right now)"
+            sub += _t(f"  ({missing} not found in your library right now)")
         self.pl_title.setText(_raw(name))
         self.pl_ren_btn.setEnabled(name not in SMART_PLAYLISTS)
         self.pl_del_btn.setEnabled(name not in SMART_PLAYLISTS)
@@ -11727,9 +11730,9 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if self.current_playlist == name and self.stack.currentIndex() == 5:
             self.show_playlist(name, switch=False)
         dupes = len(paths) - added
-        msg = f'Added {added} song(s) to "{name}"'
+        msg = _t(f'Added {added} song(s) to "{name}"')
         if dupes:
-            msg += f" ({dupes} already in it)"
+            msg += _t(f" ({dupes} already in it)")
         self.statusBar().showMessage(msg)
 
     def rename_playlist(self, name):
@@ -11925,7 +11928,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if synced:
             self.lyrics_list.addItem(self.lyric_spacer())
         kind = "synced" if synced else "plain text"
-        self.lyrics_info = f"{res.get('source', '')}  ({kind})"
+        self.lyrics_info = f"{_t(res.get('source', ''))}  ({_t(kind)})"
         self.lyrics_info_path = self.lyrics_path
         self.set_lyrics_header()
         self.update_fullscreen()
@@ -12068,7 +12071,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             return
         prefix = "Searching... " if self.searching else ""
         hint = "" if self.searching else " - select and press Download"
-        self.soul_status.setText(f"{prefix}{self.soul_count_text}{hint}")
+        self.soul_status.setText(_t(prefix) + _t(self.soul_count_text) + _t(hint))
 
     def render_soul(self):
         fmt = self.fmt_combo.currentText()
@@ -12105,7 +12108,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             name, folder = split_path(top["filename"])
             parts = folder.split("/")
             if albums_mode:
-                name = f"{parts[-1]}  ({len(group)} tracks)"
+                name = _t(f"{parts[-1]}  ({len(group)} tracks)")
                 where = "/".join(parts[-3:-1])
             else:
                 where = "/".join(parts[-2:])
