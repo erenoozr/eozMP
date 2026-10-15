@@ -16,7 +16,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import QSize, Qt  # noqa: E402
 from PyQt6.QtGui import QColor, QPixmap  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import QAbstractButton, QAbstractSlider, QApplication, QWidget  # noqa: E402
+from PyQt6.QtWidgets import QAbstractButton, QAbstractSlider, QApplication, QScrollBar, QWidget  # noqa: E402
 
 from test_mpv_engine import wait_for  # noqa: E402
 from test_player import PlayerHarness, mp  # noqa: E402
@@ -168,9 +168,10 @@ def spoken_name(w):
 
 class ScreenReaderNameTest(WindowTest):                                   # C8
     def unnamed(self, root):
+        # scroll bars belong to the list or page they scroll; screen readers announce them as such
         return [f"{type(w).__name__} {w.toolTip()!r}" for w in root.findChildren(QWidget)
                 if w.isVisibleTo(root) and isinstance(w, (QAbstractButton, QAbstractSlider))
-                and not spoken_name(w)]
+                and not isinstance(w, QScrollBar) and not spoken_name(w)]
 
     def test_every_control_in_the_main_window_has_a_name(self):
         p = self.player
