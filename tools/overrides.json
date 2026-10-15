@@ -400,7 +400,16 @@
     "synced": "zamanlı",
     "{0} songs exist more than once. The best copy of each is left alone; ticked copies are moved (not deleted) to a '_eozMP duplicates' folder in your music folder, so you can always put them back.": "{0} şarkı birden fazla kez var. Her birinin en iyi kopyasına dokunulmaz; işaretli kopyalar müzik klasöründeki '_eozMP duplicates' klasörüne taşınır (silinmez), böylece istediğin zaman geri koyabilirsin.",
     "A better copy of \"{0}\" is in your library. Move the {1} old file(s) to the _eozMP duplicates folder?": "\"{0}\" albümünün daha iyi bir kopyası kitaplığında. {1} eski dosya _eozMP duplicates klasörüne taşınsın mı?",
-    "<b>{0}</b> - {1}<br>You have {2} of {3} songs (edition: {4}).": "<b>{0}</b> - {1}<br>Bu albümün {3} şarkısından {2} tanesi sende var (baskı: {4})."
+    "<b>{0}</b> - {1}<br>You have {2} of {3} songs (edition: {4}).": "<b>{0}</b> - {1}<br>Bu albümün {3} şarkısından {2} tanesi sende var (baskı: {4}).",
+    "Forward": "İleri",
+    "Song position": "Şarkı konumu",
+    "Volume": "Ses düzeyi",
+    "Repeat": "Tekrarla",
+    "Moods": "Ruh halleri",
+    "Genres": "Türler",
+    "Decades": "On yıllar",
+    "No other lyrics found online.": "İnternette başka söz bulunamadı.",
+    "Take every music folder out of eozMP? Your music files are not deleted; the library is just emptied until you add a folder again.": "Tüm müzik klasörleri eozMP'den çıkarılsın mı? Müzik dosyaların silinmez; yeniden bir klasör ekleyene kadar kitaplık boş kalır."
   },
   "ja": {
     "&Library": "&ライブラリ",
