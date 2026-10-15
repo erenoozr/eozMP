@@ -530,6 +530,59 @@ def main_artist(name, split_collabs=True, keep=()):
     return name or "Unknown Artist"
 
 
+VARIOUS_ARTISTS = "Various Artists"
+
+
+def artist_name(raw, group=True, split=True, keep=()):
+    """The library's name for an artist tag, following the grouping settings."""
+    return main_artist(raw, split, keep) if group else (raw.strip() or "Unknown Artist")
+
+
+def song_artist(t):
+    """Who sings the song; t["artist"] is whose album it is ("Various Artists" on a compilation)."""
+    return t.get("track_artist") or t["artist"]
+
+
+def assign_artists(tracks, group=True, split=True, keep=()):
+    """Sets every song's track_artist (who sings it: shown with the song, used for lyrics) and artist
+    (whose album it is: the library tree, covers) from its tags and the grouping settings. The album
+    artist is the ALBUMARTIST tag. Without it, the songs of one album in one folder stay together
+    under the artist of most of them, or "Various Artists", so a soundtrack or a compilation isn't
+    split into one album per singer."""
+    albums = {}
+    for t in tracks:
+        raw = t.get("artist_raw")
+        if raw is None:                   # a song made up without tags (tests)
+            t.setdefault("track_artist", t["artist"])
+            continue
+        album_raw = (t.get("album_artist_raw") or "").strip()
+        t["track_artist"] = artist_name(raw or album_raw, group, split, keep)
+        t["artist"] = artist_name(album_raw, group, split, keep) if album_raw else t["track_artist"]
+        if t["album"] != "Unknown Album":
+            albums.setdefault((os.path.dirname(t["path"]), t["album"].lower()), []).append(t)
+    for songs in albums.values():
+        loose = [t for t in songs if not (t.get("album_artist_raw") or "").strip()]
+        if not loose or len({t["artist"].lower() for t in songs}) < 2:
+            continue
+        owners = {}
+        if any(owners.setdefault((t["disc"], t["num"]), t["artist"].lower()) != t["artist"].lower()
+               for t in songs if t["num"] != 9999):
+            continue                      # two albums of the same name ('Greatest Hits'): their numbers clash
+        tagged = Counter(t["artist"] for t in songs if (t.get("album_artist_raw") or "").strip())
+        if tagged:
+            name = tagged.most_common(1)[0][0]
+        else:
+            spelled, mains = {}, Counter()
+            for t in loose:               # 'Drake' and 'Drake feat. X' count as the same artist here
+                main = main_artist(t["artist_raw"], split, keep)
+                spelled.setdefault(main.lower(), main)
+                mains[main.lower()] += 1
+            top, n = mains.most_common(1)[0]
+            name = spelled[top] if n * 2 > len(loose) else VARIOUS_ARTISTS
+        for t in loose:
+            t["artist"] = name
+
+
 def to_int(text, default=9999):
     try:
         return int(str(text).split("/")[0])
@@ -831,7 +884,7 @@ def read_track(path):
         if isinstance(e, OSError) or isinstance(e.__cause__, OSError):
             failed = True
     title = t.get("title", "")
-    artist = t.get("albumartist") or t.get("artist", "")
+    artist, album_artist = t.get("artist", ""), t.get("albumartist", "")
     genre = t.get("genre", "")
     album = t.get("album", "")
     num = to_int(t.get("tracknumber", ""))
@@ -841,8 +894,10 @@ def read_track(path):
     return {
         "path": path,
         "title": title or Path(path).stem,
-        "artist": main_artist(artist),
+        "artist": main_artist(album_artist or artist),       # whose album it is (see assign_artists)
+        "track_artist": main_artist(artist or album_artist),  # who sings this song
         "artist_raw": artist,
+        "album_artist_raw": album_artist,
         "genre": genre,
         "album": album or "Unknown Album",
         "num": num,
@@ -854,7 +909,7 @@ def read_track(path):
     }
 
 
-TAGS_VERSION = 2   # raise it when read_track learns more: songs cached before are then read again
+TAGS_VERSION = 3   # raise it when read_track learns more: songs cached before are then read again
 
 
 def load_cache():
@@ -1152,7 +1207,7 @@ def fetch_lrclib(artist, title, album, duration):
 
 
 def lyrics_cache_path(track):
-    raw = f"{track['artist']}|{track['title']}|{track['album']}".lower()
+    raw = f"{song_artist(track)}|{track['title']}|{track['album']}".lower()
     key = hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:24]
     return LYRICS_DIR / f"{key}.json"
 
@@ -1182,13 +1237,13 @@ def get_lyrics(track, online, save_files, force=False):
             "instrumental": bool(cached.get("instrumental")),
             "source": "lrclib.net (saved)",
         }
-    if not online or track["artist"] == "Unknown Artist":
+    if not online or song_artist(track) == "Unknown Artist":
         return {"text": "", "source": ""}
     if cached and not force and time.time() - cached.get("ts", 0) < NEG_CACHE_SECONDS:
         return {"text": "", "source": ""}
 
     try:
-        res = fetch_lrclib(track["artist"], track["title"], track["album"], track["length"])
+        res = fetch_lrclib(song_artist(track), track["title"], track["album"], track["length"])
     except Exception as e:
         return {"text": "", "source": "", "error": str(e)}
     try:
@@ -2468,23 +2523,25 @@ def _organize_downloads(src_root, dest_root, group_featured, split_collabs, keep
         return 0
     went_to = {}   # download folder -> album folders its songs went to
     for root, _dirs, files in os.walk(src_root):
+        songs = []
         for name in files:
-            ext = Path(name).suffix.lower()
-            if ext not in AUDIO_EXTS:
+            if Path(name).suffix.lower() not in AUDIO_EXTS:
                 continue
+            t = read_track(os.path.join(root, name))
+            untagged = not (t["artist_raw"] or t["album_artist_raw"]).strip()
+            if untagged or t["album"] == "Unknown Album":   # the folder name tells
+                f_artist, f_album = names_from_folder(root, src_root)
+                t["artist_raw"] = f_artist if untagged else t["artist_raw"]
+                t["album"] = f_album if t["album"] == "Unknown Album" and f_album else t["album"]
+            songs.append((name, t))
+        # like the library: a compilation's songs go into one album folder, not one per singer
+        assign_artists([t for _n, t in songs], group_featured, split_collabs, keep)
+        for name, t in songs:
+            ext = Path(name).suffix.lower()
             src = os.path.join(root, name)
             try:
-                t = read_track(src)
-                raw = t.get("artist_raw") or ""
-                album = t["album"]
-                if not raw.strip() or album == "Unknown Album":   # untagged: the folder name tells
-                    f_artist, f_album = names_from_folder(root, src_root)
-                    raw = raw if raw.strip() else f_artist
-                    album = f_album if album == "Unknown Album" and f_album else album
-                artist = (main_artist(raw, split_collabs, keep) if group_featured
-                          else (raw.strip() or "Unknown Artist"))
-                folder = os.path.join(dest_root, safe_name(artist, "Unknown Artist"),
-                                      safe_name(album, "Unknown Album"))
+                folder = os.path.join(dest_root, safe_name(t["artist"], "Unknown Artist"),
+                                      safe_name(t["album"], "Unknown Album"))
                 base = safe_name(t["title"], Path(name).stem)
                 if t["num"] != 9999:
                     base = f"{t['num']:02d} - {base}"
@@ -5155,7 +5212,7 @@ class SongInfoDialog(QDialog):
         title = QLabel(_raw(t["title"]))
         title.setObjectName("heading2")
         title.setWordWrap(True)
-        sub = QLabel(f"{t['artist']}  ·  {t['album']}")
+        sub = QLabel(f"{song_artist(t)}  ·  {t['album']}")
         sub.setObjectName("sub")
         sub.setWordWrap(True)
         names.addStretch(1)
@@ -5741,7 +5798,7 @@ def find_duplicates(tracks):
     """Groups of the same song (same artist + title, lengths within 3 s), best copy first."""
     by_key = {}
     for t in tracks:
-        by_key.setdefault((_norm(t["artist"]), _norm(t["title"])), []).append(t)
+        by_key.setdefault((_norm(song_artist(t)), _norm(t["title"])), []).append(t)
     groups = []
     for same in by_key.values():
         if len(same) < 2:
@@ -5756,7 +5813,7 @@ def find_duplicates(tracks):
                 cluster.sort(key=lambda x: track_quality_score(x)[0], reverse=True)
                 groups.append(cluster)
             cluster = [t] if t is not None else []
-    groups.sort(key=lambda g: (g[0]["artist"].lower(), g[0]["title"].lower()))
+    groups.sort(key=lambda g: (song_artist(g[0]).lower(), g[0]["title"].lower()))
     return groups
 
 
@@ -6071,7 +6128,7 @@ class DuplicatesDialog(QDialog):
         self.tree.setHeaderLabels(["Song / file", "Folder", "Quality", "Size"])
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for g in groups:
-            top = QTreeWidgetItem([f"{g[0]['artist']} - {g[0]['title']}   ({len(g)} copies)", "", "", ""])
+            top = QTreeWidgetItem([f"{song_artist(g[0])} - {g[0]['title']}   ({len(g)} copies)", "", "", ""])
             self.tree.addTopLevelItem(top)
             for i, t in enumerate(g):
                 _s, size, kbps = track_quality_score(t)
@@ -6185,11 +6242,11 @@ class QualityDialog(QDialog):
                 bad, text = quality_verdict(t, e)
                 if bad or not self.only_bad.isChecked():
                     rows.append((not bad, t, e, text))
-        rows.sort(key=lambda r: (r[0], r[1]["artist"].lower(), r[1]["title"].lower()))
+        rows.sort(key=lambda r: (r[0], song_artist(r[1]).lower(), r[1]["title"].lower()))
         self.table.setRowCount(len(rows))
         for r, (_ok, t, e, text) in enumerate(rows):
             ext = os.path.splitext(t["path"])[1].lower().lstrip(".").upper()
-            vals = (t["title"], t["artist"], ext, f"{e['cutoff'] / 1000:.1f} kHz", text)
+            vals = (t["title"], song_artist(t), ext, f"{e['cutoff'] / 1000:.1f} kHz", text)
             for c, val in enumerate(vals):
                 self.table.setItem(r, c, QTableWidgetItem(val))
             self.table.item(r, 0).setData(KEY_ROLE, t["path"])
@@ -6511,12 +6568,12 @@ class ExtrasMixin:
         for _ts, path, _s in self.stats["events"][-3000:]:
             hit = self.track_by_path.get(path)
             if hit:
-                counts[hit[0]["artist"]] += 1
+                counts[song_artist(hit[0])] += 1
         for p in self.stats["favorites"]:
             hit = self.track_by_path.get(p)
             if hit:
-                counts[hit[0]["artist"]] += 3
-        artists = [a for a, _n in counts.most_common(12) if a != "Unknown Artist"]
+                counts[song_artist(hit[0])] += 3
+        artists = [a for a, _n in counts.most_common(12) if a not in ("Unknown Artist", VARIOUS_ARTISTS)]
         if not artists:
             if loud:
                 self.statusBar().showMessage("Play or like some music first, so eozMP knows your artists.")
@@ -6855,7 +6912,7 @@ def dlna_didl(url, track, cover_url, mime):
     e = html.escape
     return ('<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" '
             'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item id="1" parentID="0" restricted="1">'
-            f'<dc:title>{e(track["title"])}</dc:title><upnp:artist>{e(track["artist"])}</upnp:artist>'
+            f'<dc:title>{e(track["title"])}</dc:title><upnp:artist>{e(song_artist(track))}</upnp:artist>'
             f'<upnp:album>{e(track["album"])}</upnp:album><upnp:albumArtURI>{e(cover_url)}</upnp:albumArtURI>'
             '<upnp:class>object.item.audioItem.musicTrack</upnp:class>'
             f'<res protocolInfo="http-get:*:{mime}:*">{e(url)}</res></item></DIDL-Lite>')
@@ -7478,7 +7535,7 @@ class Extras2Mixin:
                     Path(cover_file).write_bytes(cover)
                 except OSError:
                     cover_file = ""
-            self.smtc.set_track(track["title"], track["artist"], track["album"], cover_file)
+            self.smtc.set_track(track["title"], song_artist(track), track["album"], cover_file)
         if self.cast:
             self.cast_load(track, fid)
         if self.lastfm_ready():
@@ -7543,7 +7600,7 @@ class Extras2Mixin:
             line = self.lyric_lines[self.lyric_idx]
         self.remote.state = {
             "id": file_id(t["path"]) if t else "", "ext": os.path.splitext(t["path"])[1].lower() if t else "",
-            "title": t["title"] if t else "", "artist": t["artist"] if t else "", "album": t["album"] if t else "",
+            "title": t["title"] if t else "", "artist": song_artist(t) if t else "", "album": t["album"] if t else "",
             "playing": self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState,
             "pos": int(self.player.position()), "dur": int(self.seek.maximum()), "vol": self.volume.value(),
             "line": line, "fav": bool(t) and t["path"] in self.fav_set}
@@ -9018,11 +9075,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         group = bool(self.cfg["group_featured"])
         split = bool(self.cfg["split_collabs"])
         keep = {k.strip().lower() for k in self.cfg["keep_together"] if k.strip()}
+        assign_artists(tracks, group, split, keep)
         for t in tracks:
-            raw = t.get("artist_raw")
-            if raw is not None:
-                t["artist"] = (main_artist(raw, split, keep) if group
-                               else (raw.strip() or "Unknown Artist"))
             akey, alkey = t["artist"].lower(), t["album"].lower()
             self.artists.setdefault(akey, t["artist"])
             alb = self.albums.get((akey, alkey))
@@ -9036,7 +9090,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             years = [t["year"] for t in alb["tracks"] if t["year"]]
             alb["year"] = min(years) if years else 0
             alb["search"] = [
-                f"{alb['artist']} {alb['album']} {t['title']}".lower() for t in alb["tracks"]
+                f"{alb['artist']} {alb['album']} {t['title']} {song_artist(t)}".lower() for t in alb["tracks"]
             ]
         self.genres, self.decades = {}, {}
         for key, alb in self.albums.items():
@@ -9106,7 +9160,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                 a_item.setExpanded(True)
         self.index = self.qindex.get(playing, -1) if playing else -1
         self.track_by_path = {t["path"]: (t, key) for t, key in self.queue}
-        self.song_index = [(f"{t['title']} {t['artist']} {t['album']}".lower(), t["path"]) for t, _k in self.queue]
+        self.song_index = [(f"{t['title']} {song_artist(t)} {t['album']} {t['artist']}".lower(), t["path"])
+                           for t, _k in self.queue]
         if self.list_covers():
             for akey, a_item in self.tree_artists.items():
                 a_item.setIcon(0, self.artist_icon(akey, 28))
@@ -9225,7 +9280,9 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         for r, t in enumerate(alb["tracks"]):
             num = str(t["num"]) if t["num"] != 9999 else ""
             count = plays.get(t["path"], {}).get("count", 0)
-            vals = (num, "", t["title"], str(count) if count else "", fmt_time(t["length"] * 1000))
+            singer = song_artist(t)
+            title = t["title"] if singer.lower() == alb["artist"].lower() else f"{t['title']}  ·  {singer}"
+            vals = (num, "", title, str(count) if count else "", fmt_time(t["length"] * 1000))
             for c, val in enumerate(vals):
                 self.track_table.setItem(r, c, QTableWidgetItem(val))
         self.refresh_album_hearts()
@@ -9544,7 +9601,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.queue_list.clear()
         for path in self.up_next:
             t, _ = self.track_by_path[path]
-            item = QListWidgetItem(f"{t['title']}  -  {t['artist']}")
+            item = QListWidgetItem(f"{t['title']}  -  {song_artist(t)}")
             item.setData(KEY_ROLE, path)
             self.queue_list.addItem(item)
         n = len(self.up_next)
@@ -10343,7 +10400,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                     text = f"{alb['album']}\n{alb['artist']}"
                 else:
                     t = self.track_by_path[value][0]
-                    text = f"{t['title']}\n{t['artist']}"
+                    text = f"{t['title']}\n{song_artist(t)}"
                 self.add_tile(lst, "home", kind, value, text, 120)
             lab.setVisible(bool(items))
             lst.setVisible(bool(items))
@@ -10396,7 +10453,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.search_songs.setRowCount(len(songs))
         for r, path in enumerate(songs):
             t = self.track_by_path[path][0]
-            for c, val in enumerate((t["title"], t["artist"], t["album"], fmt_time(t["length"] * 1000))):
+            for c, val in enumerate((t["title"], song_artist(t), t["album"], fmt_time(t["length"] * 1000))):
                 self.search_songs.setItem(r, c, QTableWidgetItem(val))
         lab, _tbl = self.search_sections["songs"]
         lab.setVisible(bool(songs))
@@ -10747,14 +10804,19 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if self.drawer.isVisible():
             self.close_drawer()
 
+    def artist_page(self, t):
+        """The artist page a song links to: its singer's, or its album artist's when the singer has none."""
+        a = song_artist(t).lower()
+        return a if a in self.artists else t["artist"].lower()
+
     def set_now_playing(self, track):
         col = self.scheme["text"]
-        akey = urllib.parse.quote(track["artist"].lower())
+        akey = urllib.parse.quote(self.artist_page(track))
         path = urllib.parse.quote(track["path"])
         sep = html.escape("  -  ")
         self.now_playing.setText(
             self.link(f"album:{path}", track["title"], col) + sep
-            + self.link(f"artist:{akey}", track["artist"], col) + sep
+            + self.link(f"artist:{akey}", song_artist(track), col) + sep
             + self.link(f"album:{path}", track["album"], col))
 
     def set_lyrics_header(self):
@@ -10769,7 +10831,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if getattr(self, "lyrics_info_path", None) != path:
             info = ""
         self.lyrics_source.setText(
-            self.link(f"artist:{urllib.parse.quote(t['artist'].lower())}", t["artist"], soft)
+            self.link(f"artist:{urllib.parse.quote(self.artist_page(t))}", song_artist(t), soft)
             + (html.escape(f"  •  {info}") if info else ""))
 
     # ----- back / forward history
@@ -10918,7 +10980,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if 0 <= self.index < len(self.queue):
             t, key = self.queue[self.index]
             self.drawer_title.setText(_raw(t["title"]))
-            self.drawer_artist.setText(f"{t['artist']}  ·  {t['album']}")
+            self.drawer_artist.setText(f"{song_artist(t)}  ·  {t['album']}")
             self.drawer_cover.setPixmap(self.thumb_pixmap(key, 48, self.radius(8)))
         else:
             self.drawer_title.setText("Nothing playing")
@@ -11044,7 +11106,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if 0 <= self.index < len(self.queue):
             t = self.queue[self.index][0]
             fs.title.setText(_raw(t["title"]))
-            fs.artist.setText(f"{t['artist']}  ·  {t['album']}")
+            fs.artist.setText(f"{song_artist(t)}  ·  {t['album']}")
         else:
             fs.title.setText("Nothing playing")
             fs.artist.setText("")
@@ -11554,8 +11616,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.mini.accent = self.scheme["accent"]
         if 0 <= self.index < len(self.queue):
             t = self.queue[self.index][0]
-            self.mini.set_track(t["title"], t["artist"], cover, self.backdrop_for(key),
-                                href="artist:" + urllib.parse.quote(t["artist"].lower()))
+            self.mini.set_track(t["title"], song_artist(t), cover, self.backdrop_for(key),
+                                href="artist:" + urllib.parse.quote(self.artist_page(t)))
         else:
             self.mini.set_track("Nothing playing", "", cover, self.backdrop_for(None))
         self.mini.lyric.setVisible(bool(self.cfg["show_lyric_line"]))
@@ -11592,7 +11654,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                 return "That's the last song"
             path = self.ctx_paths[pos]
         hit = self.track_by_path.get(path)
-        return f"Next: {hit[0]['title']}  -  {hit[0]['artist']}" if hit else ""
+        return f"Next: {hit[0]['title']}  -  {song_artist(hit[0])}" if hit else ""
 
     def seek_fraction(self, fraction):
         dur = self.seek.maximum()
@@ -11694,7 +11756,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.tray_play.setText("Pause" if playing else "Play")
         if 0 <= self.index < len(self.queue):
             t = self.queue[self.index][0]
-            text = f"{t['title']} - {t['artist']}"
+            text = f"{t['title']} - {song_artist(t)}"
             self.tray_now.setText(text if len(text) < 60 else text[:57] + "...")
             self.tray.setToolTip(f"eozMP\n{text}"[:120])
 
@@ -11966,7 +12028,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.pl_table.setRowCount(0)   # refilling old rows re-measures every row for each cell
         self.pl_table.setRowCount(len(tracks))
         for r, (t, _key) in enumerate(tracks):
-            vals = (str(r + 1), t["title"], t["artist"], t["album"], fmt_time(t["length"] * 1000))
+            vals = (str(r + 1), t["title"], song_artist(t), t["album"], fmt_time(t["length"] * 1000))
             for c, v in enumerate(vals):
                 self.pl_table.setItem(r, c, QTableWidgetItem(v))
         if switch:
@@ -12180,7 +12242,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
     def load_lyrics(self, track, force_online=False):
         token = track["path"]
         self.lyrics_token = token
-        self.lyrics_artist = track["artist"]
+        self.lyrics_artist = song_artist(track)
         self.lyrics_path = track["path"]
         self.set_lyrics_header()
         lkey = (track["artist"].lower(), track["album"].lower())

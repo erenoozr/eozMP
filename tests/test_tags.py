@@ -4,6 +4,7 @@ artist apart from its album's artist (A4: compilations and soundtracks).
 Run from the project folder:   py -3 -m unittest discover tests -p "test_tags.py"
 """
 import unittest
+from unittest import mock
 
 from mutagen import File
 from mutagen.id3 import TALB, TBPM, TCON, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK
@@ -173,6 +174,130 @@ class CachedTagsTest(TempDirTest):
         again = mp.scan_folders([str(lib)], old)
         self.assertEqual((again[0]["title"], again[0]["artist"]), ("Song", "Singer"))
         self.assertIs(mp.scan_folders([str(lib)], again)[0], again[0])     # and then it's cached
+
+
+class AlbumArtistTest(TempDirTest):
+    """A4: who sings a song and whose album it is are two things. A compilation or a soundtrack
+    whose songs have different singers is still one album."""
+
+    def album(self, artists, folder="OST", album="The Witcher 3", **tags):
+        d = self.tmp / "music" / folder
+        d.mkdir(parents=True, exist_ok=True)
+        for i, artist in enumerate(artists, 1):
+            extra = {"artist": artist} if artist else {}
+            tagged_mp3(d / f"{i:02d}.mp3", title=f"{folder} {i}", album=album, tracknumber=str(i), **extra, **tags)
+
+    def build(self, group=True, split=True, keep=()):
+        tracks = mp.scan_folders([str(self.tmp / "music")])
+        mp.assign_artists(tracks, group, split, keep)
+        return tracks
+
+    @staticmethod
+    def albums(tracks):
+        return sorted({(t["artist"], t["album"]) for t in tracks})
+
+    def test_both_artists_are_read(self):
+        self.album(["Singer"], albumartist="Various Artists")
+        t = mp.read_track(str(self.tmp / "music" / "OST" / "01.mp3"))
+        self.assertEqual((t["artist_raw"], t["album_artist_raw"]), ("Singer", "Various Artists"))
+        self.assertEqual((t["track_artist"], t["artist"]), ("Singer", "Various Artists"))
+
+    def test_compilation_with_album_artist_tag(self):
+        self.album(["A", "B feat. C", "D"], albumartist="Various Artists")
+        tracks = self.build()
+        self.assertEqual(self.albums(tracks), [("Various Artists", "The Witcher 3")])
+        self.assertEqual([t["track_artist"] for t in tracks], ["A", "B", "D"])
+
+    def test_soundtrack_without_album_artist_stays_one_album(self):
+        self.album(["Marcin Przybyłowicz", "Percival", "Marcin Przybyłowicz", "Mikolai Stroinski",
+                    "Marcin Przybyłowicz & Mikolai Stroinski"])
+        tracks = self.build()
+        self.assertEqual(self.albums(tracks), [("Marcin Przybyłowicz", "The Witcher 3")])
+        self.assertEqual([t["track_artist"] for t in tracks][:4],
+                         ["Marcin Przybyłowicz", "Percival", "Marcin Przybyłowicz", "Mikolai Stroinski"])
+
+    def test_compilation_without_album_artist_goes_under_various_artists(self):
+        self.album(["A", "B", "C", "D"], album="Summer Hits")
+        tracks = self.build()
+        self.assertEqual(self.albums(tracks), [("Various Artists", "Summer Hits")])
+        self.assertEqual([t["track_artist"] for t in tracks], ["A", "B", "C", "D"])
+
+    def test_one_album_tagged_on_some_songs_only(self):
+        self.album(["A", "B", "C"], album="Hits")
+        from mutagen.easyid3 import EasyID3
+        first = EasyID3(str(self.tmp / "music" / "OST" / "01.mp3"))
+        first["albumartist"] = "DJ Mix"
+        first.save()
+        self.assertEqual(self.albums(self.build()), [("DJ Mix", "Hits")])
+
+    def test_same_album_name_in_two_folders_is_two_albums(self):
+        self.album(["Queen"] * 3, folder="Queen", album="Greatest Hits")
+        self.album(["ABBA"] * 3, folder="ABBA", album="Greatest Hits")
+        self.assertEqual(self.albums(self.build()), [("ABBA", "Greatest Hits"), ("Queen", "Greatest Hits")])
+
+    def test_two_albums_of_the_same_name_in_one_folder_stay_apart(self):
+        d = self.tmp / "music" / "Downloads"
+        d.mkdir(parents=True)
+        for band in ("Queen", "ABBA"):
+            for n in (1, 2, 3):
+                tagged_mp3(d / f"{band} {n}.mp3", title=f"{band} {n}", artist=band, album="Greatest Hits",
+                           tracknumber=str(n))
+        self.assertEqual(self.albums(self.build()), [("ABBA", "Greatest Hits"), ("Queen", "Greatest Hits")])
+
+    def test_songs_without_an_album_are_left_alone(self):
+        d = self.tmp / "music" / "Singles"
+        d.mkdir(parents=True)
+        tagged_mp3(d / "a.mp3", title="A", artist="One")
+        tagged_mp3(d / "b.mp3", title="B", artist="Two")
+        self.assertEqual(self.albums(self.build()), [("One", "Unknown Album"), ("Two", "Unknown Album")])
+
+    def test_featured_artists_grouped_or_not(self):
+        self.album(["Drake", "Drake feat. Rihanna", "Drake"], album="Views")
+        tracks = self.build(group=True)
+        self.assertEqual(self.albums(tracks), [("Drake", "Views")])
+        self.assertEqual([t["track_artist"] for t in tracks], ["Drake", "Drake", "Drake"])
+        tracks = self.build(group=False)
+        self.assertEqual(self.albums(tracks), [("Drake", "Views")])          # still one album
+        self.assertEqual([t["track_artist"] for t in tracks], ["Drake", "Drake feat. Rihanna", "Drake"])
+
+    def test_single_with_a_featured_artist_and_grouping_off(self):
+        self.album(["Drake feat. Rihanna"], album="Single")
+        self.assertEqual(self.albums(self.build(group=False)), [("Drake feat. Rihanna", "Single")])
+
+    def test_collaborations_split_or_kept(self):
+        self.album(["Jay-Z & Kanye West"] * 2, album="Watch the Throne")
+        self.assertEqual(self.albums(self.build()), [("Jay-Z", "Watch the Throne")])
+        self.assertEqual(self.albums(self.build(split=False)), [("Jay-Z & Kanye West", "Watch the Throne")])
+        self.assertEqual(self.albums(self.build(keep={"jay-z & kanye west"})),
+                         [("Jay-Z & Kanye West", "Watch the Throne")])
+
+    def test_lyrics_are_looked_up_with_the_singer(self):
+        self.album(["Percival"], albumartist="Various Artists")
+        track = self.build()[0]
+        with mock.patch.object(mp, "LYRICS_DIR", self.tmp / "lyrics"), \
+                mock.patch.object(mp, "fetch_lrclib", return_value=None) as fetch:
+            mp.get_lyrics(track, online=True, save_files=False)
+        self.assertEqual(fetch.call_args[0][:2], ("Percival", "OST 1"))
+
+    def test_downloaded_compilation_is_organized_into_one_folder(self):
+        src, dest = self.tmp / "downloads", self.tmp / "library"
+        dest.mkdir()
+        dl = src / "VA - Summer Hits"
+        dl.mkdir(parents=True)
+        for i, artist in enumerate(["A", "B", "C"], 1):
+            tagged_mp3(dl / f"{i}.mp3", title=f"T{i}", artist=artist, album="Summer Hits", tracknumber=str(i))
+        mp.organize_downloads(str(src), str(dest))
+        self.assertEqual(sorted(p.name for p in (dest / "Various Artists" / "Summer Hits").iterdir()),
+                         ["01 - T1.mp3", "02 - T2.mp3", "03 - T3.mp3"])
+
+    def test_organize_uses_the_album_artist_tag(self):
+        src, dest = self.tmp / "downloads", self.tmp / "library"
+        dest.mkdir()
+        dl = src / "x"
+        dl.mkdir(parents=True)
+        tagged_mp3(dl / "1.mp3", title="T1", artist="Guest", albumartist="Band", album="Alb", tracknumber="1")
+        mp.organize_downloads(str(src), str(dest))
+        self.assertTrue((dest / "Band" / "Alb" / "01 - T1.mp3").exists())
 
 
 class YearTest(TempDirTest):
