@@ -968,23 +968,55 @@ def scan_folders(folders, cache=None):
     return tracks
 
 
+def _asf_picture(raw):
+    """WMA's WM/Picture: type, size, mime type and description (UTF-16, zero-ended), then the image."""
+    kind, size, pos = raw[0], int.from_bytes(raw[1:5], "little"), 5
+    for _ in range(2):
+        while raw[pos:pos + 2] not in (b"\0\0", b""):
+            pos += 2
+        pos += 2
+    return kind, raw[pos:pos + size]
+
+
+def file_pictures(audio):
+    """[(picture type, image bytes)] of a mutagen file; type 3 is the front cover."""
+    import base64
+    from mutagen.flac import Picture
+    pics = [(p.type, p.data) for p in getattr(audio, "pictures", None) or []]      # FLAC
+    tags = audio.tags
+    kind = tag_kind(tags)
+    if kind == "id3":
+        pics += [(f.type, f.data) for f in tags.getall("APIC")]
+    elif kind == "mp4":
+        pics += [(3, bytes(c)) for c in tags.get("covr", [])]
+    elif kind == "vorbis":                       # Ogg Vorbis/Opus: a FLAC picture block in base64
+        for b64 in tags.get("metadata_block_picture", []):
+            try:
+                p = Picture(base64.b64decode(b64))
+                pics.append((p.type, p.data))
+            except Exception:
+                pass
+        pics += [(0, base64.b64decode(b64)) for b64 in tags.get("coverart", [])]   # the older way
+    elif kind == "ape":
+        for key, front in (("Cover Art (Front)", True), ("Cover Art (Other)", False), ("Cover Art (Back)", False)):
+            value = tags.get(key)
+            if value is not None and b"\0" in bytes(value.value):
+                pics.append((3 if front else 0, bytes(value.value).split(b"\0", 1)[1]))
+    elif kind == "asf":
+        pics += [_asf_picture(bytes(v.value)) for v in tags.get("WM/Picture", [])]
+    return pics
+
+
 def embedded_cover(path):
+    """The front cover stored in the file, or its first picture when none is marked as the front."""
     try:
+        if path.lower().endswith(".mka"):
+            return read_matroska(path, cover=True)[2]
         audio = MutagenFile(path)
         if audio is None:
             return None
-        pics = getattr(audio, "pictures", None)
-        if pics:
-            return pics[0].data
-        tags = audio.tags
-        if tags is None:
-            return None
-        if hasattr(tags, "getall"):
-            apic = tags.getall("APIC")
-            if apic:
-                return apic[0].data
-        if "covr" in tags:
-            return bytes(tags["covr"][0])
+        pics = [(kind, data) for kind, data in file_pictures(audio) if data]
+        return next((data for kind, data in pics if kind == 3), pics[0][1] if pics else None)
     except Exception:
         pass
     return None
