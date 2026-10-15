@@ -155,5 +155,14 @@ class SmallScreenTest(PlayerHarness):
         self.assertGreaterEqual(table.viewport().height() // table.rowHeight(0), 5)
 
 
+
+class DownloadsPageTest(PlayerHarness):
+    def test_empty_downloads_page_says_what_to_do(self):
+        self.make_player(["One"])                         # no slskd set up in the test settings
+        p = self.player
+        p.open_downloads()
+        self.assertEqual(p.dl_status.text(), "Set up your slskd connection first.")
+
+
 if __name__ == "__main__":
     unittest.main()

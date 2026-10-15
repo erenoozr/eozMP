@@ -10716,6 +10716,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             self._navigating = False
 
     def open_downloads(self):
+        if not self.slskd_ready():   # nothing can show up here yet; Soulseek > Settings... is the way
+            self.dl_status.setText("Set up your slskd connection first.")
         self.stack.setCurrentIndex(2)
         self.nav_note(("downloads",))
 
