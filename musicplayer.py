@@ -8438,6 +8438,12 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.home_sub.setObjectName("sub")
         hv.addWidget(self.home_title)
         hv.addWidget(self.home_sub)
+        self.home_add_btn = QPushButton("Add music folder...")    # first run: the way in, right where you look
+        self.home_add_btn.setObjectName("primary")
+        self.home_add_btn.clicked.connect(lambda: self.add_folder())
+        self.home_add_btn.hide()
+        hv.addSpacing(4)
+        hv.addWidget(self.home_add_btn, 0, Qt.AlignmentFlag.AlignLeft)
         hv.addSpacing(8)
         self.home_rows = {}
         for row_key, caption in (("played", "Recently played"), ("added", "Recently added"),
@@ -10130,6 +10136,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
                                   f"{len(self.albums)} albums in your library")
         else:
             self.home_sub.setText("Add your music from Library > Add music folder...")
+        self.home_add_btn.setVisible(not self.albums)
         self.view_targets["home"] = {}
         # recently played albums
         played, seen = [], set()

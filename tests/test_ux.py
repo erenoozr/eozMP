@@ -5,6 +5,7 @@ runs offscreen on a fake library in a temp folder (see test_player.py).
 """
 import os
 import unittest
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -39,6 +40,26 @@ class SelectedRowTest(PlayerHarness):
                        for x in range(rect.left() + 2, rect.right() - 2)
                        for y in range(rect.top() + 3, rect.bottom() - 3))
             self.assertGreater(text, 15, f"row {row}: no text to be seen on the selected row")
+
+
+class EmptyLibraryTest(PlayerHarness):
+    def test_first_run_home_page_offers_to_add_music(self):
+        self.make_player([])
+        p = self.player
+        p.resize(1100, 700)
+        p.show()
+        p.show_home()
+        self.assertTrue(p.home_add_btn.isVisible())
+        with mock.patch.object(p, "add_folder") as add:
+            p.home_add_btn.click()
+        add.assert_called_once()
+
+    def test_the_button_goes_away_once_there_is_music(self):
+        self.make_player(["One"])
+        p = self.player
+        p.show()
+        p.show_home()
+        self.assertFalse(p.home_add_btn.isVisible())
 
 
 if __name__ == "__main__":
