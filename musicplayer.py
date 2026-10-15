@@ -1107,14 +1107,23 @@ def fmt_size(n):
 LYRICS_DIR = Path.home() / ".simple_music_player_lyrics"
 TS_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]")
 META_RE = re.compile(r"^\[[A-Za-z]+:.*\]$")
+OFFSET_RE = re.compile(r"^\[offset:\s*([+-]?\d+)\s*\]$", re.IGNORECASE)
+WORD_TS_RE = re.compile(r"<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>")      # enhanced LRC: a time for every word
 NEG_CACHE_SECONDS = 7 * 24 * 3600
 
 
 def parse_lrc(text):
     """Return (synced, lines). lines = [(milliseconds or None, text)].
-    Understands .lrc timestamps like [01:23.45]; anything else is plain text."""
-    synced, plain = [], []
+    Understands .lrc timestamps like [01:23.45], the [offset:] tag and word times (<01:23.45>,
+    dropped: the line shows the words); anything else is plain text."""
+    synced, plain, offset = [], [], 0
     for raw in text.splitlines():
+        m = OFFSET_RE.match(raw.strip())
+        if m:
+            offset = int(m.group(1))      # milliseconds; a positive offset shows the lines earlier
+            continue
+        if WORD_TS_RE.search(raw):
+            raw = re.sub(r" {2,}", " ", WORD_TS_RE.sub("", raw))
         stamps = TS_RE.findall(raw)
         body = TS_RE.sub("", raw).strip()
         if stamps:
@@ -1126,7 +1135,7 @@ def parse_lrc(text):
         elif not META_RE.match(raw.strip()):
             plain.append(raw.rstrip())
     if synced:
-        synced.sort(key=lambda x: x[0])
+        synced = sorted(((max(0, ms - offset), body) for ms, body in synced), key=lambda x: x[0])
         return True, synced
     while plain and not plain[-1].strip():
         plain.pop()
@@ -1134,9 +1143,10 @@ def parse_lrc(text):
 
 
 def read_text_file(path):
+    """A lyrics file in whatever encoding it was saved in: UTF-8, UTF-16, Turkish Windows..."""
     try:
-        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-            return f.read()
+        with open(path, "rb") as f:
+            return decode_text(f.read()).replace("\r\n", "\n").replace("\r", "\n")
     except OSError:
         return ""
 
@@ -1152,7 +1162,7 @@ def embedded_lyrics(path):
                 text = str(frame.text).strip()
                 if text:
                     return text
-        for key in ("\xa9lyr", "lyrics", "unsyncedlyrics", "LYRICS", "UNSYNCEDLYRICS"):
+        for key in ("\xa9lyr", "lyrics", "unsyncedlyrics", "LYRICS", "UNSYNCEDLYRICS", "WM/Lyrics"):
             try:
                 val = tags.get(key)
             except Exception:
@@ -1213,56 +1223,82 @@ def lyrics_cache_path(track):
     return LYRICS_DIR / f"{key}.json"
 
 
-def get_lyrics(track, online, save_files, force=False):
-    """Runs in a background thread. Order: .lrc/.txt next to the song,
-    lyrics embedded in the file, saved earlier lookup, then the internet."""
-    path = track["path"]
-    stem = os.path.splitext(path)[0]
+def local_lyrics(track, cached):
+    """Lyrics we already have: a .lrc/.txt next to the song, in its tags, or found online before."""
+    stem = os.path.splitext(track["path"])[0]
     for ext in (".lrc", ".txt"):
         text = read_text_file(stem + ext)
         if text.strip():
             return {"text": text, "source": f"from {os.path.basename(stem + ext)}"}
-    text = embedded_lyrics(path)
+    text = embedded_lyrics(track["path"])
     if text:
         return {"text": text, "source": "embedded in the file"}
-
-    cpath = lyrics_cache_path(track)
-    cached = None
-    try:
-        cached = json.loads(cpath.read_text(encoding="utf-8"))
-    except Exception:
-        pass
     if cached and cached.get("found"):
         return {
             "text": cached.get("lrc") or cached.get("plain") or "",
             "instrumental": bool(cached.get("instrumental")),
             "source": "lrclib.net (saved)",
         }
+    return None
+
+
+def save_lyrics_file(stem, text, synced, ours, create):
+    """Puts lyrics found online next to the song. A file eozMP saved before (it still holds what was
+    found then, `ours`) is overwritten; one you made or changed yourself is never touched."""
+    existing = [stem + ext for ext in (".lrc", ".txt") if os.path.exists(stem + ext)]
+    if existing:
+        target = existing[0]                  # the one that's shown
+        if not ours or read_text_file(target).strip() != ours.replace("\r\n", "\n").strip():
+            return
+    elif create:
+        target = stem + (".lrc" if synced else ".txt")
+    else:
+        return
+    try:
+        Path(target).write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def get_lyrics(track, online, save_files, force=False):
+    """Runs in a background thread. Order: .lrc/.txt next to the song, lyrics embedded in the
+    file, saved earlier lookup, then the internet. force ("Search online") asks the internet even
+    when there are lyrics and replaces the ones eozMP saved before. When it finds nothing or can't
+    get through, what we had is kept ("missed" / "error" say why)."""
+    cpath = lyrics_cache_path(track)
+    cached = None
+    try:
+        cached = json.loads(cpath.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    have = local_lyrics(track, cached)
+    if have and not force:
+        return have
     if not online or song_artist(track) == "Unknown Artist":
-        return {"text": "", "source": ""}
+        return have or {"text": "", "source": ""}
     if cached and not force and time.time() - cached.get("ts", 0) < NEG_CACHE_SECONDS:
         return {"text": "", "source": ""}
 
     try:
         res = fetch_lrclib(song_artist(track), track["title"], track["album"], track["length"])
     except Exception as e:
-        return {"text": "", "source": "", "error": str(e)}
+        return {**(have or {"text": "", "source": ""}), "error": str(e)}
+    had_found = bool(cached and cached.get("found"))
+    ours = (cached.get("lrc") or cached.get("plain") or "") if had_found else ""
     try:
         LYRICS_DIR.mkdir(exist_ok=True)
         if res and (res["lrc"] or res["plain"] or res["instrumental"]):
             cpath.write_text(json.dumps({"found": True, **res}), encoding="utf-8")
-        else:
+        elif not had_found:                   # lyrics found before aren't thrown away for a miss now
             cpath.write_text(json.dumps({"found": False, "ts": time.time()}), encoding="utf-8")
     except Exception:
         pass
     if not res or not (res["lrc"] or res["plain"]):
+        if have:
+            return {**have, "missed": True}
         return {"text": "", "source": "", "instrumental": bool(res and res["instrumental"])}
     text = res["lrc"] or res["plain"]
-    if save_files:
-        try:
-            Path(stem + (".lrc" if res["lrc"] else ".txt")).write_text(text, encoding="utf-8")
-        except OSError:
-            pass
+    save_lyrics_file(os.path.splitext(track["path"])[0], text, bool(res["lrc"]), ours, save_files)
     return {"text": text, "source": "lrclib.net"}
 
 
@@ -12300,6 +12336,10 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if token != self.lyrics_token:
             return  # an older song's answer arriving late
         text = res.get("text", "")
+        if res.get("missed"):                 # "Search online" found nothing else: what we had stays
+            self.statusBar().showMessage("No other lyrics found online.", 8000)
+        elif res.get("error") and text.strip():
+            self.statusBar().showMessage(f"Couldn't get lyrics ({res['error']})", 8000)
         if not text.strip():
             if res.get("instrumental"):
                 msg = "Instrumental - no lyrics."
