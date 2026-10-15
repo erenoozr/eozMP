@@ -1,8 +1,8 @@
 """
-eozMP - eren's definitely (not) sketchy music player.
+eozMP - eren's music player.
 Library, covers, synced lyrics, playlists, queue, mini/fullscreen player and Soulseek search (via slskd).
 
-Copyright (C) 2026 Eren
+Copyright (C) 2026 Eren Özer
 
 This program is free software: you can redistribute it and/or modify it under the terms of
 the GNU General Public License as published by the Free Software Foundation, either
@@ -8636,8 +8636,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         hlp.addAction(act)
         act = QAction("About eozMP", self)
         act.triggered.connect(lambda: QMessageBox.about(
-            self, "eozMP", f"eozMP v{APP_VERSION} - eren's definitely (not) sketchy music player, customize and enjoy your music.\n\n"
-            "Copyright (C) 2026 Eren. Free software under the GNU General Public License v3."))
+            self, "eozMP", f"eozMP v{APP_VERSION} - eren's music player, customize and enjoy your music.\n\n"
+            "Copyright (C) 2026 Eren Özer. Free software under the GNU General Public License v3."))
         hlp.addAction(act)
         self.build_extras_menu()
 

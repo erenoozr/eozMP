@@ -143,7 +143,6 @@
     "Later": "Sonra",
     "Skip this version": "Bu sürümü atla",
     "Download the new eozMP.exe and put it in place of the old one. Your settings, playlists and stats are kept.": "Yeni eozMP.exe'yi indir ve eskisinin yerine koy. Ayarların, çalma listelerin ve istatistiklerin korunur.",
-    "eozMP v{0} - eren's definitely (not) sketchy music player, customize and enjoy your music.\n\nCopyright (C) 2026 Eren. Free software under the GNU General Public License v3.": "eozMP v{0} - eren'in kesinlikle (pek de) şüpheli olmayan müzik çaları, kişiselleştir ve müziğinin keyfini çıkar.\n\nTelif Hakkı (C) 2026 Eren. GNU Genel Kamu Lisansı v3 ile özgür yazılım.",
     "Searching Soulseek for everything by {0}... (up to two minutes)": "Soulseek'te {0} sanatçısının her şeyi aranıyor... (iki dakikaya kadar)",
     "Searching Soulseek for everything by {0}... {1}": "Soulseek'te {0} sanatçısının her şeyi aranıyor... {1}",
     "Not what you wanted? Press \"Search Soulseek too\" below.": "İstediğin bu değil mi? Aşağıdaki \"Soulseek'te de ara\"ya bas.",
@@ -153,7 +152,8 @@
     "On TV": "TV'de",
     "On phone": "Telefonda",
     "The music is playing on your TV.": "Müzik şu an TV'nde çalıyor.",
-    "The music is playing on your phone.": "Müzik şu an telefonunda çalıyor."
+    "The music is playing on your phone.": "Müzik şu an telefonunda çalıyor.",
+    "eozMP v{0} - eren's music player, customize and enjoy your music.\n\nCopyright (C) 2026 Eren Özer. Free software under the GNU General Public License v3.": "eozMP v{0} - eren'in müzik çaları, kişiselleştir ve müziğinin keyfini çıkar.\n\nTelif Hakkı (C) 2026 Eren Özer. GNU Genel Kamu Lisansı v3 ile özgür yazılım."
   },
   "ja": {
     "&Library": "&ライブラリ",

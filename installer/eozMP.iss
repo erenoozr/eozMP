@@ -9,7 +9,7 @@
 AppId={{6F2C1B7E-3A54-4E0B-9C41-E0A5D7B2F1C3}
 AppName=eozMP
 AppVersion={#AppVersion}
-AppPublisher=Eren
+AppPublisher=Eren Özer
 AppPublisherURL=https://github.com/erenoozr/eozMP
 DefaultDirName={autopf}\eozMP
 DefaultGroupName=eozMP

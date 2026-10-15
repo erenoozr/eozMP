@@ -95,7 +95,7 @@ def gtx(text, lang):
     return None
 
 
-BRANDS = ["Soulseek", "slskd", "eozMP", "MusicBrainz", "VLC", "lrclib.net", "AcoustID", "Last.fm", "ReplayGain"]   # never translated
+BRANDS = ["Soulseek", "slskd", "eozMP", "MusicBrainz", "VLC", "lrclib.net", "AcoustID", "Last.fm", "ReplayGain", "Eren Özer"]   # never translated
 
 
 def prep(s):
