@@ -84,5 +84,15 @@ class DuplicatesDialogTest(PlayerHarness):
         dlg.deleteLater()
 
 
+class StaleRowTest(PlayerHarness):
+    def test_playing_a_song_that_left_the_library_does_not_crash(self):      # B7
+        self.make_player(["One", "Two"])
+        p = self.player
+        p.play_path(str(self.tmp / "music" / "gone.wav"))          # no KeyError
+        self.assertIn("no longer", p.statusBar().currentMessage())
+        p.play_path(p.queue[0][0]["path"])                           # a real song still plays
+        self.assertEqual(self.played, ["One"])
+
+
 if __name__ == "__main__":
     unittest.main()

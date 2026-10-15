@@ -9921,6 +9921,13 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.shuffle_played = set()
         self.shuffle_pick = None
 
+    def play_path(self, path):
+        """Play a song by its file; a row can outlive its song (a rescan or a delete since it was drawn)."""
+        if path in self.qindex:
+            self.play_from_library(self.qindex[path])
+        else:
+            self.statusBar().showMessage(_t("That song is no longer in your library."), 6000)
+
     def play_from_library(self, idx):
         if not self.queue:
             return
@@ -10860,7 +10867,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         paths = [self.search_paths[r] for r in sel if r < len(self.search_paths)]
         if paths:
             self.track_menu(self.search_songs.viewport().mapToGlobal(pos), paths,
-                            play_cb=lambda: self.play_from_library(self.qindex[paths[0]]))
+                            play_cb=lambda: self.play_path(paths[0]))
 
     # ----- organize Soulseek downloads
     def organize_target(self):
@@ -12335,7 +12342,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         extra = self.album_extras(key) if key in self.albums else ()
         self.track_menu(
             self.tree.viewport().mapToGlobal(pos), paths,
-            play_cb=lambda: self.play_from_library(self.qindex[paths[0]]), extra=extra,
+            play_cb=lambda: self.play_path(paths[0]), extra=extra,
         )
 
     def album_table_menu(self, pos):
@@ -12352,7 +12359,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         album_key = self.current_album
         self.track_menu(
             self.track_table.viewport().mapToGlobal(pos), paths,
-            play_cb=lambda: self.play_from_library(self.qindex[paths[0]]),
+            play_cb=lambda: self.play_path(paths[0]),
             extra=self.album_extras(album_key),
         )
 
