@@ -1162,6 +1162,26 @@ ACCENTS = {
 }
 
 
+def contrast_ratio(a, b):
+    """How well two colours read on each other (WCAG): 1 to 21, normal text needs 4.5."""
+    def lum(color):
+        c = QColor(color)
+        ch = [v / 255 for v in (c.red(), c.green(), c.blue())]
+        ch = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4 for v in ch]
+        return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+    hi, lo = sorted((lum(a), lum(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def text_on(color):
+    """Text/icon colour for something filled with `color`: white when it reads well (4.5:1), else
+    near-black; black for the few mid-tones where neither quite does."""
+    for text in ("#ffffff", "#111111"):
+        if contrast_ratio(text, color) >= 4.5:
+            return text
+    return "#000000"
+
+
 def make_scheme(dark, accent):
     """All the colours the app uses, in one place."""
     if dark:
@@ -1173,14 +1193,14 @@ def make_scheme(dark, accent):
               "hover": "#e2e4ea", "border": "#dcdee5",
               "text": "#1c1c1e", "sub": "#6b6b76"}
     sc["accent"] = accent
-    sc["accent_hover"] = QColor(accent).lighter(115).name()
+    c = QColor(accent)
+    sc["on_accent"] = text_on(accent)   # text/icons drawn on the accent
+    # hovering moves the accent away from its text colour, so the text stays readable
+    sc["accent_hover"] = (c.darker(115) if sc["on_accent"] == "#ffffff" else c.lighter(115)).name()
     dim = QColor(sc["text"])
     dim.setAlpha(105)
     sc["lyric_dim"] = dim
     sc["dark"] = dark
-    c = QColor(accent)
-    lum = (0.2126 * c.red() + 0.7152 * c.green() + 0.0722 * c.blue()) / 255
-    sc["on_accent"] = "#111111" if lum > 0.62 else "#ffffff"   # text/icons drawn on the accent
     sc["accent_soft"] = f"rgba({c.red()}, {c.green()}, {c.blue()}, {70 if dark else 52})"
     return sc
 
