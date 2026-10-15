@@ -48,7 +48,10 @@ There is no separate sign-up.
 You can also look at slskd's own web page:
 
 1. Open your browser and go to:  http://localhost:5030
-2. Log in with user name  slskd  and password  slskd
+2. Log in with user name  slskd  and the password written in slskd.yml under
+   web: > authentication: > password  (open the file as in section 8).
+   The installer picks a random password, because this page can be reached
+   from other devices on your network.
 3. At the top it should say you're connected to the Soulseek server.
 
 
@@ -115,7 +118,7 @@ Only needed if you set up slskd yourself, or skipped the account step.
     web:
       authentication:
         username: slskd
-        password: slskd
+        password: PICK-A-PASSWORD-FOR-THE-WEB-PAGE
         api_keys:
           eozmp:
             key: ANY-LONG-RANDOM-TEXT-20-CHARACTERS-OR-MORE
@@ -139,7 +142,7 @@ Only needed if you set up slskd yourself, or skipped the account step.
   slskd settings         %LOCALAPPDATA%\slskd\slskd.yml
   slskd data and logs    %LOCALAPPDATA%\slskd\
   Downloads (default)    %USERPROFILE%\Music\Soulseek\
-  slskd web page         http://localhost:5030  (user slskd, password slskd)
+  slskd web page         http://localhost:5030  (user slskd, password in slskd.yml)
 
 To open a folder: Windows key + R, paste the path, press Enter.
 

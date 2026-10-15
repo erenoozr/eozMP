@@ -214,7 +214,7 @@ end;
 procedure WriteSoulseekSettings;
 var
   Lines: TArrayOfString;
-  User, Pass, Dir, YDir, JDir, Key: String;
+  User, Pass, Dir, YDir, JDir, Key, WebPass: String;
 begin
   User := Trim(AccountPage.Values[0]);
   Pass := AccountPage.Values[1];
@@ -222,6 +222,8 @@ begin
   { a fresh random key that only eozMP and slskd know }
   Key := GetSHA1OfString(GetDateTimeString('yyyymmddhhnnsszzz', #0, #0) + User + IntToStr(Random(2147483647))
     + ExpandConstant('{computername}{%PROCESSOR_IDENTIFIER}') + IntToStr(Random(2147483647)));
+  { slskd's web page listens on the whole network, so it gets its own random password too }
+  WebPass := Copy(GetSHA1OfString(Key + IntToStr(Random(2147483647)) + GetDateTimeString('zzz', #0, #0)), 1, 24);
   ForceDirectories(Dir);
   ForceDirectories(ExtractFileDir(YmlPath));
   YDir := Dir;
@@ -238,7 +240,7 @@ begin
   Lines[8] := 'web:';
   Lines[9] := '  authentication:';
   Lines[10] := '    username: slskd';
-  Lines[11] := '    password: slskd';
+  Lines[11] := '    password: ' + WebPass;
   Lines[12] := '    api_keys:';
   Lines[13] := '      eozmp:';
   Lines[14] := '        key: ' + Key;

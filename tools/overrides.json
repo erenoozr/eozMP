@@ -149,7 +149,11 @@
     "Not what you wanted? Press \"Search Soulseek too\" below.": "İstediğin bu değil mi? Aşağıdaki \"Soulseek'te de ara\"ya bas.",
     "Use ": "Kullan: ",
     "Now playing through mpv - the equalizer is available.": "Artık mpv ile çalıyor - ekolayzır kullanılabilir.",
-    "Tell me when a new version of eozMP is out (asks GitHub once a day)": "eozMP'nin yeni sürümü çıkınca haber ver (günde bir kez GitHub'a sorar)"
+    "Tell me when a new version of eozMP is out (asks GitHub once a day)": "eozMP'nin yeni sürümü çıkınca haber ver (günde bir kez GitHub'a sorar)",
+    "On TV": "TV'de",
+    "On phone": "Telefonda",
+    "The music is playing on your TV.": "Müzik şu an TV'nde çalıyor.",
+    "The music is playing on your phone.": "Müzik şu an telefonunda çalıyor."
   },
   "ja": {
     "&Library": "&ライブラリ",

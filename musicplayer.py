@@ -263,7 +263,7 @@ AUDIO_EXTS = {
 }
 COVER_NAMES = ("cover", "folder", "front", "album", "albumart")
 COVER_EXTS = (".jpg", ".jpeg", ".png")
-APP_VERSION = "1.3"   # raise it with every release; the release tag is "v" + this (see MANUAL)
+APP_VERSION = "1.3.1"   # raise it with every release; the release tag is "v" + this (see MANUAL)
 CONFIG_FILE = Path.home() / ".simple_music_player.json"
 CACHE_FILE = Path.home() / ".simple_music_player_cache.json"
 LOSSLESS_EXTS = {"flac", "wav", "aiff", "aif", "ape", "wv"}
@@ -276,6 +276,7 @@ TRANS_ROLE = Qt.ItemDataRole.UserRole + 5     # a lyric line's translation
 TRANSLATE_LANGS = dict(UI_LANGS)     # lyrics can be translated into every interface language
 TRANSLATE_DIR = Path.home() / ".simple_music_player_translations"
 QUALITY_FILE = Path.home() / ".simple_music_player_quality.json"
+DUPLICATES_FOLDER = "_eozMP duplicates"   # moved-aside copies; the library scan skips it
 # where eozMP.exe lives; the installer puts slskd and the Soulseek guide next to it
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 SOUL_TRUST = {}       # Soulseek user -> how many of their files finished (minus failed ones)
@@ -647,6 +648,8 @@ def audio_entries(top, unreachable):
             if os.path.splitext(entry.name)[1].lower() in AUDIO_EXTS:
                 yield entry
         for entry in reversed(dirs):
+            if entry.name == DUPLICATES_FOLDER:
+                continue
             try:
                 if entry.is_symlink():      # os.walk doesn't follow folder links either
                     continue
@@ -5559,6 +5562,28 @@ def check_new_releases(artists, known_ids, owned, since):
     return {"ids": ids, "items": items}
 
 
+SLSKD_YML = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "slskd" / "slskd.yml"
+
+
+def secure_installer_slskd(path=SLSKD_YML):
+    """eozMP 1.3's installer gave slskd's web page the password "slskd", and slskd listens on the whole
+    network. Swap it for a random one - only in the file that installer wrote, never in one you made."""
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return False
+    if not text.startswith("# Written by the eozMP installer") or "\n    password: slskd\n" not in text:
+        return False
+    text = text.replace("\n    password: slskd\n", f"\n    password: {uuid.uuid4().hex}\n", 1)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    return True
+
+
 def slskd_running(url):
     """True if anything answers at the slskd address."""
     try:
@@ -5807,7 +5832,7 @@ class DuplicatesDialog(QDialog):
         if not root:
             return
         if QMessageBox.question(self, "Move duplicates", f"Move {len(paths)} file(s) to\n"
-                                f"{os.path.join(root, '_eozMP duplicates')} ?") != QMessageBox.StandardButton.Yes:
+                                f"{os.path.join(root, DUPLICATES_FOLDER)} ?") != QMessageBox.StandardButton.Yes:
             return
         moved, dest = move_to_duplicates(paths, root)
         self.main.statusBar().showMessage(f"Moved {moved} duplicate(s) to {dest}", 10000)
@@ -5976,6 +6001,8 @@ class ExtrasMixin:
             except Exception:
                 pass
         exe = APP_DIR / "slskd" / "slskd.exe"
+        if exe.exists():
+            secure_installer_slskd()
         url = self.cfg["slskd_url"]
         if not (exe.exists() and self.cfg.get("slskd_autostart", True)
                 and ("localhost" in url or "127.0.0.1" in url)):
@@ -6357,6 +6384,7 @@ class RemoteServer(QObject):
         self.token, self.port = token, port
         self.state, self.cover, self.files = {}, b"", {}
         self.httpd = None
+        self.last_poll = 0.0       # when a phone last asked for the state
 
     def start(self):
         owner = self
@@ -6403,6 +6431,7 @@ class RemoteServer(QObject):
                 return self.reply(req, 403, b"forbidden", "text/plain", head)
             rest = [p for p in parts[1:] if p]
             q = urllib.parse.parse_qs(query)
+            self.last_poll = time.time()       # a phone with the code is still there
             if not rest:
                 return self.reply(req, 200, REMOTE_PAGE.encode("utf-8"), "text/html; charset=utf-8", head)
             if rest == ["api", "state"]:
@@ -6793,7 +6822,7 @@ def embed_cover(path, data):
 
 def move_to_duplicates(paths, root):
     """Move files (never delete) into <root>/_eozMP duplicates. Returns (moved, folder)."""
-    dest = os.path.join(root, "_eozMP duplicates")
+    dest = os.path.join(root, DUPLICATES_FOLDER)
     os.makedirs(dest, exist_ok=True)
     moved = 0
     for p in paths:
@@ -7078,6 +7107,24 @@ class Extras2Mixin:
     # defaults, because a resumed song can start before __init__ reaches init_extras2()
     remote = cast = smtc = _cast_prev = _cast_pool = None
     listen_started = 0.0
+    silent_for = ""          # "cast" / "phone": the PC keeps time silently while they play
+    _mute_before = False
+
+    def go_silent(self, why):
+        """The music plays somewhere else; mute the PC (and remember how it was)."""
+        if not self.silent_for:
+            self._mute_before = self.audio.isMuted()
+        self.silent_for = why
+        self.audio.setMuted(True)
+        self.update_mute_icon()
+
+    def end_silent(self, why):
+        if self.silent_for != why:
+            return
+        self.silent_for = "cast" if (why == "phone" and self.cast) else ""
+        if not self.silent_for:
+            self.audio.setMuted(self._mute_before)
+        self.update_mute_icon()
 
     def init_extras2(self):
         self.remote = None
@@ -7202,6 +7249,8 @@ class Extras2Mixin:
     def update_remote_state(self):
         if self.remote is None:
             return
+        if self.silent_for == "phone" and time.time() - self.remote.last_poll > 15:
+            self.end_silent("phone")
         t = self.queue[self.index][0] if 0 <= self.index < len(self.queue) else None
         line = ""
         if self.lyric_times and 0 <= self.lyric_idx < len(self.lyric_lines):
@@ -7228,7 +7277,12 @@ class Extras2Mixin:
             elif do == "fav":
                 self.toggle_favorite_current()
             elif do == "mute":            # "listen on this phone": the PC keeps time silently
-                self.audio.setMuted(value == "1" or bool(self.cast))
+                if value == "1":
+                    if self.remote is not None:
+                        self.remote.last_poll = time.time()
+                    self.go_silent("phone")
+                else:
+                    self.end_silent("phone")
         except (ValueError, TypeError):
             pass
         self.update_remote_state()
@@ -7245,7 +7299,7 @@ class Extras2Mixin:
         self.cast = device
         if self._cast_pool is None:
             self._cast_pool = ThreadPoolExecutor(max_workers=1)    # one at a time, in order
-        self.audio.setMuted(True)
+        self.go_silent("cast")
         if 0 <= self.index < len(self.queue):
             self.on_track_started(*self.queue[self.index])
         self.statusBar().showMessage(_t(f"Playing on {device['name']}"), 8000)
@@ -7255,7 +7309,7 @@ class Extras2Mixin:
             return
         self.cast_send("AVTransport", "Stop", [("InstanceID", 0)])
         self.cast = None
-        self.audio.setMuted(False)
+        self.end_silent("cast")
         self.statusBar().showMessage(_t("Stopped casting - playing on this PC again."), 6000)
 
     def cast_send(self, service, action, args):
@@ -9260,11 +9314,16 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             self._vol_save_timer.setSingleShot(True)
             self._vol_save_timer.timeout.connect(lambda: save_config(self.cfg))
         self._vol_save_timer.start(500)
-        if value and self.audio.isMuted():
+        if value and self.audio.isMuted() and not self.silent_for:
             self.audio.setMuted(False)
         self.update_mute_icon()
 
     def toggle_mute(self):
+        if self.silent_for:      # the music plays on a TV / phone; this PC must stay quiet
+            self.statusBar().showMessage(
+                "The music is playing on your TV." if self.silent_for == "cast"
+                else "The music is playing on your phone.", 6000)
+            return
         self.audio.setMuted(not self.audio.isMuted())
         self.update_mute_icon()
 
@@ -9273,7 +9332,8 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         muted = self.audio.isMuted()
         kind = "vol_mute" if (muted or v == 0) else ("vol_low" if v < 50 else "vol_high")
         self.mute_btn.setIcon(make_icon(kind, self.icon_fg))
-        self.vol_label.setText("Muted" if muted else f"{v}%")
+        self.vol_label.setText({"cast": "On TV", "phone": "On phone"}.get(self.silent_for)
+                               or ("Muted" if muted else f"{v}%"))
         if self.fs_active and self.fs is not None:
             self.fs.vol.blockSignals(True)
             self.fs.vol.setValue(v)

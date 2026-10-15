@@ -50,7 +50,10 @@ kayıt olman gerekmez.
 slskd'nin kendi web sayfasına da bakabilirsin:
 
 1. Tarayıcıda şu adrese git:  http://localhost:5030
-2. Kullanıcı adı  slskd  ve şifre  slskd  ile giriş yap.
+2. Kullanıcı adı  slskd , şifre olarak da slskd.yml dosyasında
+   web: > authentication: > password  altında yazanı gir (dosyayı 8. bölümdeki
+   gibi aç). Bu sayfaya ağdaki başka cihazlardan da ulaşılabildiği için kurulum
+   rastgele bir şifre seçer.
 3. En üstte Soulseek sunucusuna bağlı olduğun yazmalı.
 
 
@@ -120,7 +123,7 @@ gerekir.
     web:
       authentication:
         username: slskd
-        password: slskd
+        password: WEB-SAYFASI-ICIN-BIR-SIFRE-SEC
         api_keys:
           eozmp:
             key: EN-AZ-20-KARAKTERLIK-RASTGELE-UZUN-BIR-METIN
@@ -144,7 +147,7 @@ gerekir.
   slskd ayarları          %LOCALAPPDATA%\slskd\slskd.yml
   slskd verileri, kayıtlar %LOCALAPPDATA%\slskd\
   İndirmeler (varsayılan) %USERPROFILE%\Music\Soulseek\
-  slskd web sayfası       http://localhost:5030  (kullanıcı slskd, şifre slskd)
+  slskd web sayfası       http://localhost:5030  (kullanıcı slskd, şifre slskd.yml içinde)
 
 Bir klasörü açmak için: Windows tuşu + R, yolu yapıştır, Enter.
 
