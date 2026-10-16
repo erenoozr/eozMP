@@ -726,7 +726,17 @@ LANG = {
 "{0}k file, music ends at {1} kHz - looks upscaled from {2}": "{0}k dosya, müzik {1} kHz'de bitiyor - {2} kaynaktan büyütülmüş gibi",
 "…  {0}   (waiting)": "…  {0}   (bekliyor)",
 "♥ Favorites": "♥ Favoriler",
-"✔  {0}   (found {1})": "✔  {0}   (bulundu: {1})"
+"✔  {0}   (found {1})": "✔  {0}   (bulundu: {1})",
+"Change the tags of {0} file(s)? This writes to the files themselves and can't be undone.": "{0} dosyanın etiketleri değiştirilsin mi? Bu, dosyaların kendisine yazar ve geri alınamaz.",
+"Connecting to Last.fm...": "Last.fm'e bağlanılıyor...",
+"Couldn't move the old files ({0})": "Eski dosyalar taşınamadı ({0})",
+"Couldn't play on {0} ({1}). Playing on this PC again.": "{0} üzerinde çalınamadı ({1}). Yine bu bilgisayarda çalıyor.",
+"Couldn't use the folder {0}:\n{1}": "{0} klasörü kullanılamadı:\n{1}",
+"Moving the copies...": "Kopyalar taşınıyor...",
+"Something went wrong: {0}. Details are in {1}": "Bir şeyler ters gitti: {0}. Ayrıntılar {1} dosyasında",
+"That song is no longer in your library.": "Bu şarkı artık kitaplığında yok.",
+"The remote is needed while you play on a TV. Stop casting first.": "TV'de çalarken kumanda gerekli. Önce yayını durdur.",
+"Works with smart TVs, Sonos and other speakers that support DLNA / UPnP. eozMP keeps playing silently here so the queue, lyrics and stats stay in step. The first time, Windows may ask whether eozMP may use the network - click Allow, or the TV can't fetch the song.": "Akıllı TV'lerle, Sonos'la ve DLNA / UPnP destekleyen diğer hoparlörlerle çalışır. eozMP, sıra, şarkı sözleri ve istatistikler uyumlu kalsın diye burada sessizce çalmaya devam eder. İlk seferde Windows eozMP'nin ağı kullanıp kullanamayacağını sorabilir; İzin ver'e tıkla, yoksa TV şarkıyı alamaz."
 },
 "es": {
 "\nLast problem: {0}": "Último problema: {0}",

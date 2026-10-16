@@ -31,7 +31,9 @@ KEEP = {"Soulseek", "&Soulseek", "Apple Music", "Arial", "Georgia", "Fusion", "L
         # tag field names read from files (APE, WMA, MP4, Matroska); never shown
         "Album Artist", "AlbumArtist", "album artist", "Author", "Date", "Disc", "DiscNumber",
         "Cover Art (Front)", "Cover Art (Back)", "Cover Art (Other)", "not a Matroska file",
-        "Various Artists"}   # a compilation's album artist: a name, like any other artist
+        "Various Artists",
+        # UPnP / HTTP field names and an internal error text; never shown
+        "Channel", "DesiredVolume", "Master", "SetVolume", "bytes */{0}", "not an http address"}   # a compilation's album artist: a name, like any other artist
 TECH_RE = re.compile(r"^[\w\-{}.]*:(?!\s|$)|^\S*[/|]\S*$|^/|^\{0\}\.|rgba\(|font-|^color:|^explorer |"
                      r"^[\w-]+-[A-Z][\w-]*$|^[A-Z]{2,}\{0\}$|^eozMP(/|-backup)|^release|^\d+px|^M-SEARCH|\?v=|@\w|=\w+=")
 
