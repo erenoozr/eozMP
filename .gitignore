@@ -10,3 +10,5 @@ slskd.yml
 # installer build output and downloaded programs (build_setup.bat fetches them)
 installer/Output/
 installer/vendor/
+# made by tools/make_version_info.py
+version_info.txt

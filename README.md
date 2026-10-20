@@ -78,6 +78,33 @@ python musicplayer.py
 Everything — first start, the queue, lyrics, fullscreen, **logging in to Soulseek with slskd**, settings and
 troubleshooting — is in the **[User Manual](MANUAL.md)**.
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by
+[SignPath Foundation](https://signpath.org).
+
+Releases are built from this repository by GitHub Actions ([release.yml](.github/workflows/release.yml)) and
+signed only after an approver confirms each one.
+
+- Committers and reviewers: [erenoozr](https://github.com/erenoozr)
+- Approvers: [erenoozr](https://github.com/erenoozr)
+
+### Privacy policy
+
+eozMP does not collect anything about you and has no server of its own. It connects only to the services below,
+and only for the feature named next to each one:
+
+- **GitHub** (api.github.com): once a day, to see whether a new eozMP version is out. Turn it off in
+  *Settings → "Tell me when a new version of eozMP is out"*.
+- **lrclib.net**: lyrics of the song you play.
+- **MusicBrainz, Cover Art Archive, iTunes Search**: covers, album and artist details.
+- **AcoustID**: only when you use *Fix tags* to recognise a song by its sound.
+- **Last.fm**: only after you log in to Last.fm in the settings (scrobbling, similar artists).
+- **Google Translate / MyMemory**: only after you pick a language under *Translate* in the lyrics (choose *Off* to stop).
+- **Soulseek** (through slskd on your own PC): only when you install Soulseek support and search or download.
+
+Settings, playlists and your library stay on your PC.
+
 ## License
 
 eozMP is free software, released under the **GNU General Public License v3.0** (see [LICENSE](LICENSE)).

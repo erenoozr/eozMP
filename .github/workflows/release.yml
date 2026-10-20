@@ -1,0 +1,122 @@
+# Builds eozMP.exe and the installer on GitHub's servers, has SignPath sign both, and puts them in a draft release.
+# Start it by pushing a tag (git tag v1.5 && git push origin v1.5) or from the Actions tab.
+# Without the SIGNPATH_API_TOKEN secret it still builds, just unsigned.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Read the version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = python tools/make_version_info.py
+          if ($LASTEXITCODE) { exit 1 }
+          # the tag must match APP_VERSION, or the app would report the wrong version
+          if ('${{ github.ref_type }}' -eq 'tag' -and '${{ github.ref_name }}' -ne "v$v") {
+            Write-Error "Tag ${{ github.ref_name }} does not match APP_VERSION $v"; exit 1
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Build eozMP.exe
+        run: python -m PyInstaller --noconfirm --onefile --windowed --name eozMP --icon eozMP.ico --version-file version_info.txt --hidden-import mpv --hidden-import vlc --collect-all winrt musicplayer.py
+
+      - name: Upload eozMP.exe for signing
+        id: exe
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: eozMP-exe
+          path: dist/eozMP.exe
+
+      - name: Sign eozMP.exe
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: eozMP
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY || 'release-signing' }}
+          artifact-configuration-slug: exe
+          github-artifact-id: ${{ steps.exe.outputs.artifact-id }}
+          wait-for-completion: true
+          # an approver has to click "Approve" on signpath.io; give them time
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: dist
+
+      - name: Download slskd and fpcalc
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force installer\vendor\fpcalc | Out-Null
+          Invoke-WebRequest 'https://github.com/slskd/slskd/releases/download/0.26.1/slskd-0.26.1-win-x64.zip' -OutFile slskd.zip
+          Expand-Archive slskd.zip installer\vendor\slskd
+          Invoke-WebRequest 'https://github.com/acoustid/chromaprint/releases/download/v1.6.1/chromaprint-fpcalc-1.6.1-windows-x86_64.zip' -OutFile fp.zip
+          Expand-Archive fp.zip fp
+          Get-ChildItem -Recurse fp -Filter fpcalc.exe | Copy-Item -Destination installer\vendor\fpcalc
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc /Q /DAppVersion=${{ steps.ver.outputs.version }} installer\eozMP.iss
+          if ($LASTEXITCODE) { exit 1 }
+
+      - name: Upload the installer for signing
+        id: setup
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: eozMP-setup
+          path: installer/Output/eozMP-Setup-${{ steps.ver.outputs.version }}.exe
+
+      - name: Sign the installer
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: eozMP
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY || 'release-signing' }}
+          artifact-configuration-slug: setup
+          github-artifact-id: ${{ steps.setup.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: installer/Output
+
+      - name: Put the files in a draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = '${{ steps.ver.outputs.version }}'
+          $files = "installer/Output/eozMP-Setup-$v.exe", 'dist/eozMP.exe'
+          (Get-FileHash $files -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $(Split-Path $_.Path -Leaf)" }) | Set-Content SHA256SUMS.txt
+          gh release view "v$v" *> $null
+          if ($LASTEXITCODE) { gh release create "v$v" --draft --title "eozMP v$v" --notes "eozMP v$v" }
+          gh release upload "v$v" $files SHA256SUMS.txt --clobber
