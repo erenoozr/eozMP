@@ -1,5 +1,5 @@
 # Builds eozMP.exe and the installer on GitHub's servers, has SignPath sign both, and puts them in a draft release.
-# Start it by pushing a tag (git tag v1.5 && git push origin v1.5) or from the Actions tab.
+# Push a tag (git tag v1.5 && git push origin v1.5) for a release; the Actions tab "Run workflow" only makes a test build.
 # Without the SIGNPATH_API_TOKEN secret it still builds, just unsigned.
 name: Release
 
@@ -109,14 +109,33 @@ jobs:
           wait-for-completion-timeout-in-seconds: 3600
           output-artifact-directory: installer/Output
 
+      - name: Checksums
+        shell: pwsh
+        run: |
+          $files = "installer/Output/eozMP-Setup-${{ steps.ver.outputs.version }}.exe", 'dist/eozMP.exe'
+          (Get-FileHash $files -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $(Split-Path $_.Path -Leaf)" }) | Set-Content SHA256SUMS.txt
+
+      # test runs from the Actions tab: files only show up on the run's page
+      - name: Keep the files on the run page
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eozMP-${{ steps.ver.outputs.version }}-test
+          path: |
+            installer/Output/eozMP-Setup-*.exe
+            dist/eozMP.exe
+            SHA256SUMS.txt
+
       - name: Put the files in a draft release
+        if: github.ref_type == 'tag'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $v = '${{ steps.ver.outputs.version }}'
-          $files = "installer/Output/eozMP-Setup-$v.exe", 'dist/eozMP.exe'
-          (Get-FileHash $files -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $(Split-Path $_.Path -Leaf)" }) | Set-Content SHA256SUMS.txt
-          gh release view "v$v" *> $null
-          if ($LASTEXITCODE) { gh release create "v$v" --draft --title "eozMP v$v" --notes "eozMP v$v" }
-          gh release upload "v$v" $files SHA256SUMS.txt --clobber
+          $files = "installer/Output/eozMP-Setup-$v.exe", 'dist/eozMP.exe', 'SHA256SUMS.txt'
+          $draft = gh release view "v$v" --json isDraft --jq .isDraft
+          if (-not $draft) { gh release create "v$v" --draft --title "eozMP v$v" --notes "eozMP v$v"; $draft = 'true' }
+          # never replace the files of a release people already download
+          if ($draft -ne 'true') { Write-Error "v$v is already published; raise APP_VERSION for a new release"; exit 1 }
+          gh release upload "v$v" $files --clobber
