@@ -298,7 +298,7 @@ AUDIO_EXTS = {
 }
 COVER_NAMES = ("cover", "folder", "front", "album", "albumart")
 COVER_EXTS = (".jpg", ".jpeg", ".png")
-APP_VERSION = "1.4"   # raise it with every release; the release tag is "v" + this (see MANUAL)
+APP_VERSION = "1.5"   # raise it with every release; the release tag is "v" + this (see MANUAL)
 CONFIG_FILE = Path.home() / ".simple_music_player.json"
 CRASH_FILE = Path.home() / ".simple_music_player_crash.log"
 CACHE_FILE =Path.home() / ".simple_music_player_cache.json"
@@ -309,6 +309,7 @@ ARTIST_ROLE = Qt.ItemDataRole.UserRole + 2
 NUM_ROLE = Qt.ItemDataRole.UserRole + 3
 YEAR_ROLE = Qt.ItemDataRole.UserRole + 4
 TRANS_ROLE = Qt.ItemDataRole.UserRole + 5     # a lyric line's translation
+ROMAN_ROLE = Qt.ItemDataRole.UserRole + 6     # how a lyric line in another script is read, in Latin letters
 TRANSLATE_LANGS = dict(UI_LANGS)     # lyrics can be translated into every interface language
 TRANSLATE_DIR = Path.home() / ".simple_music_player_translations"
 QUALITY_FILE = Path.home() / ".simple_music_player_quality.json"
@@ -392,6 +393,16 @@ DEFAULT_CFG = {
     "ctx_paths": [],
     "win_size": [1100, 700],
     "translate_lang": "",
+    "lyrics_roman": False,        # show how lines in other scripts (Japanese, Russian...) are read
+    "card_style": "",             # the last look and size picked for a lyric picture
+    "card_size": "",
+    "desktop_lyrics_on": False,
+    "desktop_lyrics_locked": False,
+    "desktop_lyrics_pos": [],
+    "desktop_lyrics_size": 30,
+    "desktop_lyrics_width": 900,
+    "desktop_lyrics_extra": True,
+    "desktop_lyrics_accent": False,
     "wishlist": [],
     "soul_trust": {},
     "soul_trust_seen": [],
@@ -2261,20 +2272,27 @@ class LyricDelegate(QStyledItemDelegate):
         text = index.data(Qt.ItemDataRole.DisplayRole) or " "
         rect = QFontMetrics(font).boundingRect(QRect(0, 0, width, 100000),
                                                _flag(Qt.TextFlag.TextWordWrap), text)
-        extra = 0
-        trans = index.data(TRANS_ROLE)
-        if trans:
-            trect = QFontMetrics(self.trans_font(font)).boundingRect(
-                QRect(0, 0, width, 100000), _flag(Qt.TextFlag.TextWordWrap), trans)
-            extra = trect.height() + 4
+        extra = sum(QFontMetrics(f).boundingRect(QRect(0, 0, width, 100000), _flag(Qt.TextFlag.TextWordWrap),
+                                                 t).height() + 4 for t, f, _a in self.extras(index, font))
         return QSize(width + 2 * hpad, rect.height() + extra + 2 * vpad)
 
     @staticmethod
-    def trans_font(font):
+    def trans_font(font, italic=False):
         f = QFont(font)
         f.setPointSizeF(max(8.0, font.pointSizeF() * 0.6) if font.pointSizeF() > 0 else 10.0)
-        f.setWeight(QFont.Weight.Medium)
+        f.setWeight(QFont.Weight.Normal if italic else QFont.Weight.Medium)
+        f.setItalic(italic)
         return f
+
+    def extras(self, index, font):
+        """The small lines under a lyric line: its Latin reading, then its translation."""
+        out = []
+        roman, trans = index.data(ROMAN_ROLE), index.data(TRANS_ROLE)
+        if roman:
+            out.append((roman, self.trans_font(font, italic=True), 0.62))
+        if trans:
+            out.append((trans, self.trans_font(font), 0.72))
+        return out
 
     def paint(self, painter, option, index):
         if index.data(KEY_ROLE) == "spacer":
@@ -2294,20 +2312,20 @@ class LyricDelegate(QStyledItemDelegate):
         flags |= _flag(Qt.TextFlag.TextWordWrap)
         hpad, vpad = self.main.lyric_pad
         r = QRect(option.rect).adjusted(hpad, vpad, -hpad, -vpad)
-        trans = index.data(TRANS_ROLE)
-        tr_flags = flags
-        tr_rect = None
-        if trans:   # original on top, translation under it, the pair centred in the row
-            fm = QFontMetrics(font)
-            h1 = fm.boundingRect(QRect(0, 0, r.width(), 100000), _flag(Qt.TextFlag.TextWordWrap), text).height()
-            tfont = self.trans_font(font)
-            h2 = QFontMetrics(tfont).boundingRect(QRect(0, 0, r.width(), 100000),
-                                                  _flag(Qt.TextFlag.TextWordWrap), trans).height()
-            y0 = r.top() + max(0, (r.height() - h1 - h2 - 4) // 2)
+        small = []          # (text, font, alpha, rect)
+        extras = self.extras(index, font)
+        if extras:   # original on top, reading and translation under it, all centred in the row
+            wrap = _flag(Qt.TextFlag.TextWordWrap)
+            h1 = QFontMetrics(font).boundingRect(QRect(0, 0, r.width(), 100000), wrap, text).height()
+            hs = [QFontMetrics(f).boundingRect(QRect(0, 0, r.width(), 100000), wrap, t).height()
+                  for t, f, _a in extras]
+            y = r.top() + max(0, (r.height() - h1 - sum(h + 4 for h in hs)) // 2)
             flags = (flags & ~0xE0) | 0x20            # top-aligned, keep left/centre
-            tr_flags = flags
-            tr_rect = QRect(r.left(), y0 + h1 + 4, r.width(), h2 + 2)
-            r = QRect(r.left(), y0, r.width(), h1 + 2)
+            r = QRect(r.left(), y, r.width(), h1 + 2)
+            y += h1 + 4
+            for (t, f, a), h in zip(extras, hs):
+                small.append((t, f, a, QRect(r.left(), y, r.width(), h + 2)))
+                y += h + 4
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         painter.setFont(font)
@@ -2319,12 +2337,12 @@ class LyricDelegate(QStyledItemDelegate):
             painter.drawText(r.translated(1, 3), flags, text)
         painter.setPen(color)
         painter.drawText(r, flags, text)
-        if tr_rect is not None:
+        for t, f, alpha, rect in small:
             soft = QColor(color)
-            soft.setAlphaF(color.alphaF() * 0.72)
-            painter.setFont(self.trans_font(font))
+            soft.setAlphaF(color.alphaF() * alpha)
+            painter.setFont(f)
             painter.setPen(soft)
-            painter.drawText(tr_rect, tr_flags, trans)
+            painter.drawText(rect, flags, t)
         painter.restore()
 
 
@@ -5974,12 +5992,26 @@ _MB_LOCK = threading.Lock()
 _mb_last = [0.0]
 
 
+def gtx_parse(data):
+    """The free Google endpoint's answer -> (translation, how the original is read in Latin letters).
+    The reading comes as an extra segment [None, None, target reading, source reading] when asked for (dt=rm)."""
+    segs = data[0] or []
+    out = "".join(s[0] for s in segs if s and isinstance(s[0], str))
+    roman = next((s[3] for s in segs if s and s[0] is None and len(s) > 3 and isinstance(s[3], str) and s[3]), "")
+    return out.strip(), roman.strip()
+
+
+def gtx_translate(text, lang, extra=""):
+    """-> (translation, reading of the original, the raw answer). extra: more dt= parts, e.g. '&dt=bd'."""
+    data = http_json("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl="
+                     + lang + "&dt=t&dt=rm" + extra + "&q=" + urllib.parse.quote(text))
+    return (*gtx_parse(data), data)
+
+
 def translate_one(text, lang):
     """One lyric line -> target language. Free Google endpoint first, MyMemory as the backup."""
     try:
-        data = http_json("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl="
-                         + lang + "&dt=t&q=" + urllib.parse.quote(text))
-        out = "".join(seg[0] for seg in data[0] if seg and seg[0])
+        out = gtx_translate(text, lang)[0]
     except Exception:
         data = http_json("https://api.mymemory.translated.net/get?" + urllib.parse.urlencode(
             {"q": text, "langpair": f"autodetect|{lang}"}))
@@ -5989,10 +6021,12 @@ def translate_one(text, lang):
     return out.strip()
 
 
-def translate_lines(lines, lang):
-    """{original line: translation} for the distinct non-empty lines; cached per song text + language."""
+def lyric_line_extras(lines, lang, roman):
+    """{line: {"t": translation, "r": reading in Latin letters}} for the distinct non-empty lines.
+    lang "" = no translation; roman = also the reading, for lines in another script (Japanese, Russian...).
+    One request per line gives both; offline, Cyrillic, Greek, Korean and kana are still read locally."""
     uniq = list(dict.fromkeys(l.strip() for l in lines if l and l.strip()))[:400]
-    key = hashlib.sha1((lang + "\n" + "\n".join(uniq)).encode("utf-8", "replace")).hexdigest()[:24]
+    key = hashlib.sha1((f"v2|{lang}|{int(bool(roman))}\n" + "\n".join(uniq)).encode("utf-8", "replace")).hexdigest()[:24]
     cpath = TRANSLATE_DIR / f"{key}.json"
     try:
         return json.loads(cpath.read_text(encoding="utf-8"))
@@ -6001,14 +6035,33 @@ def translate_lines(lines, lang):
     from concurrent.futures import ThreadPoolExecutor
 
     def one(text):
+        want_r = bool(roman) and foreign_script(text)
+        if not lang and not want_r:
+            return text, None, True
+        tr = rm = ""
+        ok = True
         try:
-            return text, translate_one(text, lang)
+            tr, rm, _data = gtx_translate(text, lang or "en")
         except Exception:
-            return text, None
+            ok = False
+            if lang:
+                try:
+                    tr = translate_one(text, lang)
+                    ok = True
+                except Exception:
+                    pass
+        if want_r and (not rm or foreign_script(rm)):
+            rm = local_romanize(text) or ""
+        if want_r and ok is False and rm:
+            ok = True                     # the reading alone is still worth showing
+        entry = {"t": tr if lang and tr and _fold(tr) != _fold(text) else "",
+                 "r": rm if want_r and rm and _fold(rm) != _fold(text) else ""}
+        return text, entry if (entry["t"] or entry["r"]) else None, ok
 
     with ThreadPoolExecutor(max_workers=6) as pool:
-        out = {k: v for k, v in pool.map(one, uniq) if v}
-    if uniq and len(out) < len(uniq) / 2:
+        res = list(pool.map(one, uniq))
+    out = {k: v for k, v, _ok in res if v}
+    if uniq and sum(1 for *_x, ok in res if ok) < len(uniq) / 2:
         raise RuntimeError("translation service not reachable")
     try:
         TRANSLATE_DIR.mkdir(exist_ok=True)
@@ -6016,6 +6069,93 @@ def translate_lines(lines, lang):
     except Exception:
         pass
     return out
+
+
+# ----- reading other scripts in Latin letters (used when the translation service can't be reached)
+_CYRILLIC = dict(zip("абвгдезийклмнопрстуфхцчшщъыьэюяёіїєґђјљњћџ",
+                     ["a", "b", "v", "g", "d", "e", "z", "i", "y", "k", "l", "m", "n", "o", "p", "r", "s", "t",
+                      "u", "f", "kh", "ts", "ch", "sh", "shch", "", "y", "", "e", "yu", "ya", "yo", "i", "yi",
+                      "ye", "g", "dj", "j", "lj", "nj", "c", "dz"]))
+_CYRILLIC["ж"] = "zh"
+_GREEK = dict(zip("αβγδεζηθικλμνξοπρσςτυφχψω",
+                  ["a", "v", "g", "d", "e", "z", "i", "th", "i", "k", "l", "m", "n", "x", "o", "p", "r", "s", "s",
+                   "t", "y", "f", "ch", "ps", "o"]))
+_HANGUL_L = ["g", "kk", "n", "d", "tt", "r", "m", "b", "pp", "s", "ss", "", "j", "jj", "ch", "k", "t", "p", "h"]
+_HANGUL_V = ["a", "ae", "ya", "yae", "eo", "e", "yeo", "ye", "o", "wa", "wae", "oe", "yo", "u", "wo", "we", "wi",
+             "yu", "eu", "ui", "i"]
+_HANGUL_T = ["", "k", "k", "k", "n", "n", "n", "t", "l", "k", "m", "l", "l", "l", "p", "l", "m", "p", "p", "t", "t",
+             "ng", "t", "t", "k", "t", "p", "t"]
+_KANA = dict(zip(
+    "あいうえおかきくけこがぎぐげごさしすせそざじずぜぞたちつてとだぢづでどなにぬねのはひふへほばびぶべぼぱぴぷぺぽ"
+    "まみむめもやゆよらりるれろわゐゑをんぁぃぅぇぉゔ",
+    "a i u e o ka ki ku ke ko ga gi gu ge go sa shi su se so za ji zu ze zo ta chi tsu te to da ji zu de do "
+    "na ni nu ne no ha hi fu he ho ba bi bu be bo pa pi pu pe po ma mi mu me mo ya yu yo ra ri ru re ro "
+    "wa wi we o n a i u e o vu".split()))
+_SMALL_Y = {"ゃ": "ya", "ゅ": "yu", "ょ": "yo"}
+_SMALL_V = {"ぁ": "a", "ぃ": "i", "ぅ": "u", "ぇ": "e", "ぉ": "o"}
+
+
+def foreign_script(text):
+    """Does the text have letters outside the Latin alphabet (so a Latin reading would help)?"""
+    return any(c.isalpha() and not unicodedata.name(c, "LATIN").startswith("LATIN") for c in str(text))
+
+
+def _kana_romaji(text):
+    out, double = [], False
+    for c in text:
+        h = chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c       # katakana -> hiragana
+        if h in ("っ",):
+            double = True
+            continue
+        if c == "ー":                         # long vowel mark: repeat the vowel before it
+            if out and out[-1][-1:] in "aeiou":
+                out[-1] += out[-1][-1]
+            continue
+        if h in _SMALL_Y and out and out[-1].endswith("i"):
+            prev = out.pop()            # き+ゃ kya, し+ゃ sha
+            out.append(prev[:-1] + (_SMALL_Y[h][1:] if prev in ("shi", "chi", "ji") else _SMALL_Y[h]))
+            continue
+        if h in _SMALL_V and out and len(out[-1]) > 1:
+            out.append(out.pop()[:-1] + _SMALL_V[h])       # ファ fa, ティ ti
+            continue
+        r = _KANA.get(h, c)
+        if double and r and r[0].isalpha() and r[0] not in "aeiou":
+            r = ("t" if r.startswith("ch") else r[0]) + r
+        double = False
+        out.append(r)
+    return "".join(out)
+
+
+def local_romanize(text):
+    """Cyrillic, Greek, Korean and kana in Latin letters; None if anything else (e.g. kanji) is left over."""
+    out = []
+    for word in re.split(r"(\s+)", unicodedata.normalize("NFC", str(text))):
+        word = re.sub("ο[υύ]", "ou", re.sub("Ο[υύ]", "Ou", word))    # Greek ου reads "ou"
+        buf = []
+        for c in word:
+            low = c.lower()
+            if low in _CYRILLIC:
+                r = _CYRILLIC[low]
+            elif "가" <= c <= "힣":
+                n = ord(c) - 0xAC00
+                r = _HANGUL_L[n // 588] + _HANGUL_V[n % 588 // 28] + _HANGUL_T[n % 28]
+            else:
+                base = unicodedata.normalize("NFD", low)[:1]
+                r = _GREEK.get(base) if base in _GREEK else None
+                if r is None:
+                    buf.append(c)
+                    continue
+            buf.append(r.capitalize() if c != low and r else r)
+        out.append(_kana_romaji("".join(buf)))
+    res = "".join(out)
+    return None if foreign_script(res) else res
+
+
+def _fold(text):
+    """Text for matching: case and accents ignored (Beyoncé = beyonce, İstanbul = istanbul), any script kept."""
+    s = unicodedata.normalize("NFKD", str(text).replace("İ", "I").replace("ı", "i"))
+    s = "".join(c for c in s if not unicodedata.combining(c)).casefold()
+    return re.sub(r"[\W_]+", " ", s).strip()
 
 
 def soul_search_sync(client, text, seconds=25):
@@ -6788,6 +6928,12 @@ class ExtrasMixin:
             act.setCheckable(True)
             act.setChecked(name == cur)
             act.triggered.connect(lambda checked=False, n=name: self.set_translate_lang(n))
+        menu.addSeparator()
+        roman = menu.addAction("Show how it's read (Latin letters)")
+        roman.setCheckable(True)
+        roman.setChecked(bool(self.cfg.get("lyrics_roman")))
+        roman.setToolTip("For lyrics in Japanese, Korean, Russian, Arabic, Hindi...")
+        roman.triggered.connect(lambda on: self.set_lyrics_roman(on))
         menu.exec(QCursor.pos())
 
     def set_translate_lang(self, name):
@@ -6795,33 +6941,46 @@ class ExtrasMixin:
         save_config(self.cfg)
         self.apply_translation()
 
+    def set_lyrics_roman(self, on):
+        self.cfg["lyrics_roman"] = bool(on)
+        save_config(self.cfg)
+        self.apply_translation()
+
     def apply_translation(self):
+        """Translation and/or Latin reading under each lyric line, as chosen under the Translate link."""
         name = self.cfg.get("translate_lang", "")
-        self.translate_btn.setText(f"Translate: {name}" if name else "Translate")
+        roman = bool(self.cfg.get("lyrics_roman"))
+        label = f"Translate: {name}" if name else "Translate"
+        self.translate_btn.setText(_raw(_t(label) + (_t(" + reading") if roman else "")))
+        self.lyric_extras = {}
         for i in range(len(self.lyric_lines)):
             item = self.lyrics_list.item(i + self.ly_off)
             if item is not None:
                 item.setData(TRANS_ROLE, None)
+                item.setData(ROMAN_ROLE, None)
         self.lyrics_list.doItemsLayout()
-        lang = TRANSLATE_LANGS.get(name)
-        if not lang or not self.lyric_lines:
+        lang = TRANSLATE_LANGS.get(name) or ""
+        if not self.lyric_lines or not (lang or (roman and any(foreign_script(l) for l in self.lyric_lines))):
             return
         lines, token = list(self.lyric_lines), self.lyrics_token
-        w = Worker(lambda: translate_lines(lines, lang))
+        w = Worker(lambda: lyric_line_extras(lines, lang, roman))
         w.ok.connect(lambda tr: self.on_translated(token, lines, tr))
         w.fail.connect(lambda m: self.statusBar().showMessage(f"Couldn't translate the lyrics ({m})", 8000))
-        self.statusBar().showMessage("Translating lyrics...", 4000)
+        self.statusBar().showMessage("Translating lyrics..." if lang else "Getting the reading...", 4000)
         self.keep(w)
 
     def on_translated(self, token, lines, tr):
         if token != self.lyrics_token or lines != self.lyric_lines:
             return    # the song changed while we waited
+        self.lyric_extras = tr
         for i, line in enumerate(lines):
             item = self.lyrics_list.item(i + self.ly_off)
-            t = tr.get(line.strip(), "")
-            if item is not None and t and _norm(t) != _norm(line):
-                item.setData(TRANS_ROLE, t)
+            entry = tr.get(line.strip()) or {}
+            if item is not None:
+                item.setData(TRANS_ROLE, _raw(entry.get("t", "")) or None)
+                item.setData(ROMAN_ROLE, _raw(entry.get("r", "")) or None)
         self.resize_lyric_spacers()
+        self.update_desktop_lyrics()
 
     # ----- wishlist
     def open_wishlist(self):
@@ -7034,28 +7193,55 @@ def file_id(path):
 REMOTE_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>eozMP remote</title><style>
-:root{--bg:#141417;--fg:#ececf1;--sub:#9b9ba8;--acc:#4C8DFF}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;
-display:flex;flex-direction:column;align-items:center;padding:20px 16px 32px;min-height:100vh}
-img{width:min(78vw,360px);aspect-ratio:1;object-fit:cover;border-radius:16px;background:#26262d;margin-top:8px}
+:root{--bg:#141417;--fg:#ececf1;--sub:#9b9ba8;--acc:#4C8DFF;--raised:#26262d;--line:#2c2c34}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;min-height:100vh}
+section{display:none;flex-direction:column;align-items:center;padding:20px 16px 96px;min-height:100vh}
+section.on{display:flex}
+#cover{width:min(78vw,360px);aspect-ratio:1;object-fit:cover;border-radius:16px;background:var(--raised);margin-top:8px}
 h1{font-size:22px;margin:18px 0 4px;text-align:center}p{margin:0;color:var(--sub);text-align:center}
-#line{min-height:44px;margin:14px 0 6px;font-size:17px;color:var(--fg);font-weight:600}
+#line{min-height:44px;margin:14px 0 6px;font-size:17px;color:var(--fg);font-weight:600;text-align:center}
 input[type=range]{width:min(86vw,380px);accent-color:var(--acc)}
 .row{display:flex;gap:18px;align-items:center;margin:14px 0}
-button{background:#26262d;color:var(--fg);border:0;border-radius:50%;width:58px;height:58px;font-size:22px}
+button{background:var(--raised);color:var(--fg);border:0;border-radius:50%;width:58px;height:58px;font-size:22px}
 #play{background:var(--acc);width:74px;height:74px;font-size:28px}
 #phone{border-radius:24px;width:auto;height:auto;padding:12px 20px;font-size:15px;margin-top:10px}
 #phone.on{background:var(--acc)}.t{display:flex;justify-content:space-between;width:min(86vw,380px);color:var(--sub);font-size:13px}
+nav{position:fixed;left:0;right:0;bottom:0;display:flex;background:#1b1b20;border-top:1px solid var(--line);
+padding:6px 6px calc(6px + env(safe-area-inset-bottom))}
+nav button{flex:1;border-radius:12px;height:48px;width:auto;font-size:14px;background:transparent;color:var(--sub)}
+nav button.on{color:var(--fg);background:var(--raised)}
+.wrap{width:min(100%,560px)}
+#q{width:100%;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--raised);color:var(--fg);font-size:16px}
+.head{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--sub);margin:18px 2px 6px}
+.item{display:flex;align-items:center;gap:12px;padding:8px 4px;border-bottom:1px solid var(--line)}
+.item img{width:46px;height:46px;border-radius:8px;object-fit:cover;background:var(--raised);flex:none}
+.item .txt{flex:1;min-width:0}.item b,.item small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item b{font-weight:600;font-size:15px}.item small{color:var(--sub);font-size:13px;margin-top:2px}
+.item button{width:40px;height:40px;font-size:17px;flex:none}
+.big{display:flex;gap:10px;margin:14px 0}.big button{border-radius:22px;width:auto;height:44px;padding:0 18px;font-size:15px}
+.big .main{background:var(--acc)}
+.back{border-radius:12px;width:auto;height:38px;padding:0 14px;font-size:14px;margin-bottom:6px}
+.empty{color:var(--sub);text-align:center;margin:30px 0}
+#toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%);background:var(--acc);color:#fff;padding:10px 16px;
+border-radius:20px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none}
 </style></head><body>
+<section id="now" class="on">
 <img id="cover" alt=""><h1 id="title">eozMP</h1><p id="artist"></p><div id="line"></div>
 <input id="seek" type="range" min="0" max="1" value="0"><div class="t"><span id="pos">0:00</span><span id="dur">0:00</span></div>
 <div class="row"><button onclick="cmd('prev')">&#9198;</button><button id="play" onclick="toggle()">&#9654;</button>
 <button onclick="cmd('next')">&#9197;</button><button id="fav" onclick="cmd('fav')">&#9825;</button></div>
 <div class="row">&#128264;<input id="vol" type="range" min="0" max="100"></div>
 <button id="phone" onclick="phoneMode()">Listen on this phone</button>
+</section>
+<section id="lib"><div class="wrap"><input id="q" type="search" placeholder="Search your music" autocomplete="off">
+<div id="libout"><div class="empty">Type a song, album or artist.</div></div></div></section>
+<section id="queue"><div class="wrap"><div class="head">Up next</div><div id="qout"></div></div></section>
+<nav><button id="t-now" class="on" onclick="tab('now')">Playing</button><button id="t-lib" onclick="tab('lib')">Library</button>
+<button id="t-queue" onclick="tab('queue')">Queue</button></nav><div id="toast"></div>
 <script>
-let st={},phone=false,lastId=null,seeking=false,unmuting=false;const a=new Audio();
+let st={},phone=false,lastId=null,seeking=false,unmuting=false,qkey='';const a=new Audio();
 const $=id=>document.getElementById(id);
+const BLANK='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 const fmt=ms=>{ms=Math.max(0,ms|0);const s=Math.floor(ms/1000);return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
 function cmd(d,v){return fetch('api/cmd?do='+d+(v!==undefined?'&value='+encodeURIComponent(v):'')).then(poll)}
 async function poll(){try{const r=await fetch('api/state');st=await r.json();render()}catch(e){}}
@@ -7067,7 +7253,8 @@ function render(){
  const playing=phone?!a.paused:st.playing;$('play').innerHTML=playing?'&#10074;&#10074;':'&#9654;';
  $('seek').max=st.dur||1;if(!seeking){$('seek').value=phone?a.currentTime*1000:st.pos}
  $('pos').textContent=fmt(phone?a.currentTime*1000:st.pos);$('dur').textContent=fmt(st.dur);
- if(document.activeElement!==$('vol'))$('vol').value=st.vol}
+ if(document.activeElement!==$('vol'))$('vol').value=st.vol;
+ const k=JSON.stringify(st.queue||[]);if(k!==qkey){qkey=k;renderQueue()}}
 function load(){if(!st.id)return;a.src='stream/'+st.id+st.ext;a.currentTime=(st.pos||0)/1000;if(st.playing)a.play()}
 function toggle(){cmd('toggle');if(phone){if(a.paused)a.play();else a.pause()}}
 function phoneMode(){phone=!phone;$('phone').classList.toggle('on',phone);
@@ -7076,6 +7263,38 @@ function phoneMode(){phone=!phone;$('phone').classList.toggle('on',phone);
 $('seek').oninput=()=>seeking=true;
 $('seek').onchange=()=>{seeking=false;const v=$('seek').value;cmd('seek',v);if(phone)a.currentTime=v/1000};
 $('vol').onchange=()=>cmd('vol',$('vol').value);
+function tab(n){for(const s of ['now','lib','queue']){$(s).classList.toggle('on',s===n);$('t-'+s).classList.toggle('on',s===n)}
+ if(n==='lib')setTimeout(()=>$('q').focus(),50)}
+function toast(t){const e=$('toast');e.textContent=t;e.style.opacity=1;clearTimeout(e._t);e._t=setTimeout(()=>e.style.opacity=0,1400)}
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
+function btn(label,title,fn){const b=el('button','',label);b.title=title;b.onclick=e=>{e.stopPropagation();fn()};return b}
+function row(img,top,sub,onclick,buttons){const r=el('div','item');if(img){const i=el('img');i.loading='lazy';i.alt='';i.onerror=()=>{i.onerror=null;i.src=BLANK};i.src=img;r.appendChild(i)}
+ const t=el('div','txt');t.appendChild(el('b','',top));if(sub)t.appendChild(el('small','',sub));r.appendChild(t);
+ for(const b of buttons||[])r.appendChild(b);if(onclick)r.onclick=onclick;return r}
+function songRow(s,withArt){return row(withArt?'art/'+s.albumId:null,s.title,s.artist+(withArt?' \\u00b7 '+s.album:''),
+ ()=>{cmd('play',s.id);toast('Playing');tab('now')},
+ [btn('\\u2934','Play next',()=>{cmd('playnext',s.id);toast('Plays next')}),btn('+','Add to queue',()=>{cmd('queue',s.id);toast('Added to queue')})])}
+function albumRow(al){return row('art/'+al.id,al.title,al.artist+(al.year?' \\u00b7 '+al.year:''),()=>openAlbum(al.id))}
+function show(nodes){const o=$('libout');o.replaceChildren(...nodes);window.scrollTo(0,0)}
+let timer=null,seq=0;
+$('q').oninput=()=>{clearTimeout(timer);timer=setTimeout(search,250)};
+async function search(){const q=$('q').value.trim();const my=++seq;if(!q){show([el('div','empty','Type a song, album or artist.')]);return}
+ try{const r=await (await fetch('api/search?q='+encodeURIComponent(q))).json();if(my!==seq)return;const out=[];
+ if(r.artists.length){out.push(el('div','head','Artists'));for(const ar of r.artists)out.push(row(null,ar.name,ar.albums.length+(ar.albums.length===1?' album':' albums'),()=>openArtist(ar.id)))}
+ if(r.albums.length){out.push(el('div','head','Albums'));for(const al of r.albums)out.push(albumRow(al))}
+ if(r.songs.length){out.push(el('div','head','Songs'));for(const s of r.songs)out.push(songRow(s,true))}
+ if(!out.length)out.push(el('div','empty','Nothing found.'));show(out)}catch(e){}}
+function backBtn(){const b=el('button','back','\\u2190 Back');b.onclick=search;return b}
+async function openAlbum(id){try{const al=await (await fetch('api/album?id='+encodeURIComponent(id))).json();if(!al.id)return;
+ const head=row('art/'+al.id,al.title,al.artist+(al.year?' \\u00b7 '+al.year:''));const big=el('div','big');
+ const p=el('button','main','\\u25b6 Play album');p.onclick=()=>{cmd('playalbum',al.id);toast('Playing');tab('now')};
+ const sh=el('button','','Shuffle');sh.onclick=()=>{cmd('shufflealbum',al.id);toast('Shuffling');tab('now')};big.append(p,sh);
+ show([backBtn(),head,big,...al.songs.map(s=>songRow(s,false))])}catch(e){}}
+async function openArtist(id){try{const ar=await (await fetch('api/artist?id='+encodeURIComponent(id))).json();if(!ar.id)return;
+ show([backBtn(),el('div','head',ar.name),...ar.albums.map(albumRow)])}catch(e){}}
+function renderQueue(){const q=st.queue||[];const o=$('qout');
+ if(!q.length){o.replaceChildren(el('div','empty','Nothing queued. Add songs from the Library tab.'));return}
+ o.replaceChildren(...q.map((s,i)=>row(null,s.title,s.artist,null,[btn('\\u2715','Remove',()=>{cmd('unqueue',i);toast('Removed')})])))}
 setInterval(poll,1000);poll();
 </script></body></html>"""
 
@@ -7089,6 +7308,9 @@ class RemoteServer(QObject):
         super().__init__(parent)
         self.token, self.port = token, port
         self.state, self.cover, self.files = {}, b"", {}
+        self.library = {"songs": {}, "albums": {}, "artists": {}}     # replaced whole, never changed in place
+        self.art = OrderedDict()           # album id -> small cover JPEG for the library page
+        self.art_lock = threading.Lock()
         self.httpd = None
         self.last_poll = 0.0       # when a phone last asked for the state
         self.slots = threading.BoundedSemaphore(24)      # at most this many requests at once
@@ -7154,8 +7376,15 @@ class RemoteServer(QObject):
             if rest == ["api", "state"]:
                 return self.reply(req, 200, json.dumps(self.state).encode("utf-8"), "application/json", head)
             if rest == ["api", "cmd"]:
-                self.command.emit(q.get("do", [""])[0], q.get("value", [""])[0])
+                self.command.emit(q.get("do", [""])[0][:40], q.get("value", [""])[0][:100])
                 return self.reply(req, 200, b"ok", "text/plain", head)
+            if rest[0] == "api" and len(rest) == 2 and rest[1] in ("search", "album", "artist"):
+                return self.reply(req, 200, json.dumps(self.browse(rest[1], q.get("q", q.get("id", [""]))[0]))
+                                  .encode("utf-8"), "application/json", head)
+            if rest[0] == "art" and len(rest) > 1:
+                data = self.album_art(rest[1].split(".")[0])
+                if data:
+                    return self.reply(req, 200, data, "image/jpeg", head)
             if rest[0] == "cover" and self.cover:
                 return self.reply(req, 200, self.cover, "image/jpeg", head)
             if rest[0] == "stream" and len(rest) > 1:
@@ -7165,6 +7394,47 @@ class RemoteServer(QObject):
             return self.reply(req, 404, b"not found", "text/plain", head)
         except (ConnectionError, OSError):
             pass       # the phone/TV hung up halfway, which is normal
+
+    def browse(self, what, value):
+        """The library page's questions; only the plain snapshot in self.library is read here."""
+        lib = self.library
+        if what == "search":
+            return remote_search(lib, value)
+        if what == "album":
+            alb = lib["albums"].get(value)
+            if not alb:
+                return {}
+            return {**remote_public(alb), "songs": [remote_public(lib["songs"][s]) for s in alb["songs"]
+                                                    if s in lib["songs"]]}
+        art = lib["artists"].get(value)
+        if not art:
+            return {}
+        return {**remote_public(art), "albums": [remote_public(lib["albums"][a]) for a in art["albums"]
+                                                 if a in lib["albums"]]}
+
+    def album_art(self, album_id):
+        """A small cover for the phone's lists (a QImage, so it can be made on this thread)."""
+        with self.art_lock:
+            if album_id in self.art:
+                self.art.move_to_end(album_id)
+                return self.art[album_id]
+        alb = self.library["albums"].get(album_id)
+        if not alb:
+            return b""
+        paths = [self.library["songs"][s]["path"] for s in alb["songs"][:3] if s in self.library["songs"]]
+        img = load_thumb(paths, alb["artist"], alb["title"]) if paths else None
+        data = b""
+        if img is not None:
+            img = img.scaled(160, 160, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            buf = QBuffer()
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            img.save(buf, "JPG", 82)
+            data = bytes(buf.data())
+        with self.art_lock:
+            self.art[album_id] = data
+            while len(self.art) > 300:
+                self.art.popitem(last=False)
+        return data
 
     def send_file(self, req, path, head):
         size = os.path.getsize(path)
@@ -8073,6 +8343,7 @@ class Extras2Mixin:
                 return
             srv.command.connect(self.on_remote_command)
             self.remote = srv
+            self.refresh_remote_library()
             self.remote_temp = not persist
             self.remote_timer.start()
             if 0 <= self.index < len(self.queue):
@@ -8103,7 +8374,10 @@ class Extras2Mixin:
             "title": t["title"] if t else "", "artist": song_artist(t) if t else "", "album": t["album"] if t else "",
             "playing": self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState,
             "pos": int(self.player.position()), "dur": int(self.seek.maximum()), "vol": self.volume.value(),
-            "line": line, "fav": bool(t) and t["path"] in self.fav_set, "silent": self.silent_for}
+            "line": line, "fav": bool(t) and t["path"] in self.fav_set, "silent": self.silent_for,
+            "queue": [{"id": file_id(p), "title": self.track_by_path[p][0]["title"],
+                       "artist": song_artist(self.track_by_path[p][0])}
+                      for p in self.up_next[:50] if p in self.track_by_path]}
 
     def on_remote_command(self, do, value):
         try:
@@ -8130,6 +8404,8 @@ class Extras2Mixin:
                     self.go_silent("phone")
                 else:
                     self.end_silent("phone")
+            elif do in ("play", "queue", "playnext", "playalbum", "shufflealbum", "unqueue"):
+                self.remote_library_command(do, value)
         except (ValueError, TypeError, OverflowError):
             pass
         self.update_remote_state()
@@ -8371,8 +8647,1849 @@ class Extras2Mixin:
                 QTimer.singleShot(0, self.rescan)
         save_config(self.cfg)
 
+
+# ---------------------------------------------------------------- v1.5 extras
+# search in lyrics, word lookup, lyric cards, repairing moved songs, the artist timeline, the listening
+# heatmap, the command palette, desktop lyrics and the phone remote's library. The window side is Extras3Mixin.
+LYRICS_INDEX_FILE = Path.home() / ".simple_music_player_lyrics_index.json"
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+TRACKNO_RE = re.compile(r"^\s*(?:\d{1,3}[\s.\-_]+)+")
+
+
+def _mtime(path):
+    try:
+        return round(os.path.getmtime(path), 1)
+    except OSError:
+        return 0
+
+
+def lyrics_signature(track):
+    """Changes whenever a place the song's lyrics come from changes (the song, its .lrc/.txt, the saved lookup)."""
+    stem = os.path.splitext(track["path"])[0]
+    return [_mtime(track["path"]), _mtime(stem + ".lrc"), _mtime(stem + ".txt"), _mtime(lyrics_cache_path(track))]
+
+
+def lyrics_plain_text(track):
+    """The song's lyrics as plain lines (no times), from wherever eozMP would show them; '' if none."""
+    try:
+        cached = json.loads(lyrics_cache_path(track).read_text(encoding="utf-8"))
+    except Exception:
+        cached = None
+    have = local_lyrics(track, cached)
+    if not have or not have.get("text"):
+        return ""
+    _synced, lines = parse_lrc(have["text"])
+    return "\n".join(line.strip() for _ms, line in lines if line and line.strip())
+
+
+def build_lyrics_index(tracks, old, progress=None, stop=None):
+    """{path: [signature, lyrics]} for every song; a song whose lyrics didn't change is taken from `old`."""
+    out = {}
+    for i, t in enumerate(tracks):
+        if stop is not None and stop.is_set():
+            break
+        sig = lyrics_signature(t)
+        prev = old.get(t["path"])
+        out[t["path"]] = prev if prev and prev[0] == sig else [sig, lyrics_plain_text(t)]
+        if progress is not None and i % 50 == 0:
+            progress(i, len(tracks))
+    return out
+
+
+def load_lyrics_index():
+    data = read_json(LYRICS_INDEX_FILE, dict, quarantine=False) or {}
+    return {k: v for k, v in data.items() if isinstance(v, list) and len(v) == 2 and isinstance(v[1], str)}
+
+
+def save_lyrics_index(index):
+    try:
+        write_json_atomic(LYRICS_INDEX_FILE, index)
+    except Exception:
+        pass
+
+
+def prepare_lyrics_search(index):
+    return [(path, _fold(text), text) for path, (_sig, text) in index.items() if text]
+
+
+def search_lyrics(prepared, query, limit=300):
+    """[(path, best line, matching lines)] for songs whose lyrics hold every word of the query (case and
+    accents ignored). Songs with the words together, as typed, come first."""
+    q = _fold(query)
+    words = q.split()
+    if len(q) < 2:
+        return []
+    hits = []
+    for path, folded, text in prepared:
+        if not all(w in folded for w in words):
+            continue
+        best, best_score, n = "", -1, 0
+        for line in text.split("\n"):
+            fl = _fold(line)
+            score = (len(words) + 1 if q in fl else 0) + sum(w in fl for w in words)
+            n += bool(score)
+            if score > best_score:
+                best, best_score = line, score
+        hits.append((q in folded, best_score, n, path, best))
+    hits.sort(key=lambda h: (not h[0], -h[1], -h[2]))
+    return [(path, line, n) for _ph, _s, n, path, line in hits[:limit]]
+
+
+def lyric_words(line):
+    """The words of a lyric line, to look up one by one. Scripts written without spaces (Japanese, Chinese)
+    are cut where the kind of letter changes, so a kanji word keeps the kana that follows it."""
+    def kind(c):
+        if "぀" <= c <= "ゟ":
+            return "H"
+        if "゠" <= c <= "ヿ":
+            return "T"
+        if unicodedata.name(c, "").startswith("CJK"):
+            return "K"
+        return "O"
+
+    out = []
+    for tok in re.findall(r"[^\W_][\w'’\-]*", str(line)):
+        chunk, last = "", ""
+        for c in tok:
+            k = kind(c)
+            if k == "H" and last in ("K", "KH"):
+                k = "KH"                      # kana right after kanji: the word's ending
+            if chunk and k != last and k != "KH":
+                out.append(chunk)
+                chunk = ""
+            chunk += c
+            last = k
+        if chunk:
+            out.append(chunk)
+    return list(dict.fromkeys(w.strip("'’-") for w in out if w.strip("'’-")))
+
+
+def lookup_word(word, lang):
+    """One word -> {"t": translation, "r": Latin reading, "senses": [(part of speech, [meanings])]}."""
+    tr, rm, data = gtx_translate(word, lang, "&dt=bd")
+    senses = []
+    for entry in (data[1] if len(data) > 1 and isinstance(data[1], list) else []):
+        if isinstance(entry, list) and len(entry) > 1 and isinstance(entry[1], list) and entry[1]:
+            senses.append((str(entry[0] or ""), [str(x) for x in entry[1][:6]]))
+    if foreign_script(word):
+        rm = rm if rm and not foreign_script(rm) else (local_romanize(word) or "")
+    else:
+        rm = ""
+    return {"t": tr, "r": rm, "senses": senses[:5]}
+
+
+def _core_name(path):
+    """'03 - Song Name (2).mp3' -> 'song name'."""
+    stem = re.sub(r"\s*\(\d+\)$", "", os.path.splitext(os.path.basename(path))[0])
+    return _fold(TRACKNO_RE.sub("", stem))
+
+
+def song_references(playlists, stats):
+    """path -> what still points at it: {"playlists": [names], "fav": bool, "plays": count}."""
+    refs = {}
+
+    def ref(p):
+        return refs.setdefault(p, {"playlists": [], "fav": False, "plays": 0})
+    for name, paths in playlists.items():
+        for p in paths:
+            if name not in ref(p)["playlists"]:
+                ref(p)["playlists"].append(name)
+    for p in stats.get("favorites", []):
+        ref(p)["fav"] = True
+    for p, entry in stats.get("plays", {}).items():
+        ref(p)["plays"] = entry.get("count", 0)
+    return refs
+
+
+def find_moved_songs(refs, tracks):
+    """Songs that playlists, favorites or stats point at but that are gone from their old place:
+    {old path: [(score, new path), ...] best first, [] if nothing looks like it}. Matched by file name,
+    then by the name without its track number, with the album and artist folders as tie breakers."""
+    by_name, by_core, tmap = {}, {}, {}
+    for t in tracks:
+        p = t["path"]
+        tmap[p] = t
+        by_name.setdefault(os.path.basename(p).casefold(), []).append(p)
+        by_core.setdefault(_core_name(p), []).append(p)
+    out = {}
+    for old in refs:
+        if old in tmap or os.path.exists(old):
+            continue
+        cands = {p: 5 for p in by_name.get(os.path.basename(old).casefold(), [])}
+        core = _core_name(old)
+        if core:
+            for p in by_core.get(core, []):
+                cands.setdefault(p, 3)
+        parent = _fold(os.path.basename(os.path.dirname(old)))
+        grand = _fold(os.path.basename(os.path.dirname(os.path.dirname(old))))
+        scored = []
+        for p, s in cands.items():
+            t = tmap[p]
+            album = _fold(t["album"])
+            if parent and (parent == _fold(os.path.basename(os.path.dirname(p))) or (album and album in parent)):
+                s += 2
+            names = {_fold(t["artist"]), _fold(song_artist(t)),
+                     _fold(os.path.basename(os.path.dirname(os.path.dirname(p))))} - {""}
+            if grand and any(n == grand or n in grand for n in names):
+                s += 1
+            scored.append((s, p))
+        out[old] = sorted(scored, key=lambda x: (-x[0], x[1]))[:6]
+    return out
+
+
+def sure_moves(found):
+    """{old: new} for the matches that are clear: a strong match, and nothing else as good."""
+    return {old: c[0][1] for old, c in found.items()
+            if c and c[0][0] >= 5 and (len(c) == 1 or c[0][0] > c[1][0])}
+
+
+def listening_heatmap(events, since=0):
+    """7 x 24 grid (Monday first) of seconds listened, by the hour the listening started."""
+    grid = [[0.0] * 24 for _ in range(7)]
+    for ts, _path, secs in events:
+        if ts >= since:
+            lt = time.localtime(ts - secs)
+            grid[lt.tm_wday][lt.tm_hour] += secs
+    return grid
+
+
+def mb_artist_id(name, known):
+    """MusicBrainz id of an artist ('' when there's no sure match); `known` is the cache in the settings."""
+    if name in known:
+        return known[name]
+    res = mb_json("artist", query='artist:"%s"' % name.replace('"', " "), limit=3)
+    hit = next((a for a in res.get("artists", [])
+                if a.get("score", 0) >= 95 and _fold(a.get("name", "")) == _fold(name)), None)
+    return hit["id"] if hit else ""
+
+
+def artist_release_groups(mbid):
+    """Studio albums and EPs on MusicBrainz: [{"id", "title", "year", "type"}] (no live albums or compilations)."""
+    data = mb_json("release-group", artist=mbid, type="album|ep", limit=100)
+    out = []
+    for g in data.get("release-groups", []):
+        if g.get("secondary-types"):
+            continue
+        year = (g.get("first-release-date") or "")[:4]
+        out.append({"id": g.get("id", ""), "title": g.get("title", ""), "year": int(year) if year.isdigit() else 0,
+                    "type": g.get("primary-type") or "Album"})
+    return out
+
+
+def merge_timeline(owned, groups):
+    """owned: [(album key, title, year)]; groups: artist_release_groups(). -> [{"year", "title", "key", "mbid",
+    "type"}] oldest first: every album you have, and (key None) the ones MusicBrainz knows that you don't."""
+    items, used = [], set()
+    for key, title, year in owned:
+        g = next((g for g in groups if g["id"] not in used
+                  and (_fold(title) == _fold(g["title"]) or same_album(title, g["title"]))), None)
+        if g:
+            used.add(g["id"])
+        items.append({"year": year or (g["year"] if g else 0), "title": title, "key": key,
+                      "mbid": g["id"] if g else "", "type": g["type"] if g else "Album"})
+    items += [{"year": g["year"], "title": g["title"], "key": None, "mbid": g["id"], "type": g["type"]}
+              for g in groups if g["id"] not in used]
+    items.sort(key=lambda i: (i["year"] or 9999, i["title"].casefold()))
+    return items
+
+
+def fuzzy_score(query, text):
+    """How well `query` matches `text`, higher is better; None if it doesn't match at all. A match at the
+    start of a word beats one inside a word, which beats letters in order ('dsk lyr' finds 'Desktop lyrics')."""
+    q, t = _fold(query), _fold(text)
+    if not q:
+        return 0.0
+    i = t.find(q)
+    if i >= 0:
+        return 300 - min(i, 100) + (100 if i == 0 or t[i - 1] == " " else 0) - len(t) * 0.1
+    words = q.split()
+    if len(words) > 1 and all(w in t for w in words):
+        return 150 - len(t) * 0.1
+    pos, score = 0, 0.0
+    for c in q.replace(" ", ""):
+        j = t.find(c, pos)
+        if j < 0:
+            return None
+        score += 3 if j == 0 or t[j - 1] == " " else (1 if j == pos else 0)
+        pos = j + 1
+    return score - len(t) * 0.1
+
+
+def remote_library(albums, artists, by_artist):
+    """What the phone remote can browse. Plain data only, made on the window's thread and then only read
+    by the web server's threads. Paths stay on the PC: the phone only ever sees the ids."""
+    songs, albs, arts = {}, {}, {}
+    for key, alb in albums.items():
+        aid = file_id("album|" + repr(key))
+        albs[aid] = {"id": aid, "title": alb["album"], "artist": alb["artist"], "year": str(alb.get("year") or ""),
+                     "songs": [file_id(t["path"]) for t in alb["tracks"]],
+                     "f": _fold(f"{alb['album']} {alb['artist']}")}
+        for t in alb["tracks"]:
+            sid = file_id(t["path"])
+            songs[sid] = {"id": sid, "title": t["title"], "artist": song_artist(t), "album": alb["album"],
+                          "albumId": aid, "path": t["path"], "f": _fold(f"{t['title']} {song_artist(t)} {alb['album']}")}
+    for akey, name in artists.items():
+        rid = file_id("artist|" + akey)
+        arts[rid] = {"id": rid, "name": name, "f": _fold(name),
+                     "albums": [file_id("album|" + repr(k)) for k in by_artist.get(akey, [])]}
+    return {"songs": songs, "albums": albs, "artists": arts}
+
+
+def remote_public(item):
+    """An item as the phone gets it: no file paths, no search keys."""
+    return {k: v for k, v in item.items() if k not in ("path", "f")}
+
+
+def remote_search(lib, query):
+    words = _fold(str(query)[:100]).split()
+    if not words:
+        return {"songs": [], "albums": [], "artists": []}
+
+    def hits(items, n):
+        found = [it for it in items.values() if all(w in it["f"] for w in words)]
+        found.sort(key=lambda it: (not it["f"].startswith(words[0]), len(it["f"])))
+        return [remote_public(it) for it in found[:n]]
+    return {"songs": hits(lib["songs"], 60), "albums": hits(lib["albums"], 30), "artists": hits(lib["artists"], 20)}
+
+
+# ----- lyric cards (a picture of a few lyric lines, to share)
+CARD_STYLES = ("Blurred cover", "Album colours", "Midnight", "Paper")
+CARD_SIZES = {"Square": (1080, 1080), "Story": (1080, 1920), "Wide": (1920, 1080)}
+CARD_MAX_LINES = 8
+
+
+def _card_family(serif):
+    """One family for the whole picture (a font without an italic face can fall back to another script's):
+    the app's big-text serif for the Paper look, a clean sans for the others."""
+    families = set(QFontDatabase.families())
+    if serif and pick_display_family():
+        return pick_display_family()
+    return next((f for f in ("Segoe UI Variable Display", "Segoe UI", "Helvetica Neue", "Arial") if f in families),
+                QApplication.font().family())
+
+
+_CARD_FAMILY = [""]
+
+
+def _card_font(px, weight=QFont.Weight.Normal, italic=False, display=False):
+    f = QFont(_CARD_FAMILY[0] or _card_family(False))
+    f.setPixelSize(max(1, int(px)))
+    f.setWeight(weight)
+    f.setItalic(italic)
+    f.setHintingPreference(QFont.HintingPreference.PreferNoHinting)   # smooth at any size
+    return f
+
+
+def _text_h(font, width, text):
+    return QFontMetrics(font).boundingRect(QRect(0, 0, int(width), 100000),
+                                           _flag(Qt.TextFlag.TextWordWrap), text).height()
+
+
+def _card_rows(lines, size, roman, trans):
+    """[(text, font, alpha, gap after)] for the lyric block at one text size."""
+    rows = []
+    for text, reading, translation in lines:
+        rows.append([text, _card_font(size, QFont.Weight.Bold, display=True), 1.0, size * 0.16])
+        if roman and reading:
+            rows.append([reading, _card_font(size * 0.46, italic=True), 0.74, size * 0.10])
+        if trans and translation:
+            rows.append([translation, _card_font(size * 0.46, QFont.Weight.Medium), 0.84, size * 0.10])
+        rows[-1][3] = size * 0.5            # more room between one lyric line and the next
+    return rows
+
+
+def _fit_rows(lines, width, height, start, roman, trans):
+    """The biggest text size (from `start` down) at which the lines fit the box: (rows, block height)."""
+    size = start
+    while True:
+        rows = _card_rows(lines, size, roman, trans)
+        total = sum(_text_h(f, width, t) + gap for t, f, _a, gap in rows) - (rows[-1][3] if rows else 0)
+        if total <= height or size <= 22:
+            return rows, total
+        size -= 2
+
+
+def _shadowed_text(p, rect, flags, text, color, shadow):
+    if shadow:
+        p.setPen(QColor(0, 0, 0, 95))
+        p.drawText(rect.translated(0, max(2, rect.height() // 60 or 2)), flags, text)
+    p.setPen(color)
+    p.drawText(rect, flags, text)
+
+
+def _card_background(p, w, h, style, cover, accent):
+    acc = QColor(accent)
+    if style == "Paper":
+        p.fillRect(0, 0, w, h, QColor("#f3ede3"))
+        glow = QRadialGradient(w * 0.85, h * 0.1, max(w, h) * 0.7)
+        glow.setColorAt(0, QColor(acc.red(), acc.green(), acc.blue(), 46))
+        glow.setColorAt(1, QColor(acc.red(), acc.green(), acc.blue(), 0))
+        p.fillRect(0, 0, w, h, glow)
+        return
+    if style == "Midnight":
+        p.fillRect(0, 0, w, h, QColor("#0c0c11"))
+        for cx, cy, r, a in ((0.15, 1.05, 0.9, 120), (0.95, -0.05, 0.7, 70)):
+            glow = QRadialGradient(w * cx, h * cy, max(w, h) * r)
+            glow.setColorAt(0, QColor(acc.red(), acc.green(), acc.blue(), a))
+            glow.setColorAt(1, QColor(acc.red(), acc.green(), acc.blue(), 0))
+            p.fillRect(0, 0, w, h, glow)
+        return
+    if style == "Blurred cover" and cover is not None and not cover.isNull():
+        side = max(w, h)
+        blurred = blur_pixmap(cover, size=min(side, 1000), radius=70)
+        p.drawPixmap(QRect(0, 0, w, h), blurred, QRect(0, 0, blurred.width(), blurred.height()))
+        shade = QLinearGradient(0, 0, 0, h)
+        shade.setColorAt(0, QColor(0, 0, 0, 105))
+        shade.setColorAt(0.55, QColor(0, 0, 0, 125))
+        shade.setColorAt(1, QColor(0, 0, 0, 175))
+        p.fillRect(0, 0, w, h, shade)
+        return
+    # "Album colours" (and a blurred cover with no cover to blur): the album's own colour, deep and soft
+    grad = QLinearGradient(0, 0, w, h)
+    grad.setColorAt(0, acc.lighter(115))
+    grad.setColorAt(0.55, acc.darker(170))
+    grad.setColorAt(1, acc.darker(340))
+    p.fillRect(0, 0, w, h, grad)
+    for cx, cy, r, col in ((0.9, 0.12, 0.55, QColor(255, 255, 255, 46)), (0.05, 0.95, 0.75, QColor(0, 0, 0, 90))):
+        glow = QRadialGradient(w * cx, h * cy, max(w, h) * r)
+        glow.setColorAt(0, col)
+        glow.setColorAt(1, QColor(col.red(), col.green(), col.blue(), 0))
+        p.fillRect(0, 0, w, h, glow)
+
+
+def _rounded_cover(p, rect, cover, radius, accent, shadow=True):
+    if shadow:   # a soft drop shadow: a few widening, fading rounded rects
+        for i in range(10, 0, -1):
+            path = QPainterPath()
+            r = QRectF(rect).adjusted(-i * 1.6, -i * 1.6 + i * 1.2, i * 1.6, i * 1.6 + i * 1.2)
+            path.addRoundedRect(r, radius + i, radius + i)
+            p.fillPath(path, QColor(0, 0, 0, 7))
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(rect), radius, radius)
+    p.save()
+    p.setClipPath(path)
+    if cover is not None and not cover.isNull():
+        scaled = cover.scaled(rect.width(), rect.height(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                              Qt.TransformationMode.SmoothTransformation)
+        p.drawPixmap(rect.x() - (scaled.width() - rect.width()) // 2,
+                     rect.y() - (scaled.height() - rect.height()) // 2, scaled)
+    else:
+        grad = QLinearGradient(QPointF(rect.topLeft()), QPointF(rect.bottomRight()))
+        grad.setColorAt(0, QColor(accent).lighter(120))
+        grad.setColorAt(1, QColor(accent).darker(200))
+        p.fillRect(rect, grad)
+        p.setPen(QColor(255, 255, 255, 200))
+        p.setFont(_card_font(rect.height() * 0.42, QFont.Weight.Bold))
+        p.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), "♪")
+    p.restore()
+
+
+def render_lyric_card(lines, title, artist, cover, style="Blurred cover", size=(1080, 1080), accent=None,
+                      roman=True, trans=True):
+    """A picture of a few lyric lines: lines = [(text, reading, translation)]. Returns a QImage."""
+    w, h = size
+    u = min(w, h) / 1080                     # one design unit
+    accent = accent or "#4C8DFF"
+    paper = style == "Paper"
+    _CARD_FAMILY[0] = _card_family(paper)
+    ink = QColor("#1d1b18") if paper else QColor("#ffffff")
+    soft = QColor(ink)
+    soft.setAlphaF(0.66)
+    shadow = style == "Blurred cover"
+    img = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
+    p = QPainter(img)
+    for hint in (QPainter.RenderHint.Antialiasing, QPainter.RenderHint.TextAntialiasing,
+                 QPainter.RenderHint.SmoothPixmapTransform):
+        p.setRenderHint(hint)
+    _card_background(p, w, h, style, cover, accent)
+    m = int(86 * u)
+    wrap = _flag(Qt.TextFlag.TextWordWrap)
+    left = _flag(Qt.AlignmentFlag.AlignLeft) | _flag(Qt.AlignmentFlag.AlignTop) | wrap
+    wide = w > h * 1.3
+
+    if wide:     # big cover on the left, the words on the right
+        side = h - 2 * m
+        _rounded_cover(p, QRect(m, m, side, side), cover, int(28 * u), accent)
+        x0 = m + side + int(80 * u)
+        tw = w - x0 - m
+        top, bottom = m + int(70 * u), h - m - int(190 * u)      # logo above, title and singer below
+    else:        # cover, title and singer on top, the words under them
+        cs = int(150 * u)
+        _rounded_cover(p, QRect(m, m, cs, cs), cover, int(22 * u), accent)
+        tx = m + cs + int(34 * u)
+        tf, af = _card_font(44 * u, QFont.Weight.Bold), _card_font(34 * u)
+        th, ah = _text_h(tf, w - tx - m, title), _text_h(af, w - tx - m, artist)
+        ty = m + max(0, (cs - th - ah - int(6 * u)) // 2)
+        p.setFont(tf)
+        _shadowed_text(p, QRect(tx, ty, w - tx - m, th), left, title, ink, shadow)
+        p.setFont(af)
+        _shadowed_text(p, QRect(tx, ty + th + int(6 * u), w - tx - m, ah), left, artist, soft, shadow)
+        x0, tw = m, w - 2 * m
+        top, bottom = m + cs + int(70 * u), h - m - int(90 * u)
+
+    qh = int(110 * u)     # room for the big opening quote mark, drawn just above the words
+    rows, block = _fit_rows(lines, tw - int(34 * u), bottom - top - qh, int((84 if wide or h > w else 96) * u),
+                            roman, trans)
+    y = top + qh + max(0, (bottom - top - qh - block) // (2 if (h > w or wide) else 3))
+    qcol = QColor(accent) if paper or style == "Midnight" else QColor(255, 255, 255, 150)
+    qf = _card_font(200 * u, QFont.Weight.Bold)
+    if "Georgia" in QFontDatabase.families():
+        qf.setFamily("Georgia")                     # a properly curly quote mark
+    p.setFont(qf)
+    p.setPen(qcol)
+    p.drawText(QRect(x0 - int(8 * u), int(y) - qh - int(46 * u), int(220 * u), int(260 * u)), left, "“")
+    bar_top = y
+    for text, font, alpha, gap in rows:
+        col = QColor(ink)
+        col.setAlphaF(alpha)
+        p.setFont(font)
+        rh = _text_h(font, tw - int(34 * u), text)
+        _shadowed_text(p, QRect(x0 + int(34 * u), int(y), tw - int(34 * u), rh), left, text, col, shadow)
+        y += rh + gap
+    bar = QPainterPath()   # a slim accent bar beside the words
+    bar.addRoundedRect(QRectF(x0, bar_top + 6 * u, 7 * u, max(10.0, y - rows[-1][3] - bar_top - 12 * u)),
+                       3.5 * u, 3.5 * u)
+    p.fillPath(bar, QColor(accent) if paper or style == "Midnight" else QColor(255, 255, 255, 190))
+
+    if wide:     # title and singer under the words
+        tf, af = _card_font(40 * u, QFont.Weight.Bold), _card_font(32 * u)
+        p.setFont(tf)
+        _shadowed_text(p, QRect(x0, h - m - int(150 * u), tw, int(52 * u)), left, title, ink, shadow)
+        p.setFont(af)
+        _shadowed_text(p, QRect(x0, h - m - int(96 * u), tw, int(44 * u)), left, artist, soft, shadow)
+    # footer: the eozMP mark
+    logo = logo_pixmap(int(52 * u))
+    fy = h - m - int(52 * u) if not wide else m
+    fx = m if not wide else w - m - int(52 * u) - int(150 * u)
+    p.drawPixmap(fx, fy, logo)
+    p.setFont(_card_font(30 * u, QFont.Weight.DemiBold))
+    _shadowed_text(p, QRect(fx + int(66 * u), fy, int(300 * u), int(52 * u)),
+                   _flag(Qt.AlignmentFlag.AlignLeft) | _flag(Qt.AlignmentFlag.AlignVCenter), "eozMP", soft, shadow)
+    p.end()
+    return img
+
+
+class LyricCardDialog(QDialog):
+    """Pick a few lines, a look and a size; copy or save the picture."""
+
+    def __init__(self, main, first_row):
+        super().__init__(main)
+        self.main = main
+        self.setWindowTitle("Share lyrics as a picture")
+        self.resize(980, 640)
+        t = main.queue[main.index][0] if 0 <= main.index < len(main.queue) else {"title": "", "album": "", "artist": ""}
+        self.title, self.artist = t["title"], song_artist(t) if t.get("path") else ""
+        key = main.current_key()
+        self.cover = main.cover_for(key) if key in main.albums else None
+        self.accent = (accent_from_pixmap(self.cover) if self.cover is not None else None) or main.scheme["accent"]
+        lay = QHBoxLayout(self)
+        side = QVBoxLayout()
+        lab = QLabel(f"Lines (up to {CARD_MAX_LINES})")
+        lab.setObjectName("heading3")
+        side.addWidget(lab)
+        self.lines = QListWidget()
+        self.lines.setAccessibleName("Lyric lines to put on the picture")
+        for i, line in enumerate(main.lyric_lines):
+            item = QListWidgetItem(_raw(line) if line else "♪")
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if i == first_row and line else Qt.CheckState.Unchecked)
+            if not line:
+                item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.lines.addItem(item)
+        self.lines.itemChanged.connect(lambda _i: self.refresh())
+        side.addWidget(self.lines, 1)
+        form = QFormLayout()
+        self.style = QComboBox()
+        self.style.addItems(list(CARD_STYLES))
+        self.style.setCurrentText(main.cfg.get("card_style") or CARD_STYLES[0])
+        self.size_box = QComboBox()
+        self.size_box.addItems(list(CARD_SIZES))
+        self.size_box.setCurrentText(main.cfg.get("card_size") or "Square")
+        form.addRow("Look", self.style)
+        form.addRow("Size", self.size_box)
+        side.addLayout(form)
+        self.roman = QCheckBox("Reading in Latin letters")
+        self.trans = QCheckBox("Translation")
+        extras = getattr(main, "lyric_extras", {}) or {}
+        self.roman.setEnabled(any(e.get("r") for e in extras.values()))
+        self.trans.setEnabled(any(e.get("t") for e in extras.values()))
+        self.roman.setChecked(self.roman.isEnabled())
+        self.trans.setChecked(self.trans.isEnabled())
+        if not (self.roman.isEnabled() or self.trans.isEnabled()):
+            self.trans.setToolTip("Turn on a translation on the lyrics page (Translate) to put it on the picture too")
+        for w in (self.style, self.size_box):
+            w.currentIndexChanged.connect(lambda *_: self.refresh())
+        for w in (self.roman, self.trans):
+            w.toggled.connect(lambda *_: self.refresh())
+        side.addWidget(self.roman)
+        side.addWidget(self.trans)
+        lay.addLayout(side, 2)
+        right = QVBoxLayout()
+        self.preview = QLabel()
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setMinimumSize(520, 520)
+        self.preview.setAccessibleName("Preview of the picture")
+        right.addWidget(self.preview, 1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        copy = QPushButton("Copy picture")
+        copy.clicked.connect(self.copy)
+        save = QPushButton("Save as PNG...")
+        save.setObjectName("primary")
+        save.clicked.connect(self.save)
+        close = QPushButton("Close")
+        close.clicked.connect(self.reject)
+        for b in (copy, save, close):
+            row.addWidget(b)
+        right.addLayout(row)
+        lay.addLayout(right, 3)
+        self.image = None
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.render)
+        self.refresh()
+        QTimer.singleShot(0, lambda: self.lines.scrollToItem(self.lines.item(max(0, first_row))))
+
+    def chosen(self):
+        extras = getattr(self.main, "lyric_extras", {}) or {}
+        out = []
+        for i in range(self.lines.count()):
+            if self.lines.item(i).checkState() == Qt.CheckState.Checked:
+                line = self.main.lyric_lines[i]
+                e = extras.get(line.strip()) or {}
+                out.append((line, e.get("r", ""), e.get("t", "")))
+        return out
+
+    def refresh(self):
+        if len(self.chosen()) > CARD_MAX_LINES:
+            self.main.statusBar().showMessage(f"A picture holds up to {CARD_MAX_LINES} lines.", 5000)
+        self._timer.start(120)
+
+    def render(self):
+        lines = self.chosen()[:CARD_MAX_LINES]
+        if not lines:
+            self.image = None
+            self.preview.setText("Tick the lines you want on the picture.")
+            return
+        self.main.cfg["card_style"] = self.style.currentText()
+        self.main.cfg["card_size"] = self.size_box.currentText()
+        self.image = render_lyric_card(lines, self.title, self.artist, self.cover, self.style.currentText(),
+                                       CARD_SIZES[self.size_box.currentText()], self.accent,
+                                       self.roman.isChecked(), self.trans.isChecked())
+        box = self.preview.size()
+        dpr = self.devicePixelRatioF()
+        pm = QPixmap.fromImage(self.image.scaled(int(box.width() * dpr), int(box.height() * dpr),
+                                                 Qt.AspectRatioMode.KeepAspectRatio,
+                                                 Qt.TransformationMode.SmoothTransformation))
+        pm.setDevicePixelRatio(dpr)
+        self.preview.setPixmap(pm)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._timer.start(120)
+
+    def copy(self):
+        if self.image is not None:
+            QApplication.clipboard().setImage(self.image)
+            self.main.statusBar().showMessage("Picture copied - paste it anywhere.", 5000)
+
+    def save(self):
+        if self.image is None:
+            return
+        pics = os.path.join(os.path.expanduser("~"), "Pictures")
+        name = safe_name(f"{self.artist} - {self.title}", "eozMP lyrics") + ".png"
+        path, _ = QFileDialog.getSaveFileName(self, "Save picture", os.path.join(
+            pics if os.path.isdir(pics) else os.path.expanduser("~"), name), "PNG picture (*.png)")
+        if path:
+            if self.image.save(path, "PNG"):
+                self.main.statusBar().showMessage(_t(f"Saved {os.path.basename(path)}"), 6000)
+            else:
+                QMessageBox.warning(self, "Save picture", "Couldn't save the picture there.")
+
+
+# ----- looking up the words of a lyric line
+class WordLookupDialog(QDialog):
+    """A lyric line split into words: click one to see what it means and how it's read."""
+
+    def __init__(self, main, line):
+        super().__init__(main)
+        self.main, self.line = main, line
+        self.cache = {}
+        self.setWindowTitle("Words")
+        self.resize(560, 460)
+        v = QVBoxLayout(self)
+        head = QLabel(_raw(line))
+        head.setObjectName("heading3")
+        head.setWordWrap(True)
+        head.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        v.addWidget(head)
+        extra = (getattr(main, "lyric_extras", {}) or {}).get(line.strip()) or {}
+        self.sub = QLabel(_raw("\n".join(x for x in (extra.get("r", ""), extra.get("t", "")) if x)))
+        self.sub.setObjectName("sub")
+        self.sub.setWordWrap(True)
+        v.addWidget(self.sub)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Meaning in"))
+        self.lang = QComboBox()
+        self.lang.addItems(list(TRANSLATE_LANGS))
+        ui = main.cfg.get("ui_lang")
+        self.lang.setCurrentText(main.cfg.get("translate_lang") or (ui if ui in TRANSLATE_LANGS else None)
+                                 or next((n for n, c in TRANSLATE_LANGS.items()
+                                          if c == system_ui_language()), "English"))
+        self.lang.currentIndexChanged.connect(lambda *_: self.lookup(self.current))
+        row.addWidget(self.lang)
+        row.addStretch(1)
+        v.addLayout(row)
+        hint = QLabel("Click a word:")
+        hint.setObjectName("sub")
+        v.addWidget(hint)
+        self.words = QListWidget()
+        self.words.setFlow(QListWidget.Flow.LeftToRight)
+        self.words.setWrapping(True)
+        self.words.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.words.setSpacing(4)
+        self.words.setMaximumHeight(130)
+        self.words.setAccessibleName("Words of the line")
+        sc = main.scheme
+        self.words.setStyleSheet(
+            f"QListWidget {{ background: transparent; border: none; }}"
+            f"QListWidget::item {{ border: 1px solid {sc['border']}; border-radius: 13px; padding: 4px 12px; }}"
+            f"QListWidget::item:selected {{ background: {sc['accent']}; color: {sc['on_accent']}; "
+            f"border-color: {sc['accent']}; }}")
+        for w in lyric_words(line):
+            self.words.addItem(_raw(w))
+        self.words.currentItemChanged.connect(lambda cur, _p: self.lookup(cur.text() if cur else ""))
+        v.addWidget(self.words)
+        self.result = QLabel("")
+        self.result.setTextFormat(Qt.TextFormat.RichText)
+        self.result.setWordWrap(True)
+        self.result.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.result.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        v.addWidget(self.result, 1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        v.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
+        self.current = ""
+        if self.words.count():
+            self.words.setCurrentRow(0)
+        else:
+            self.result.setText(html.escape(_t("No words to look up in this line.")))
+
+    def lookup(self, word):
+        self.current = word
+        if not word:
+            return
+        lang = TRANSLATE_LANGS.get(self.lang.currentText(), "en")
+        key = (word, lang)
+        if key in self.cache:
+            self.show_result(word, self.cache[key])
+            return
+        self.result.setText(html.escape(_t("Looking it up...")))
+        w = Worker(lambda: lookup_word(word, lang))
+        w.ok.connect(lambda res: self.alive(lambda: (self.cache.__setitem__(key, res), self.show_result(word, res))))
+        w.fail.connect(lambda m: self.alive(lambda: self.show_error(word, m)))
+        self.main.keep(w)
+
+    @staticmethod
+    def alive(fn):
+        try:
+            fn()
+        except RuntimeError:
+            pass      # the window was closed before the answer came
+
+    def show_error(self, word, msg):
+        if word != self.current:
+            return
+        reading = local_romanize(word) if foreign_script(word) else ""
+        self.result.setText(f"<p style='font-size:20px'><b>{html.escape(word)}</b>"
+                            + (f" &nbsp;<i>{html.escape(reading)}</i>" if reading else "") + "</p>"
+                            + html.escape(_t(f"Couldn't look it up ({msg})")))
+
+    def show_result(self, word, res):
+        if word != self.current:
+            return
+        acc = self.main.scheme["accent_text"]
+        out = [f"<p style='font-size:20px'><b>{html.escape(word)}</b>"
+               + (f" &nbsp;<i style='color:{acc}'>{html.escape(res['r'])}</i>" if res.get("r") else "") + "</p>"]
+        if res.get("t") and _fold(res["t"]) != _fold(word):
+            out.append(f"<p style='font-size:16px'>{html.escape(res['t'])}</p>")
+        for pos, meanings in res.get("senses", []):
+            out.append(f"<p><span style='color:{acc}'>{html.escape(_t(pos.capitalize()) if pos else '')}</span>"
+                       f"&nbsp; {html.escape(', '.join(meanings))}</p>")
+        if len(out) == 1:
+            out.append(html.escape(_t("No meaning found for this word.")))
+        self.result.setText("".join(out))
+
+
+# ----- searching every song's lyrics
+class LyricsIndexer(QThread):
+    progress = pyqtSignal(int, int)
+    done = pyqtSignal(object)
+
+    def __init__(self, tracks, old):
+        super().__init__()
+        self.tracks, self.old = tracks, old
+
+    def run(self):
+        index = build_lyrics_index(self.tracks, self.old, lambda i, n: self.progress.emit(i, n), STOP_BG)
+        if not STOP_BG.is_set():
+            save_lyrics_index(index)
+        self.done.emit(index)
+
+
+class LyricsSearchDialog(QDialog):
+    """Type a few words you remember; every song whose lyrics have them is listed."""
+
+    def __init__(self, main):
+        super().__init__(main)
+        self.main = main
+        self.setWindowTitle("Search in lyrics")
+        self.resize(860, 560)
+        v = QVBoxLayout(self)
+        self.query = QLineEdit()
+        self.query.setPlaceholderText("Words from a song...")
+        self.query.setClearButtonEnabled(True)
+        self.query.setAccessibleName("Words to look for in the lyrics")
+        v.addWidget(self.query)
+        self.status = QLabel("")
+        self.status.setObjectName("sub")
+        v.addWidget(self.status)
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Song", "Artist", "Line"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(0, 220)
+        self.table.setColumnWidth(1, 170)
+        self.table.cellDoubleClicked.connect(lambda r, _c: self.play_row(r))
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.row_menu)
+        v.addWidget(self.table, 1)
+        row = QHBoxLayout()
+        note = QLabel("Double-click a song to play it with its lyrics.")
+        note.setObjectName("sub")
+        row.addWidget(note, 1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        v.addLayout(row)
+        self.paths = []
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self.search)
+        self.query.textChanged.connect(lambda *_: self.timer.start(220))
+        self.prepared = prepare_lyrics_search(main.lyrics_index or {})
+        main.update_lyrics_index(self.on_progress, self.on_index)
+        self.on_progress(0, 0)
+
+    def on_progress(self, i, n):
+        if n:
+            self.status.setText(_t(f"Reading lyrics... {i} of {n} songs") + "  "
+                                + _t("(search works already; new songs show up when it's done)"))
+        else:
+            self.status.setText(_t(f"{len(self.prepared)} songs with lyrics"))
+
+    def on_index(self, index):
+        self.prepared = prepare_lyrics_search(index)
+        self.status.setText(_t(f"{len(self.prepared)} songs with lyrics"))
+        self.search()
+
+    def search(self):
+        hits = search_lyrics(self.prepared, self.query.text())
+        hits = [h for h in hits if h[0] in self.main.track_by_path]
+        self.paths = [h[0] for h in hits]
+        self.table.setRowCount(0)
+        self.table.setRowCount(len(hits))
+        for r, (path, line, _n) in enumerate(hits):
+            t = self.main.track_by_path[path][0]
+            for c, val in enumerate((t["title"], song_artist(t), line)):
+                self.table.setItem(r, c, QTableWidgetItem(_raw(val)))
+        if self.query.text().strip():
+            self.status.setText(_t(f"{len(hits)} song(s) found") if hits else _t("No song has those words."))
+
+    def play_row(self, r):
+        if 0 <= r < len(self.paths):
+            self.main.play_path(self.paths[r])
+            if self.main.stack.currentIndex() != 3:
+                self.main.toggle_lyrics()
+
+    def row_menu(self, pos):
+        r = self.table.rowAt(pos.y())
+        if not 0 <= r < len(self.paths):
+            return
+        path = self.paths[r]
+        menu = QMenu(self)
+        menu.addAction("Play").triggered.connect(lambda: self.play_row(r))
+        menu.addAction("Play next").triggered.connect(lambda: self.main.queue_add([path], play_next=True))
+        menu.addAction("Add to queue").triggered.connect(lambda: self.main.queue_add([path]))
+        menu.addAction("Show album").triggered.connect(
+            lambda: (self.main.open_album(self.main.track_by_path[path][1]), self.accept()))
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+
+
+# ----- songs that moved: point playlists, favorites and stats at their new place
+class MovedSongsDialog(QDialog):
+    def __init__(self, main, found, refs):
+        super().__init__(main)
+        self.main, self.found = main, found
+        self.setWindowTitle("Repair moved songs")
+        self.resize(940, 520)
+        v = QVBoxLayout(self)
+        lost = [old for old in found]
+        matched = [old for old in lost if found[old]]
+        head = QLabel(_t(f"{len(lost)} song(s) your playlists, favorites or stats point at are no longer where "
+                         f"they were. eozMP found a likely new place for {len(matched)} of them.") + "\n"
+                      + _t("Check the new places, then press Repair. Nothing is moved or deleted; only eozMP's "
+                           "lists are updated."))
+        head.setWordWrap(True)
+        v.addWidget(head)
+        self.table = QTableWidget(len(lost), 3)
+        self.table.setHorizontalHeaderLabels(["Was here", "Used in", "Now here"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        sure = sure_moves(found)
+        self.rows = []
+        lost.sort(key=lambda o: (not found[o], o.lower()))
+        for r, old in enumerate(lost):
+            item = QTableWidgetItem(_raw(os.path.basename(old)))
+            item.setToolTip(_raw(old))
+            self.table.setItem(r, 0, item)
+            ref = refs.get(old, {})
+            used = list(ref.get("playlists", []))
+            if ref.get("fav"):
+                used.append("♥")
+            if ref.get("plays"):
+                used.append(_t(f"{ref['plays']} plays"))
+            self.table.setItem(r, 1, QTableWidgetItem(_raw(", ".join(used))))
+            box = QComboBox()
+            box.addItem("Leave as it is", "")
+            for score, new in found[old]:
+                box.addItem(_raw(self.short(new)), new)
+                box.setItemData(box.count() - 1, _raw(new), Qt.ItemDataRole.ToolTipRole)
+            if old in sure:
+                box.setCurrentIndex(1)
+            if not found[old]:
+                box.setItemText(0, _t("Not found in your library"))
+                box.setEnabled(False)
+            box.setAccessibleName(_t("New place for") + " " + os.path.basename(old))
+            self.table.setCellWidget(r, 2, box)
+            self.table.setRowHeight(r, box.sizeHint().height() + 8)
+            self.rows.append((old, box))
+        v.addWidget(self.table, 1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        ok = QPushButton("Repair")
+        ok.setObjectName("primary")
+        ok.clicked.connect(self.repair)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        row.addWidget(ok)
+        row.addWidget(cancel)
+        v.addLayout(row)
+
+    @staticmethod
+    def short(path):
+        parts = Path(path).parts
+        return os.path.join(*parts[-3:]) if len(parts) > 3 else path
+
+    def repair(self):
+        mapping = {old: box.currentData() for old, box in self.rows if box.currentData()}
+        if mapping and carry_over(self.main.playlists, self.main.stats, mapping):
+            save_playlists(self.main.playlists)
+            save_stats(self.main.stats)
+            self.main.fav_set = set(self.main.stats["favorites"])
+            self.main.refresh_playlist_list()
+            if self.main.current_playlist in self.main.playlists and self.main.stack.currentIndex() == 5:
+                self.main.show_playlist(self.main.current_playlist, switch=False)
+            self.main.update_heart()
+        self.main.statusBar().showMessage(_t(f"Repaired {len(mapping)} song(s)."), 8000)
+        self.accept()
+
+
+# ----- an artist's albums along the years
+class TimelineView(QWidget):
+    """Albums on a line through the years. Yours in colour, the ones you don't have faded."""
+    clicked = pyqtSignal(int)
+    TILE, GAP, TOP = 132, 26, 54
+
+    def __init__(self, main, items):
+        super().__init__()
+        self.main, self.items = main, items
+        self.art = {}            # index -> QPixmap
+        self.hover = -1
+        self.setMouseTracking(True)
+        self.setMinimumHeight(self.TOP + self.TILE + 96)
+        self.setFixedWidth(max(600, 40 + len(items) * (self.TILE + self.GAP)))
+        self.setAccessibleName("Albums on a timeline")
+
+    def x_of(self, i):
+        return 20 + i * (self.TILE + self.GAP)
+
+    def index_at(self, pos):
+        for i in range(len(self.items)):
+            if QRect(self.x_of(i), self.TOP, self.TILE, self.TILE + 44).contains(pos):
+                return i
+        return -1
+
+    def mouseMoveEvent(self, e):
+        i = self.index_at(e.position().toPoint())
+        if i != self.hover:
+            self.hover = i
+            self.setCursor(Qt.CursorShape.PointingHandCursor if i >= 0 else Qt.CursorShape.ArrowCursor)
+            if i >= 0:
+                it = self.items[i]
+                tip = it["title"] + (f" ({it['year']})" if it["year"] else "")
+                tip += "\n" + _t("In your library - click to open" if it["key"] is not None
+                                 else "You don't have this one - click to find it")
+                self.setToolTip(_raw(tip))
+            self.update()
+
+    def leaveEvent(self, _e):
+        self.hover = -1
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        i = self.index_at(e.position().toPoint())
+        if i >= 0 and e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(i)
+
+    def paintEvent(self, _e):
+        sc = self.main.scheme
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        line_y = self.TOP - 18
+        p.setPen(QPen(QColor(sc["border"]), 2))
+        p.drawLine(10, line_y, self.width() - 10, line_y)
+        prev_year = None
+        f = QFont(self.font())
+        for i, it in enumerate(self.items):
+            x = self.x_of(i)
+            year = it["year"] or "?"
+            if year != prev_year:
+                p.setBrush(QColor(sc["accent"]))
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawEllipse(QPointF(x + 6, line_y), 5, 5)
+                f.setBold(True)
+                p.setFont(f)
+                p.setPen(QColor(sc["text"]))
+                p.drawText(QRect(x - 2, line_y - 30, 80, 22), int(Qt.AlignmentFlag.AlignLeft), str(year))
+                prev_year = year
+            rect = QRect(x, self.TOP, self.TILE, self.TILE)
+            owned = it["key"] is not None
+            pix = self.art.get(i)
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(rect), 10, 10)
+            p.save()
+            if not owned:
+                p.setOpacity(0.42 if i != self.hover else 0.75)
+            p.setClipPath(path)
+            if pix is not None and not pix.isNull():
+                scaled = pix.scaled(rect.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                    Qt.TransformationMode.SmoothTransformation)
+                p.drawPixmap(rect, scaled, QRect((scaled.width() - rect.width()) // 2,
+                                                 (scaled.height() - rect.height()) // 2, rect.width(), rect.height()))
+            else:
+                p.fillRect(rect, QColor(sc["raised"]))
+                p.setPen(QColor(sc["sub"]))
+                p.setFont(QFont(self.font().family(), 28))
+                p.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), "♪")
+            p.restore()
+            pen = QPen(QColor(sc["accent"] if i == self.hover else (sc["border"] if owned else sc["sub"])),
+                       2 if i == self.hover else 1)
+            if not owned:
+                pen.setStyle(Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
+            f.setBold(owned)
+            p.setFont(f)
+            p.setPen(QColor(sc["text"] if owned else sc["sub"]))
+            fm = QFontMetrics(f)
+            title = fm.elidedText(it["title"], Qt.TextElideMode.ElideRight, self.TILE * 2 - 10)
+            p.drawText(QRect(x, self.TOP + self.TILE + 6, self.TILE, 38),
+                       int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop) | int(Qt.TextFlag.TextWordWrap),
+                       title)
+            if it["type"] == "EP":
+                p.setPen(QColor(sc["sub"]))
+                small = QFont(f)
+                small.setBold(False)
+                small.setPointSizeF(max(7.0, f.pointSizeF() - 1.5))
+                p.setFont(small)
+                p.drawText(QRect(x, self.TOP + self.TILE + 44, self.TILE, 18), int(Qt.AlignmentFlag.AlignHCenter), "EP")
+        p.end()
+
+
+class TimelineDialog(QDialog):
+    art_ready = pyqtSignal(int, object)
+
+    def __init__(self, main, akey):
+        super().__init__(main)
+        self.main, self.akey = main, akey
+        self.name = main.artists.get(akey, "")
+        self.setWindowTitle(_raw(_t("Timeline") + " - " + self.name))
+        self.resize(980, 380)
+        v = QVBoxLayout(self)
+        head = QLabel(_raw(self.name))
+        head.setObjectName("heading")
+        v.addWidget(head)
+        self.note = QLabel("Asking MusicBrainz for the whole discography...")
+        self.note.setObjectName("sub")
+        self.note.setWordWrap(True)
+        v.addWidget(self.note)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(False)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        v.addWidget(self.scroll, 1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        v.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
+        self.owned = []
+        for k in main.artist_album_keys(akey):
+            alb = main.albums[k]
+            self.owned.append((k, alb["album"], to_int(str(alb.get("year") or ""), 0)))
+        self.show_items(merge_timeline(self.owned, []))
+        self.art_ready.connect(self.on_art)
+        known = dict(main.cfg.get("mb_artist_ids", {}))
+
+        def work():
+            mbid = mb_artist_id(self.name, known)
+            return mbid, (artist_release_groups(mbid) if mbid else [])
+        w = Worker(work)
+        w.ok.connect(lambda res: WordLookupDialog.alive(lambda: self.on_groups(res)))
+        w.fail.connect(lambda m: WordLookupDialog.alive(lambda: self.note.setText(
+            _t(f"Couldn't reach MusicBrainz ({m}). Showing the albums you have."))))
+        main.keep(w)
+
+    def show_items(self, items):
+        self.items = items
+        self.view = TimelineView(self.main, items)
+        self.view.clicked.connect(self.on_click)
+        for i, it in enumerate(items):
+            if it["key"] is not None and it["key"] in self.main.albums:
+                pix = self.main.cover_for(it["key"])
+                if pix is not None:
+                    self.view.art[i] = pix
+        self.scroll.setWidget(self.view)
+        self.view.setFixedHeight(max(self.view.minimumHeight(), self.scroll.viewport().height() - 4))
+
+    def on_groups(self, res):
+        mbid, groups = res
+        if mbid:
+            self.main.cfg.setdefault("mb_artist_ids", {})[self.name] = mbid
+        if not groups:
+            self.note.setText("MusicBrainz doesn't know this artist's albums. Showing the albums you have.")
+            return
+        items = merge_timeline(self.owned, groups)
+        have = sum(1 for i in items if i["key"] is not None)
+        self.note.setText(_t(f"You have {have} of {len(items)} albums and EPs.") + " "
+                          + _t("The faded ones are missing - click one to find it on Soulseek."))
+        self.show_items(items)
+        todo = [(i, it["mbid"]) for i, it in enumerate(items) if it["key"] is None and it["mbid"]]
+        sig = self.art_ready
+
+        def fetch():
+            from concurrent.futures import ThreadPoolExecutor
+
+            def one(job):
+                i, mbid = job
+                if STOP_BG.is_set():
+                    return
+                try:
+                    data = http_bytes(f"https://coverartarchive.org/release-group/{mbid}/front-250", timeout=12)
+                    img = thumb_image(data, 160) if looks_like_image(data) else None
+                    if img is not None:
+                        sig.emit(i, img)
+                except Exception:
+                    pass
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                list(pool.map(one, todo))
+        if todo:
+            self.main.keep(Worker(fetch))
+
+    def on_art(self, i, img):
+        try:
+            if 0 <= i < len(self.items):
+                self.view.art[i] = QPixmap.fromImage(img)
+                self.view.update()
+        except RuntimeError:
+            pass      # the window was closed while covers were still coming
+
+    def on_click(self, i):
+        it = self.items[i]
+        if it["key"] is not None:
+            self.accept()
+            self.main.open_album(it["key"])
+            return
+        menu = QMenu(self)
+        q = f"{self.name} {it['title']}"
+        menu.addAction("Search on Soulseek").triggered.connect(lambda: (self.accept(), self.main.soul_query(q)))
+        menu.addAction("Add to wishlist").triggered.connect(lambda: self.main.wishlist_add(q))
+        if it["mbid"]:
+            menu.addAction("Open on MusicBrainz").triggered.connect(lambda: QDesktopServices.openUrl(
+                QUrl(f"https://musicbrainz.org/release-group/{it['mbid']}")))
+        menu.exec(QCursor.pos())
+
+
+# ----- when you listen: weekdays x hours
+class ListeningHeatmap(QWidget):
+    def __init__(self, main):
+        super().__init__()
+        self.main = main
+        self.grid = [[0.0] * 24 for _ in range(7)]
+        self.setMouseTracking(True)
+        self.setMinimumHeight(7 * 20 + 30)
+        self.setAccessibleName("When you listen: days of the week by hours")
+
+    def set_grid(self, grid):
+        self.grid = grid
+        peak = max((s, d, h) for d, row in enumerate(grid) for h, s in enumerate(row))
+        self.setAccessibleDescription(
+            "" if not peak[0] else _t(f"Your busiest hour: {_t(WEEKDAYS[peak[1]])}, {peak[2]:02d}:00"))
+        self.update()
+
+    def geometry_parts(self):
+        fm = QFontMetrics(self.font())
+        label_w = max(fm.horizontalAdvance(_t(d)) for d in WEEKDAYS) + 12
+        top = fm.height() + 6
+        cw = max(8.0, (self.width() - label_w - 4) / 24)
+        ch = max(10.0, (self.height() - top - 2) / 7)
+        return label_w, top, cw, ch
+
+    def cell_at(self, pos):
+        lw, top, cw, ch = self.geometry_parts()
+        h, d = int((pos.x() - lw) // cw), int((pos.y() - top) // ch)
+        return (d, h) if 0 <= d < 7 and 0 <= h < 24 and pos.x() >= lw else None
+
+    def mouseMoveEvent(self, e):
+        cell = self.cell_at(e.position().toPoint())
+        if cell is None:
+            QToolTip.hideText()
+            return
+        d, h = cell
+        secs = self.grid[d][h]
+        amount = f"{secs / 3600:.1f} h" if secs >= 3600 else f"{int(secs // 60)} min"
+        QToolTip.showText(e.globalPosition().toPoint(),
+                          _raw(f"{_t(WEEKDAYS[d])}, {h:02d}:00-{(h + 1) % 24:02d}:00:  {amount}"), self)
+
+    def paintEvent(self, _e):
+        sc = self.main.scheme
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        lw, top, cw, ch = self.geometry_parts()
+        peak = max(max(row) for row in self.grid) or 1.0
+        acc = QColor(sc["accent"])
+        empty = QColor(sc["text"])
+        empty.setAlphaF(0.07)
+        p.setPen(QColor(sc["sub"]))
+        for h in range(0, 24, 3):
+            p.drawText(QRectF(lw + h * cw, 0, cw * 3, top), int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom),
+                       f"{h:02d}")
+        for d in range(7):
+            p.setPen(QColor(sc["sub"]))
+            p.drawText(QRectF(0, top + d * ch, lw - 8, ch),
+                       int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter), _t(WEEKDAYS[d]))
+            p.setPen(Qt.PenStyle.NoPen)
+            for h in range(24):
+                v = self.grid[d][h] / peak
+                if v > 0:
+                    c = QColor(acc)
+                    c.setAlphaF(0.18 + 0.82 * math.sqrt(v))
+                else:
+                    c = empty
+                p.setBrush(c)
+                p.drawRoundedRect(QRectF(lw + h * cw + 1.5, top + d * ch + 1.5, cw - 3, ch - 3), 3, 3)
+        p.end()
+
+
+# ----- Ctrl+K: type to find anything
+class PaletteDelegate(QStyledItemDelegate):
+    def __init__(self, view, main):
+        super().__init__(view)
+        self.main = main
+
+    def paint(self, painter, option, index):
+        sc = self.main.scheme
+        painter.save()
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        if selected:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(sc["accent"]))
+            painter.drawRoundedRect(QRectF(option.rect).adjusted(2, 1, -2, -1), 6, 6)
+        r = option.rect.adjusted(12, 0, -12, 0)
+        kind = index.data(Qt.ItemDataRole.UserRole + 1) or ""
+        hint = index.data(Qt.ItemDataRole.UserRole + 2) or ""
+        fm = QFontMetrics(option.font)
+        right = f"{hint}   {kind}" if hint else kind
+        rw = fm.horizontalAdvance(right) + 8
+        painter.setPen(QColor(sc["on_accent"] if selected else sc["sub"]))
+        painter.drawText(r, int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter), right)
+        painter.setPen(QColor(sc["on_accent"] if selected else sc["text"]))
+        text = fm.elidedText(index.data(Qt.ItemDataRole.DisplayRole) or "", Qt.TextElideMode.ElideRight,
+                             max(40, r.width() - rw))
+        painter.drawText(r, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), text)
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        return QSize(200, QFontMetrics(option.font).height() + 14)
+
+
+class CommandPalette(QDialog):
+    """Everything in one search box: commands, songs, albums, artists and playlists."""
+
+    def __init__(self, main):
+        super().__init__(main, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.main = main
+        self.setAccessibleName("Command palette")
+        self.setObjectName("palette")
+        sc = main.scheme
+        self.setStyleSheet(f"QDialog#palette {{ background: {sc['panel']}; border: 1px solid {sc['border']}; "
+                           f"border-radius: 12px; }}")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(10, 10, 10, 10)
+        self.box = QLineEdit()
+        self.box.setPlaceholderText("Type a command, song, album, artist or playlist...")
+        self.box.setAccessibleName("Search everything")
+        self.box.installEventFilter(self)
+        v.addWidget(self.box)
+        self.list = QListWidget()
+        self.list.setItemDelegate(PaletteDelegate(self.list, main))
+        self.list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.list.setFrameShape(QFrame.Shape.NoFrame)
+        self.list.itemClicked.connect(lambda _i: self.run())
+        v.addWidget(self.list, 1)
+        self.entries = self.collect()
+        self.box.textChanged.connect(self.refresh)
+        width = min(640, max(420, main.width() - 120))
+        self.resize(width, 430)
+        top = main.mapToGlobal(QPoint((main.width() - width) // 2, 70))
+        self.move(top)
+        self.refresh("")
+        self.box.setFocus()
+
+    def collect(self):
+        """(label, kind, hint, folded label, action) for everything that can be picked."""
+        m = self.main
+        out, seen = [], set()
+
+        def add(label, kind, hint, fn):
+            out.append((label, kind, hint, _fold(label), fn))
+
+        def walk(menu, prefix=""):
+            for act in menu.actions():
+                if act.isSeparator() or not act.isEnabled():
+                    continue
+                if act.menu() is not None:
+                    walk(act.menu(), act.text().replace("&", ""))
+                    continue
+                text = act.text().replace("&", "").strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                add(text, _t("Command"), act.shortcut().toString(QKeySequence.SequenceFormat.NativeText),
+                    lambda a=act: a.trigger())
+        walk(m.menuBar())
+        for act in m.actions():
+            text = act.text().replace("&", "").strip()
+            if text and text not in seen and act.isEnabled():
+                seen.add(text)
+                add(text, _t("Command"), act.shortcut().toString(QKeySequence.SequenceFormat.NativeText),
+                    lambda a=act: a.trigger())
+        for name in list(SMART_PLAYLISTS) + sorted(m.playlists):
+            add(_t(name) if name in SMART_PLAYLISTS else name, _t("Playlist"), "",
+                lambda n=name: (m.set_left_view(2), m.show_playlist(n)))
+        for akey, name in m.artists.items():
+            add(name, _t("Artist"), "", lambda a=akey: (m.leave_overlays(), m.show_artist(a), m.mark_tab(1)))
+        for key, alb in m.albums.items():
+            add(f"{alb['album']}  ·  {alb['artist']}", _t("Album"), "",
+                lambda k=key: (m.leave_overlays(), m.open_album(k)))
+        self.songs = [(f"{t['title']}  ·  {song_artist(t)}", _fold(f"{t['title']} {song_artist(t)} {t['album']}"), p)
+                      for p, (t, _k) in m.track_by_path.items()]
+        return out
+
+    def refresh(self, text):
+        self.list.clear()
+        q = _fold(text)
+        scored = []
+        for label, kind, hint, folded, fn in self.entries:
+            s = fuzzy_score(q, folded) if q else (1.0 if kind == _t("Command") else None)
+            if s is not None:
+                bonus = 40 if kind == _t("Command") else (20 if kind in (_t("Artist"), _t("Playlist")) else 0)
+                scored.append((s + bonus, label, kind, hint, fn))
+        if len(q) >= 2:      # songs: plain word match only, they are many
+            words = q.split()
+            n = 0
+            for label, folded, path in self.songs:
+                if all(w in folded for w in words):
+                    scored.append((180 if folded.startswith(q) else 120, label, _t("Song"), "",
+                                   lambda p=path: self.main.play_path(p)))
+                    n += 1
+                    if n >= 200:
+                        break
+        scored.sort(key=lambda s: -s[0])
+        for _s, label, kind, hint, fn in scored[:60]:
+            item = QListWidgetItem(_raw(label))
+            item.setData(Qt.ItemDataRole.UserRole + 1, _raw(kind))
+            item.setData(Qt.ItemDataRole.UserRole + 2, _raw(hint))
+            item.setData(Qt.ItemDataRole.UserRole + 3, fn)
+            self.list.addItem(item)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+
+    def eventFilter(self, obj, event):
+        if obj is self.box and event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            if key in (Qt.Key.Key_Down, Qt.Key.Key_Up, Qt.Key.Key_PageDown, Qt.Key.Key_PageUp):
+                step = {Qt.Key.Key_Down: 1, Qt.Key.Key_Up: -1, Qt.Key.Key_PageDown: 8, Qt.Key.Key_PageUp: -8}[key]
+                if self.list.count():
+                    self.list.setCurrentRow(max(0, min(self.list.count() - 1, self.list.currentRow() + step)))
+                return True
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.run()
+                return True
+            if key == Qt.Key.Key_Escape:
+                self.reject()
+                return True
+        return super().eventFilter(obj, event)
+
+    def run(self):
+        item = self.list.currentItem()
+        if item is None:
+            return
+        fn = item.data(Qt.ItemDataRole.UserRole + 3)
+        self.accept()
+        if callable(fn):
+            QTimer.singleShot(0, fn)
+
+
+# ----- lyrics on the desktop, over everything
+class DesktopLyrics(QWidget):
+    """A see-through band with the current lyric line, always on top. Locked, clicks go through it;
+    unlocked, it can be dragged, resized with the wheel and set up with a right-click."""
+
+    def __init__(self, main):
+        super().__init__(None)
+        self.main = main
+        self.line, self.next_line, self.extra = "", "", ""
+        self._drag = None
+        self.hovering = False
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setWindowTitle("eozMP lyrics")
+        self.apply_flags()
+        self.fit()
+
+    @property
+    def cfg(self):
+        return self.main.cfg
+
+    def apply_flags(self):
+        flags = (Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool
+                 | Qt.WindowType.WindowDoesNotAcceptFocus)
+        if self.cfg.get("desktop_lyrics_locked"):
+            flags |= Qt.WindowType.WindowTransparentForInput
+        visible = self.isVisible()
+        self.setWindowFlags(flags)
+        if visible:
+            self.show()
+
+    def size_px(self):
+        return int(min(72, max(16, int(self.cfg.get("desktop_lyrics_size") or 30))))
+
+    def fonts(self):
+        big = QFont(pick_display_family() or self.font().family())
+        big.setPixelSize(self.size_px())
+        big.setWeight(QFont.Weight.Bold)
+        small = QFont(big)
+        small.setPixelSize(max(11, int(self.size_px() * 0.58)))
+        small.setWeight(QFont.Weight.DemiBold)
+        return big, small
+
+    def fit(self):
+        big, small = self.fonts()
+        h = QFontMetrics(big).height() + 2 * QFontMetrics(small).height() + 34
+        w = int(self.cfg.get("desktop_lyrics_width") or 900)
+        self.resize(max(320, w), h)
+
+    def set_lines(self, line, next_line, extra):
+        if (line, next_line, extra) != (self.line, self.next_line, self.extra):
+            self.line, self.next_line, self.extra = line, next_line, extra
+            self.update()
+
+    def outlined(self, p, rect, text, font, fill, outline_alpha=210):
+        """Text that stays readable on any wallpaper: a dark outline under a bright fill."""
+        if not text:
+            return
+        fm = QFontMetrics(font)
+        text = fm.elidedText(text, Qt.TextElideMode.ElideRight, rect.width())
+        x = rect.x() + (rect.width() - fm.horizontalAdvance(text)) / 2
+        y = rect.y() + (rect.height() + fm.ascent() - fm.descent()) / 2
+        path = QPainterPath()
+        path.addText(QPointF(x, y), font, text)
+        p.setPen(QPen(QColor(0, 0, 0, outline_alpha), max(2.0, font.pixelSize() / 9),
+                      Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(fill)
+        p.drawPath(path)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        locked = bool(self.cfg.get("desktop_lyrics_locked"))
+        if not locked:
+            p.setPen(QPen(QColor(255, 255, 255, 60), 1))
+            p.setBrush(QColor(0, 0, 0, 120 if self.hovering else 70))
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 14, 14)
+        big, small = self.fonts()
+        bh, sh = QFontMetrics(big).height(), QFontMetrics(small).height()
+        y = 12
+        accent = QColor(self.main.scheme["accent"]) if self.cfg.get("desktop_lyrics_accent") else QColor("#ffffff")
+        self.outlined(p, QRect(16, y, self.width() - 32, bh), self.line, big, accent)
+        y += bh + 2
+        if self.extra:
+            self.outlined(p, QRect(16, y, self.width() - 32, sh), self.extra, small, QColor(255, 255, 255, 225), 180)
+            y += sh
+        if self.next_line:
+            self.outlined(p, QRect(16, y, self.width() - 32, sh), self.next_line, small, QColor(255, 255, 255, 140), 120)
+        p.end()
+
+    def enterEvent(self, _e):
+        self.hovering = True
+        self.update()
+
+    def leaveEvent(self, _e):
+        self.hovering = False
+        self.update()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._drag = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+
+    def mouseMoveEvent(self, e):
+        if self._drag is not None and e.buttons() & Qt.MouseButton.LeftButton:
+            self.move(e.globalPosition().toPoint() - self._drag)
+
+    def mouseReleaseEvent(self, e):
+        if self._drag is not None:
+            self._drag = None
+            self.cfg["desktop_lyrics_pos"] = [self.x(), self.y()]
+            save_config(self.cfg)
+
+    def wheelEvent(self, e):
+        step = 2 if e.angleDelta().y() > 0 else -2
+        self.cfg["desktop_lyrics_size"] = min(72, max(16, self.size_px() + step))
+        self.fit()
+        self.update()
+
+    def contextMenuEvent(self, e):
+        self.main.desktop_lyrics_menu(e.globalPos())
+
+
+class Extras3Mixin:
+    """The v1.5 features of the main window."""
+    # defaults, because a resumed song can start before __init__ reaches init_extras3()
+    lyric_extras = {}
+    lyrics_index = None
+    desktop_lyrics = None
+    _indexer = None
+    _index_listeners = ()
+    _moved_notice = -1
+
+    def init_extras3(self):
+        STOP_BG.clear()          # a new window: background jobs may run again (a closed one set it)
+        self.lyric_extras = {}
+        self.lyrics_index = None
+        self._indexer = None
+        self._index_listeners = []
+        self._moved_notice = -1
+        self.desktop_lyrics = None
+        self.lyrics_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.lyrics_list.customContextMenuRequested.connect(self.lyric_menu)
+        if self.tray_menu is not None:
+            quit_act = self.tray_menu.actions()[-1]
+            act = QAction("Desktop lyrics", self.tray_menu)
+            act.triggered.connect(lambda: self.toggle_desktop_lyrics())
+            self.tray_menu.insertAction(quit_act, act)
+            act = QAction("Unlock desktop lyrics", self.tray_menu)
+            act.triggered.connect(lambda: self.set_desktop_lyrics_locked(False))
+            self.tray_menu.insertAction(quit_act, act)
+            self.tray_menu.insertSeparator(quit_act)
+        if self.cfg.get("desktop_lyrics_on"):
+            QTimer.singleShot(0, lambda: self.set_desktop_lyrics(True))
+
+    def build_extras3_menu(self):
+        lib = [m for m in self.menuBar().findChildren(QMenu) if m.title() == _t("&Library")][0]
+        for text, key, fn in (("Search in lyrics...", "Ctrl+Shift+F", self.open_lyrics_search),
+                              ("Repair moved songs...", "", lambda: self.open_moved_songs())):
+            act = QAction(text, self)
+            if key:
+                act.setShortcut(key)
+            act.triggered.connect(lambda checked=False, f=fn: f())
+            lib.addAction(act)
+        for text, key, fn in (("Find anything (songs, albums, commands)", "Ctrl+K", self.open_palette),
+                              ("Desktop lyrics on / off", "Ctrl+Shift+L", self.toggle_desktop_lyrics)):
+            act = QAction(text, self)
+            act.setShortcut(key)
+            act.triggered.connect(lambda checked=False, f=fn: f())
+            self.addAction(act)
+
+    def after_library_built(self):
+        self.refresh_remote_library()
+        self.check_moved_songs()
+
+    def shutdown_extras3(self):
+        if self.desktop_lyrics is not None:
+            if self.desktop_lyrics.isVisible():
+                self.cfg["desktop_lyrics_pos"] = [self.desktop_lyrics.x(), self.desktop_lyrics.y()]
+            self.desktop_lyrics.close()
+
+    # ----- right-click on a lyric line
+    def lyric_row_at(self, pos):
+        item = self.lyrics_list.itemAt(pos)
+        row = self.lyrics_list.row(item) - self.ly_off if item is not None else -1
+        return row if 0 <= row < len(self.lyric_lines) else -1
+
+    def lyric_menu(self, pos):
+        row = self.lyric_row_at(pos)
+        menu = QMenu(self)
+        if row >= 0 and self.lyric_lines[row].strip():
+            line = self.lyric_lines[row]
+            menu.addAction("Look up words...").triggered.connect(lambda: run_dialog(WordLookupDialog(self, line)))
+            menu.addAction("Share as a picture...").triggered.connect(lambda: self.open_lyric_card(row))
+            menu.addAction("Copy line").triggered.connect(lambda: QApplication.clipboard().setText(line))
+            menu.addSeparator()
+        if self.lyric_lines:
+            menu.addAction("Search in lyrics...").triggered.connect(self.open_lyrics_search)
+            menu.addAction("Desktop lyrics on / off").triggered.connect(self.toggle_desktop_lyrics)
+        if menu.actions():
+            menu.exec(self.lyrics_list.viewport().mapToGlobal(pos))
+
+    def open_lyric_card(self, row=-1):
+        if not any(l.strip() for l in self.lyric_lines):
+            self.statusBar().showMessage("This song has no lyrics to share.", 5000)
+            return
+        if row < 0:
+            row = self.lyric_idx if 0 <= self.lyric_idx < len(self.lyric_lines) and self.lyric_lines[self.lyric_idx] \
+                else next(i for i, l in enumerate(self.lyric_lines) if l.strip())
+        run_dialog(LyricCardDialog(self, row))
+        save_config(self.cfg)
+
+    # ----- search in lyrics
+    def open_lyrics_search(self):
+        if self.lyrics_index is None:
+            self.lyrics_index = load_lyrics_index()
+        run_dialog(LyricsSearchDialog(self))
+
+    def update_lyrics_index(self, on_progress, on_done):
+        """Bring the lyrics index up to date in the background; on_progress(i, n), on_done(index)."""
+        self._index_listeners.append((on_progress, on_done))
+        if self._indexer is not None and self._indexer.isRunning():
+            return
+        tracks = [t for t, _k in self.queue]
+        w = LyricsIndexer(tracks, dict(self.lyrics_index or {}))
+        w.progress.connect(lambda i, n: self._tell_index("progress", i, n))
+        w.done.connect(self.on_lyrics_indexed)
+        self._indexer = w
+        self.keep(w)
+
+    def _tell_index(self, what, *args):
+        for on_progress, on_done in list(self._index_listeners):
+            try:
+                (on_progress if what == "progress" else on_done)(*args)
+            except RuntimeError:
+                pass        # its window was closed
+
+    def on_lyrics_indexed(self, index):
+        self.lyrics_index = index
+        self._tell_index("done", index)
+        self._index_listeners = []
+
+    # ----- songs that moved
+    def check_moved_songs(self):
+        """After a scan: if playlists or favorites point at songs that moved, say so once."""
+        if not self.queue:
+            return
+        refs = song_references(self.playlists, self.stats)
+        tracks = [t for t, _k in self.queue]
+        w = Worker(lambda: find_moved_songs(refs, tracks))
+        w.ok.connect(self.on_moved_checked)
+        w.fail.connect(lambda _m: None)
+        self.keep(w)
+
+    def on_moved_checked(self, found):
+        n = len(sure_moves(found))
+        if n and n != self._moved_notice:
+            self.statusBar().showMessage(_t(f"{n} song(s) in your playlists or favorites moved to another folder. "
+                                            "Library > Repair moved songs puts them back in place."), 20000)
+        self._moved_notice = n
+
+    def open_moved_songs(self):
+        refs = song_references(self.playlists, self.stats)
+        tracks = [t for t, _k in self.queue]
+        self.statusBar().showMessage("Looking for songs that moved...", 4000)
+        w = Worker(lambda: find_moved_songs(refs, tracks))
+        w.ok.connect(lambda found: self.show_moved_songs(found, refs))
+        w.fail.connect(lambda m: self.statusBar().showMessage(_t(f"Couldn't check ({m})"), 8000))
+        self.keep(w)
+
+    def show_moved_songs(self, found, refs):
+        if not found:
+            QMessageBox.information(self, "Repair moved songs",
+                                    "Every song in your playlists, favorites and stats is where eozMP expects it.")
+            return
+        run_dialog(MovedSongsDialog(self, found, refs))
+
+    # ----- artist timeline
+    def open_timeline(self):
+        if self.current_artist in self.artists:
+            run_dialog(TimelineDialog(self, self.current_artist))
+            save_config(self.cfg)
+
+    # ----- command palette
+    def open_palette(self):
+        if self.isHidden():
+            self.show_main()
+        run_dialog(CommandPalette(self))
+
+    # ----- desktop lyrics
+    def toggle_desktop_lyrics(self):
+        self.set_desktop_lyrics(not (self.desktop_lyrics is not None and self.desktop_lyrics.isVisible()))
+
+    def set_desktop_lyrics(self, on):
+        self.cfg["desktop_lyrics_on"] = bool(on)
+        if on:
+            if self.desktop_lyrics is None:
+                self.desktop_lyrics = DesktopLyrics(self)
+            d = self.desktop_lyrics
+            pos = self.cfg.get("desktop_lyrics_pos") or []
+            if len(pos) == 2 and QApplication.screenAt(QPoint(int(pos[0]) + d.width() // 2,
+                                                              int(pos[1]) + d.height() // 2)) is not None:
+                d.move(int(pos[0]), int(pos[1]))
+            else:    # first time, or its monitor is gone: low in the middle of the main screen
+                area = QApplication.primaryScreen().availableGeometry()
+                d.move(area.center().x() - d.width() // 2, area.bottom() - d.height() - 60)
+            d.show()
+            self.update_desktop_lyrics()
+            if self.cfg.get("desktop_lyrics_locked"):
+                self.statusBar().showMessage(
+                    "Desktop lyrics are locked: clicks go through them. Unlock them from the tray icon or with "
+                    "Ctrl+K > Unlock.", 8000)
+        elif self.desktop_lyrics is not None:
+            self.cfg["desktop_lyrics_pos"] = [self.desktop_lyrics.x(), self.desktop_lyrics.y()]
+            self.desktop_lyrics.hide()
+        save_config(self.cfg)
+
+    def set_desktop_lyrics_locked(self, locked):
+        self.cfg["desktop_lyrics_locked"] = bool(locked)
+        save_config(self.cfg)
+        if self.desktop_lyrics is None or not self.desktop_lyrics.isVisible():
+            self.set_desktop_lyrics(True)
+        else:
+            self.desktop_lyrics.apply_flags()
+            self.desktop_lyrics.update()
+        if locked:
+            self.statusBar().showMessage("Locked: clicks now go through the lyrics. Unlock them from the tray icon.",
+                                         8000)
+
+    def desktop_lyrics_menu(self, pos):
+        menu = QMenu(self)
+        lock = menu.addAction("Lock (clicks go through)")
+        lock.triggered.connect(lambda: self.set_desktop_lyrics_locked(True))
+        extra = menu.addAction("Show translation or reading")
+        extra.setCheckable(True)
+        extra.setChecked(bool(self.cfg.get("desktop_lyrics_extra", True)))
+        extra.triggered.connect(lambda on: (self.cfg.__setitem__("desktop_lyrics_extra", on),
+                                            self.update_desktop_lyrics()))
+        accent = menu.addAction("Current line in the accent colour")
+        accent.setCheckable(True)
+        accent.setChecked(bool(self.cfg.get("desktop_lyrics_accent")))
+        accent.triggered.connect(lambda on: (self.cfg.__setitem__("desktop_lyrics_accent", on),
+                                             self.desktop_lyrics.update()))
+        menu.addSeparator()
+        for text, delta in (("Bigger text", 4), ("Smaller text", -4), ("Wider", 120), ("Narrower", -120)):
+            act = menu.addAction(text)
+            act.triggered.connect(lambda checked=False, t=text, d=delta: self.resize_desktop_lyrics(t, d))
+        menu.addSeparator()
+        menu.addAction("Hide desktop lyrics").triggered.connect(lambda: self.set_desktop_lyrics(False))
+        menu.exec(pos)
+        save_config(self.cfg)
+
+    def resize_desktop_lyrics(self, what, delta):
+        d = self.desktop_lyrics
+        if d is None:
+            return
+        if what in ("Bigger text", "Smaller text"):
+            self.cfg["desktop_lyrics_size"] = min(72, max(16, d.size_px() + delta))
+        else:
+            self.cfg["desktop_lyrics_width"] = min(2400, max(320, d.width() + delta))
+        d.fit()
+        d.update()
+
+    def update_desktop_lyrics(self):
+        d = self.desktop_lyrics
+        if d is None or not d.isVisible():
+            return
+        line = nxt = extra = ""
+        if self.lyric_times and 0 <= self.lyric_idx < len(self.lyric_lines):
+            line = self.lyric_lines[self.lyric_idx] or "♪"
+            nxt = next((l for l in self.lyric_lines[self.lyric_idx + 1:self.lyric_idx + 4] if l.strip()), "")
+            if self.cfg.get("desktop_lyrics_extra", True):
+                e = self.lyric_extras.get(line.strip()) or {}
+                extra = e.get("t") or e.get("r") or ""
+        elif 0 <= self.index < len(self.queue):
+            t = self.queue[self.index][0]
+            line = t["title"]
+            nxt = song_artist(t)
+        d.set_lines(line, nxt, extra)
+
+    # ----- phone remote: the library
+    def refresh_remote_library(self):
+        if self.remote is not None:
+            self.remote.library = remote_library(self.albums, self.artists, self.by_artist)
+            with self.remote.art_lock:
+                self.remote.art.clear()      # covers may have changed with the scan
+
+    def remote_library_command(self, do, value):
+        """Commands from the phone's library page. Ids are only looked up, never used as paths."""
+        lib = self.remote.library if self.remote is not None else {}
+        if do in ("play", "queue", "playnext"):
+            song = lib.get("songs", {}).get(value)
+            if not song or song["path"] not in self.qindex:
+                return
+            path = song["path"]
+            if do == "play":
+                alb = lib["albums"].get(song["albumId"])
+                paths = [lib["songs"][s]["path"] for s in (alb["songs"] if alb else []) if s in lib["songs"]]
+                paths = [p for p in paths if p in self.qindex] or [path]
+                self.play_paths(paths, alb["title"] if alb else song["album"], start=paths.index(path)
+                                if path in paths else 0)
+            else:
+                self.queue_add([path], play_next=do == "playnext")
+        elif do in ("playalbum", "shufflealbum"):
+            alb = lib.get("albums", {}).get(value)
+            if alb:
+                paths = [lib["songs"][s]["path"] for s in alb["songs"] if s in lib["songs"]]
+                paths = [p for p in paths if p in self.qindex]
+                if paths:
+                    self.play_paths(paths, alb["title"], shuffle=do == "shufflealbum")
+        elif do == "unqueue":
+            self.remove_queue_row(int(float(value)))
+
 # ---------------------------------------------------------------- main window
-class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
+class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
     def __init__(self):
         super().__init__()
         make_labels_plain()
@@ -8577,6 +10694,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         if self.cfg["media_keys"]:
             self.register_media_keys()
         self.init_extras()
+        self.init_extras3()
         if LOAD_PROBLEMS:
             QTimer.singleShot(0, self.show_load_problems)
         QTimer.singleShot(3000, self.auto_check_updates)   # after start-up, so it never slows it down
@@ -8967,6 +11085,16 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.translate_btn.setToolTip("Show a translation under each lyric line")
         self.translate_btn.clicked.connect(self.show_translate_menu)
         src_row.addWidget(self.translate_btn)
+        for text, tip, fn in (("Share", "Put a few lines on a picture to share (right-click a line for more)",
+                               lambda: self.open_lyric_card()),
+                              ("On desktop", "Show the current line over everything on your desktop (Ctrl+Shift+L)",
+                               lambda: self.toggle_desktop_lyrics())):
+            link = QPushButton(text)
+            link.setObjectName("link")
+            link.setCursor(Qt.CursorShape.PointingHandCursor)
+            link.setToolTip(tip)
+            link.clicked.connect(fn)
+            src_row.addWidget(link)
         src_row.addStretch(1)
         titles.addLayout(src_row)
         titles.addStretch(1)
@@ -9147,6 +11275,17 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.stats_hint = QLabel("")
         self.stats_hint.setObjectName("sub")
         stv.addWidget(self.stats_hint)
+        hm_row = QHBoxLayout()
+        hm_lab = QLabel("When you listen")
+        hm_lab.setObjectName("heading3")
+        self.heat_peak = QLabel("")
+        self.heat_peak.setObjectName("sub")
+        hm_row.addWidget(hm_lab)
+        hm_row.addWidget(self.heat_peak, 1)
+        stv.addLayout(hm_row)
+        self.heatmap = ListeningHeatmap(self)
+        self.heatmap.setFixedHeight(180)
+        stv.addWidget(self.heatmap)
         tables = QHBoxLayout()
         self.top_songs = self.make_stats_table(["Song", "Artist", "Plays"])
         self.top_artists = self.make_stats_table(["Artist", "Plays"])
@@ -9183,8 +11322,12 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.artist_play_btn.clicked.connect(lambda: self.play_artist(shuffle=False))
         art_shuf = QPushButton("Shuffle")
         art_shuf.clicked.connect(lambda: self.play_artist(shuffle=True))
+        art_tl = QPushButton("Timeline")
+        art_tl.setToolTip("All of this artist's albums along the years, with the ones you're missing")
+        art_tl.clicked.connect(lambda: self.open_timeline())
         abt.addWidget(self.artist_play_btn)
         abt.addWidget(art_shuf)
+        abt.addWidget(art_tl)
         abt.addStretch(1)
         at.addStretch(1)
         at.addWidget(self.artist_title)
@@ -9579,6 +11722,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             "Copyright (C) 2026 Eren Özer. Free software under the GNU General Public License v3."))
         hlp.addAction(act)
         self.build_extras_menu()
+        self.build_extras3_menu()
 
     # ----- library
     def add_folder(self):
@@ -9777,6 +11921,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             self.show_artist(self.current_artist, switch=False)
         self.refresh_queue_view()
         self.built_tracks = tracks
+        self.after_library_built()
 
     def visible_album_count(self):
         n = 0
@@ -10677,6 +12822,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
             # let background jobs finish (a library scan, or organize halfway through moving a song)
             STOP_BG.set()
             self.shutdown_extras2()
+            self.shutdown_extras3()
             self.stop_slskd()     # only stops the slskd eozMP started itself
             deadline = time.time() + 10
             for w in list(self.workers):
@@ -11956,6 +14102,7 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.lyric_line.setText(_raw(text))
         if self.mini is not None:
             self.mini.set_lyric(text)
+        self.update_desktop_lyrics()
 
     def current_key(self):
         return self.queue[self.index][1] if 0 <= self.index < len(self.queue) else None
@@ -12112,6 +14259,9 @@ class Player(ExtrasMixin, Extras2Mixin, QMainWindow):
         self.stats_hint.setText(
             "" if st["plays"] else
             "Nothing here yet. A song counts as played after 30 seconds (or half of it, if it's short).")
+        grid = listening_heatmap(self.stats["events"], since)
+        self.heatmap.set_grid(grid)
+        self.heat_peak.setText(_raw(self.heatmap.accessibleDescription()))
 
     # ----- album covers from the internet
     def maybe_fetch_cover(self, key):

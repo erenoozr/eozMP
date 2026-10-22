@@ -20,7 +20,8 @@ from test_mpv_engine import APP, tone, wait_for  # noqa: E402
 
 assert APP is not None   # the shared QApplication
 
-HOME_PATHS = ("CONFIG_FILE", "CRASH_FILE", "CACHE_FILE", "PLAYLIST_FILE", "LYRICS_DIR", "UI_DIR", "STATS_FILE", "COVERS_DIR")
+HOME_PATHS = ("CONFIG_FILE", "CRASH_FILE", "CACHE_FILE", "PLAYLIST_FILE", "LYRICS_DIR", "UI_DIR", "STATS_FILE", "COVERS_DIR",
+              "LYRICS_INDEX_FILE", "TRANSLATE_DIR")
 
 
 def dispose_player(player):

@@ -33,7 +33,12 @@ KEEP = {"Soulseek", "&Soulseek", "Apple Music", "Arial", "Georgia", "Fusion", "L
         "Cover Art (Front)", "Cover Art (Back)", "Cover Art (Other)", "not a Matroska file",
         "Various Artists",
         # UPnP / HTTP field names and an internal error text; never shown
-        "Channel", "DesiredVolume", "Master", "SetVolume", "bytes */{0}", "not an http address"}   # a compilation's album artist: a name, like any other artist
+        "Channel", "DesiredVolume", "Master", "SetVolume", "bytes */{0}", "not an http address",
+        # font and folder names, and the kana table and Greek "Ou" used to read lyrics in Latin letters; never shown
+        "Helvetica Neue", "Pictures", "Ou",
+        "a i u e o ka ki ku ke ko ga gi gu ge go sa shi su se so za ji zu ze zo ta chi tsu te to da ji zu de do "
+        "na ni nu ne no ha hi fu he ho ba bi bu be bo pa pi pu pe po ma mi mu me mo ya yu yo ra ri ru re ro "
+        "wa wi we o n a i u e o vu"}   # a compilation's album artist: a name, like any other artist
 TECH_RE = re.compile(r"^[\w\-{}.]*:(?!\s|$)|^\S*[/|]\S*$|^/|^\{0\}\.|rgba\(|font-|^color:|^explorer |"
                      r"^[\w-]+-[A-Z][\w-]*$|^[A-Z]{2,}\{0\}$|^eozMP(/|-backup)|^release|^\d+px|^M-SEARCH|\?v=|@\w|=\w+=")
 

@@ -8,7 +8,7 @@ step by step.
 [Finding your way around](#finding-your-way-around) · [Playing music](#playing-music) ·
 [Lyrics, mini player and fullscreen](#lyrics-mini-player-and-fullscreen) ·
 [Playlists, Browse, Search, Home and Stats](#playlists-browse-search-home-and-stats) ·
-[New in 1.4](#new-in-14) · [New in 1.3](#new-in-13) ·
+[New in 1.5](#new-in-15) · [New in 1.4](#new-in-14) · [New in 1.3](#new-in-13) ·
 [Soulseek](#soulseek-logging-in-and-downloading) · [Preferences](#making-it-yours-preferences) ·
 [Optional extras](#optional-extras-mpv-vlc-equalizer-and-visualizer) · [Backups and updates](#backups-updates-and-your-data) ·
 [Troubleshooting](#troubleshooting) · [Shortcuts](#keyboard-and-mouse-shortcuts)
@@ -18,7 +18,7 @@ step by step.
 | Item | Needed? | Where it comes from |
 | --- | --- | --- |
 | A Windows 10 or 11 PC | Yes | |
-| `eozMP-Setup-1.4.exe` | Yes | The [latest release](../../releases/latest) of this repository |
+| `eozMP-Setup-1.5.exe` | Yes | The [latest release](../../releases/latest) of this repository |
 | Your music files (mp3, flac, m4a, wav, ogg and more) | Yes | Your own folders |
 | An internet connection | For lyrics and covers | |
 | Python 3 | Only to build eozMP yourself | [python.org/downloads](https://www.python.org/downloads/) |
@@ -32,7 +32,7 @@ A Soulseek account is free. slskd creates it for you the first time it connects 
 
 ### The easy way: the installer
 
-1. Open the [latest release](../../releases/latest) and download **eozMP-Setup-1.4.exe** under *Assets*.
+1. Open the [latest release](../../releases/latest) and download **eozMP-Setup-1.5.exe** under *Assets*.
 2. Double-click it. If Windows shows a blue **Windows protected your PC** box, click **More info**, then
    **Run anyway**. This happens because the app is new and unsigned.
 3. Pick a language (English or Türkçe). Setup then asks, step by step, what to install:
@@ -268,6 +268,51 @@ web:
 
 Soulseek is a file-sharing network. Only download music you're allowed to have.
 
+## New in 1.5
+
+### Lyrics you can read, search and share
+
+- **Reading in Latin letters:** on the Lyrics page click **Translate** and tick **Show how it's read (Latin
+  letters)**. Lines in Japanese, Korean, Russian, Arabic, Hindi and other scripts get their reading in small italic
+  letters under them (*yoru ni kakeru*), on their own or together with a translation. Without internet, Cyrillic,
+  Greek, Korean and kana are still read on your PC.
+- **Look up words:** right-click a lyric line → **Look up words...**. Click any word to see its meaning (noun, verb...)
+  and how it's read, in the language you pick. Japanese and Chinese lines are split into words for you.
+- **Share as a picture:** right-click a line → **Share as a picture...** (or click **Share** on the Lyrics page).
+  Tick up to 8 lines and pick a look (**Blurred cover**, **Album colours**, **Midnight**, **Paper**) and a size
+  (**Square**, **Story** for phones, **Wide**). The picture uses the album cover and its colours, and can carry the
+  reading and the translation too. **Copy picture** or **Save as PNG...**.
+- **Search in lyrics:** **Library → Search in lyrics...** (Ctrl+Shift+F). Type a few words you remember and every
+  song whose lyrics have them is listed, with the matching line. Double-click one to play it with its lyrics. The
+  first search reads all your lyrics once (you can already search while it does); later searches start at once.
+- **Desktop lyrics:** click **On desktop** on the Lyrics page (or press Ctrl+Shift+L). The current line, the
+  next line and the translation float over everything on your desktop, readable on any wallpaper. Drag it where you
+  want, scroll the mouse wheel over it to change the size, right-click it for more. **Lock** makes clicks go through
+  it; unlock it from the tray icon.
+
+### Finding your way
+
+- **Find anything:** press **Ctrl+K** and type. Songs, albums, artists, playlists and every command in the menus show
+  up as you type (letters in order are enough: *dsk lyr* finds *Desktop lyrics*). Enter opens or runs the first one.
+- **Artist timeline:** on an artist's page click **Timeline**. All of the artist's albums and EPs are shown along
+  the years; the ones you have are in colour, the ones you're missing are faded. Click a faded one to search it on
+  Soulseek or add it to your wishlist.
+- **When you listen:** the Stats page shows a heatmap of the days and hours you listen most, for the period you
+  picked, and your busiest hour.
+
+### Keeping things in place
+
+- **Repair moved songs:** if you move or rename music folders, playlists, favorites and play counts would point
+  at the old places. After a scan eozMP says so, and **Library → Repair moved songs...** finds where each song went
+  (by its file name and its album and artist folders). Check the suggestions and click **Repair**. Nothing is moved
+  or deleted; only eozMP's lists are updated.
+
+### Phone remote
+
+- The phone remote has **Playing**, **Library** and **Queue** tabs. Search your whole library from the phone, open
+  albums and artists, play a song (its album keeps playing after it), play it next or add it to the queue, and remove
+  songs from the queue. Song files' locations on your PC are never sent to the phone.
+
 ## New in 1.4
 
 - **Errors are logged, not fatal.** If something unexpected goes wrong, eozMP shows a short message and writes the
@@ -407,6 +452,7 @@ eozMP keeps its own data in your user folder (`C:\Users\YOURNAME`):
 | `.simple_music_player_lyrics` | Lyrics found online |
 | `.simple_music_player_covers` | Covers found online |
 | `.simple_music_player_translations` | Translated lyrics |
+| `.simple_music_player_lyrics_index.json` | The words of every song's lyrics, for **Search in lyrics** |
 | `.simple_music_player_quality.json` | Audio quality check results |
 
 ## Troubleshooting
@@ -451,4 +497,8 @@ The same list is inside the app under **Help → Keyboard shortcuts** (F1).
 | Close the queue panel or fullscreen | Esc |
 | Play / pause, next, previous from anywhere | Your keyboard's media keys |
 | Mini player: volume / jump in song / back to full player | Mouse wheel / click the bottom bar / double-click |
+| Find anything (songs, albums, artists, commands) | Ctrl+K |
+| Search in lyrics | Ctrl+Shift+F |
+| Desktop lyrics on / off | Ctrl+Shift+L |
 | Lyrics: jump to a line | Click the line |
+| Lyrics: look up words, share as a picture, copy | Right-click the line |
