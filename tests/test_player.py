@@ -11,6 +11,8 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt6 import sip  # noqa: E402
+from PyQt6.QtCore import QCoreApplication  # noqa: E402
 from PyQt6.QtMultimedia import QMediaPlayer  # noqa: E402
 
 from test_core import TempDirTest, mp  # noqa: E402
@@ -19,6 +21,17 @@ from test_mpv_engine import APP, tone, wait_for  # noqa: E402
 assert APP is not None   # the shared QApplication
 
 HOME_PATHS = ("CONFIG_FILE", "CRASH_FILE", "CACHE_FILE", "PLAYLIST_FILE", "LYRICS_DIR", "UI_DIR", "STATS_FILE", "COVERS_DIR")
+
+
+def dispose_player(player):
+    """Close a Player. processEvents() never runs deleteLater(), so a closed Player stays alive; its
+    app-wide event filter is taken off here, or every later test gets slower until the suite seems to hang."""
+    if sip.isdeleted(player):
+        return
+    player.quitting = True
+    player.close()
+    QCoreApplication.instance().removeEventFilter(player)
+    player.deleteLater()
 
 
 class PlayerHarness(TempDirTest):
@@ -68,9 +81,7 @@ class PlayerHarness(TempDirTest):
             return False
 
     def close_player(self):
-        self.player.quitting = True
-        self.player.close()
-        self.player.deleteLater()
+        dispose_player(self.player)
 
     def title(self):
         p = self.player
@@ -195,7 +206,7 @@ class PlayerTest(PlayerHarness):
         self.assertEqual(saved["ctx_kind"], "Mix")
         self.close_player()
         again = mp.Player()
-        self.addCleanup(lambda: (setattr(again, "quitting", True), again.close(), again.deleteLater()))
+        self.addCleanup(dispose_player, again)
         self.assertTrue(wait_for(lambda: again.qindex and again.index >= 0, 8))
         self.assertEqual(again.ctx_kind, "Mix")
         self.assertEqual(again.ctx_paths, [str(self.songs[3]), str(self.songs[1])])
