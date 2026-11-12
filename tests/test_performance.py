@@ -501,3 +501,31 @@ class FullscreenMotionTest(PlayerHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NowPlayingTickTest(PlayerHarness):
+    """The now-playing bars tick 7 times a second; repainting the whole song list each time kept a
+    CPU core busy while music played. Only the playing row's first cell may be repainted."""
+
+    def test_tick_repaints_only_the_playing_cell(self):
+        self.make_player(["One", "Two", "Three"])
+        p = self.player
+        p.resize(1200, 800)
+        p.show()
+        APP.processEvents()
+        p.np_timer.stop()
+        table = p.track_table
+        paths = [f"song{i}" for i in range(3)]
+        table.setRowCount(3)
+        table.paths_fn = lambda rows: [paths[r] for r in rows if r < len(paths)]
+        regions = []
+        with mock.patch.object(p.stack, "currentIndex", return_value=0), \
+                mock.patch.object(table, "isVisible", return_value=True), \
+                mock.patch.object(p, "current_path", return_value="song1"), \
+                mock.patch.object(p.player, "playbackState", return_value=mp.QMediaPlayer.PlaybackState.PlayingState), \
+                mock.patch.object(table, "viewport") as vp:
+            vp.return_value.height.return_value = table.rowHeight(0) * 3 + 10
+            vp.return_value.update.side_effect = lambda *a: regions.append(a)
+            p.tick_now_playing()
+        self.assertEqual(len(regions), 1)
+        self.assertEqual(regions[0], (table.visualRect(table.model().index(1, 0)),))

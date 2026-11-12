@@ -13921,8 +13921,18 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
         self.np_phase += 0.55
         page = self.stack.currentIndex()
         table = {0: self.track_table, 5: self.pl_table, 7: self.artist_top, 9: self.search_songs}.get(page)
-        if table is not None and table.isVisible():
-            table.viewport().update()
+        if table is None or not table.isVisible() or self.isMinimized():
+            return
+        # only the playing row's bars move; repainting the whole viewport every tick ate a CPU core
+        current = self.current_path()
+        top = max(0, table.rowAt(0))
+        bottom = table.rowAt(table.viewport().height() - 1)
+        bottom = table.rowCount() - 1 if bottom < 0 else bottom
+        for r in range(top, bottom + 1):
+            got = table.paths_fn([r])
+            if got and got[0] == current:
+                table.viewport().update(table.visualRect(table.model().index(r, 0)))
+                break
 
     # ----- queue extras
     def queue_length_text(self):
