@@ -3436,7 +3436,8 @@ def http_bytes(url, timeout=15):
 
 
 def _norm(text):
-    return re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip()
+    # every script, not just a-z/0-9: that made each Cyrillic or Japanese name "" and so equal to any other
+    return _words(text)
 
 
 def looks_like_image(data):
@@ -6154,7 +6155,9 @@ def local_romanize(text):
 def _fold(text):
     """Text for matching: case and accents ignored (Beyoncé = beyonce, İstanbul = istanbul), any script kept."""
     s = unicodedata.normalize("NFKD", str(text).replace("İ", "I").replace("ı", "i"))
-    s = "".join(c for c in s if not unicodedata.combining(c)).casefold()
+    if not s.isascii():      # skip the per-letter pass for plain names: the library search folds 18k songs
+        s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.casefold()
     return re.sub(r"[\W_]+", " ", s).strip()
 
 
@@ -8625,9 +8628,14 @@ class Extras2Mixin:
         groups = find_duplicates(self.all_tracks)
         for wanted in list(self.cfg["upgrades"]):
             artist, _, album = wanted.partition("|")
-            old = [t["path"] for g in groups if _norm(g[0]["artist"]) == _norm(artist)
-                   for t in g[1:] if _norm(t["album"]) == _norm(album) and track_quality_score(g[0])[0]
-                   > track_quality_score(t)[0]]
+            # the better copy must be this album (any edition: downloads are often tagged '(Remastered)')
+            # and the same place on it: a FLAC compilation's 'Intro' is no better copy of this album's 'Intro'
+            keeper = {t["path"]: g[0]["path"] for g in groups if _norm(g[0]["artist"]) == _norm(artist)
+                      for t in g[1:] if _norm(t["album"]) == _norm(album)
+                      and same_album(t["album"], g[0].get("album", ""))
+                      and same_recording(dict(g[0], album=t["album"]), t)
+                      and track_quality_score(g[0])[0] > track_quality_score(t)[0]}
+            old = list(keeper)
             if not old:
                 if time.time() - self.cfg["upgrades"][wanted] > 30 * 86400:
                     del self.cfg["upgrades"][wanted]       # gave up waiting
@@ -8639,11 +8647,12 @@ class Extras2Mixin:
                     _t(f"A better copy of \"{album}\" is in your library. Move the {len(old)} old file(s) "
                        "to the _eozMP duplicates folder?")) == QMessageBox.StandardButton.Yes:
                 try:
-                    moved, folder = move_to_duplicates(old, root)
+                    done, folder = move_aside(old, root)
                 except OSError as e:
                     self.statusBar().showMessage(_t(f"Couldn't move the old files ({e})"), 10000)
                     continue
-                self.statusBar().showMessage(_t(f"Moved {moved} duplicate(s) to {folder}"), 10000)
+                self.carry_over_paths({a: keeper[a] for a, _b in done})
+                self.statusBar().showMessage(_t(f"Moved {len(done)} duplicate(s) to {folder}"), 10000)
                 QTimer.singleShot(0, self.rescan)
         save_config(self.cfg)
 
@@ -8838,9 +8847,10 @@ def find_moved_songs(refs, tracks):
 
 
 def sure_moves(found):
-    """{old: new} for the matches that are clear: a strong match, and nothing else as good."""
+    """{old: new} for the matches that are clear: a strong match, and nothing else as good. The file name
+    alone (5) is not enough: '01 - Intro.mp3' is on many albums, so a folder must agree too."""
     return {old: c[0][1] for old, c in found.items()
-            if c and c[0][0] >= 5 and (len(c) == 1 or c[0][0] > c[1][0])}
+            if c and c[0][0] >= 6 and (len(c) == 1 or c[0][0] > c[1][0])}
 
 
 def listening_heatmap(events, since=0):
@@ -11809,8 +11819,8 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
             alb["tracks"].sort(key=lambda t: (t["disc"], t["num"], t["title"].lower()))
             years = [t["year"] for t in alb["tracks"] if t["year"]]
             alb["year"] = min(years) if years else 0
-            alb["search"] = [
-                f"{alb['artist']} {alb['album']} {t['title']} {song_artist(t)}".lower() for t in alb["tracks"]
+            alb["search"] = [   # _fold, like the query: istanbul finds İstanbul, beyonce Beyoncé
+                _fold(f"{alb['artist']} {alb['album']} {t['title']} {song_artist(t)}") for t in alb["tracks"]
             ]
         self.genres, self.decades = {}, {}
         for key, alb in self.albums.items():
@@ -11880,7 +11890,7 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
                 a_item.setExpanded(True)
         self.index = self.qindex.get(playing, -1) if playing else -1
         self.track_by_path = {t["path"]: (t, key) for t, key in self.queue}
-        self.song_index = [(f"{t['title']} {song_artist(t)} {t['album']} {t['artist']}".lower(), t["path"])
+        self.song_index = [(_fold(f"{t['title']} {song_artist(t)} {t['album']} {t['artist']}"), t["path"])
                            for t, _k in self.queue]
         if self.list_covers():
             for akey, a_item in self.tree_artists.items():
@@ -11931,7 +11941,7 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
         return n
 
     def apply_filter(self):
-        text = self.search.text().strip().lower()
+        text = _fold(self.search.text())
         for i in range(self.tree.topLevelItemCount()):
             a_item = self.tree.topLevelItem(i)
             any_album = False
@@ -13146,7 +13156,7 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
     # ----- search
     def run_search(self):
         text = self.search.text().strip()
-        words = text.lower().split()
+        words = _fold(text).split()
         if len(text) < 2:
             if self.stack.currentIndex() == 9:
                 back = self.search_prev_page if self.search_prev_page != 9 else 8
@@ -13161,10 +13171,10 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
             self.reset_inline_soul()
 
         def hit(s):
-            return all(w in s for w in words)
+            return bool(words) and all(w in s for w in words)     # "!!" folds to no words: match nothing
 
-        artists = [a for a, name in self.artists.items() if hit(name.lower())][:12]
-        albums = [k for k, alb in self.albums.items() if hit(f"{alb['artist']} {alb['album']}".lower())][:18]
+        artists = [a for a, name in self.artists.items() if hit(_fold(name))][:12]
+        albums = [k for k, alb in self.albums.items() if hit(_fold(f"{alb['artist']} {alb['album']}"))][:18]
         songs = [path for s, path in self.song_index if hit(s)][:150]
         self.view_targets["search"] = {}
         lab, lst = self.search_sections["artists"]

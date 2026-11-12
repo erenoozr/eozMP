@@ -378,7 +378,9 @@ line, in the lyrics page and the fullscreen player. Each song is translated once
 - **Phone remote:** **Connect → Phone remote...**, tick *Turn on the phone remote* and scan the QR code with your
   phone (same Wi-Fi). You get the cover, the current lyric line, play/pause, next, previous, seeking, volume and
   the heart. **Listen on this phone** plays the music on the phone itself while the PC keeps time silently.
-  The link contains a secret code, so only devices that scanned it can use it.
+  The link contains a secret code, so only devices that scanned it can use it. The link isn't encrypted, so on a
+  shared Wi-Fi (a dorm, a café) someone else on that network could pick it up: use the remote on your home network
+  and turn it off elsewhere.
 - **Play on a TV or speaker:** **Connect → Play on a TV or speaker...** finds smart TVs, Sonos and other DLNA /
   UPnP speakers on your network. Pick one and click **Play there**; pausing, skipping and seeking follow along.
   **Stop casting** brings the music back to the PC. (Chromecast and AirPlay are not supported.)

@@ -177,5 +177,29 @@ class TurkishMenuTest(PlayerHarness):
                     self.assertGreaterEqual(len(letters), 6)
 
 
+class LibrarySearchTest(PlayerHarness):
+    """Library search ignores case and accents the way Turkish needs: istanbul finds İstanbul, beyonce Beyoncé."""
+
+    def test_search_ignores_turkish_case_and_accents(self):
+        self.make_player(["One"])
+        p = self.player
+        base = {"length": 200, "num": 1, "disc": 1, "year": 2000, "genre": "", "mtime": 1.0, "size": 1}
+        a = dict(base, path=str(self.tmp / "a.mp3"), title="İstanbul Hatırası", artist="Sezen Aksu", album="Deniz Yıldızı")
+        b = dict(base, path=str(self.tmp / "b.mp3"), title="Halo", artist="Beyoncé", album="I Am... Sasha Fierce")
+        p.build_library([a, b])
+        for query, path in (("istanbul", a["path"]), ("İSTANBUL hatirasi", a["path"]), ("yildizi", a["path"]),
+                            ("beyonce", b["path"]), ("BEYONCÉ", b["path"])):
+            with self.subTest(query=query):
+                p.search.setText(query)
+                p.run_search()
+                self.assertEqual(p.search_paths, [path])
+                shown = [k for k, item in p.tree_albums.items() if not item.isHidden()]
+                self.assertEqual(shown, [p.track_by_path[path][1]])
+        p.search.setText("beyonce")
+        p.run_search()
+        self.assertEqual(p.search_sections["artists"][1].count(), 1)
+        self.assertEqual(p.search_sections["albums"][1].count(), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

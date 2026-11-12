@@ -93,6 +93,15 @@ class LogicTest(TempDirTest):
         self.assertEqual(found[gone], [])
         self.assertEqual(mp.sure_moves(found), {old: str(new)})
 
+    def test_a_file_name_alone_is_not_a_sure_move(self):
+        # "01 - Intro.mp3" is on many albums: only the name matching, in other folders, is offered but not ticked
+        new = self.tmp / "Music" / "Else" / "Other" / "01 - Intro.mp3"
+        tracks = [{"path": str(new), "artist": "Else", "artist_raw": "Else", "album": "Other", "title": "Intro"}]
+        old = str(self.tmp / "Old" / "Band" / "Album" / "01 - Intro.mp3")
+        found = mp.find_moved_songs(mp.song_references({"Mix": [old]}, {"favorites": [], "plays": {}}), tracks)
+        self.assertEqual(found[old], [(5, str(new))])
+        self.assertEqual(mp.sure_moves(found), {})
+
     def test_the_phone_never_sees_file_paths(self):
         albums = {("band", "alb"): {"album": "Alb", "artist": "Band", "year": "2001", "tracks": [
             {"path": "C:/secret/One.mp3", "title": "One", "artist": "Band", "artist_raw": "Band", "album": "Alb"}]}}
