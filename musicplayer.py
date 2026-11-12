@@ -298,7 +298,7 @@ AUDIO_EXTS = {
 }
 COVER_NAMES = ("cover", "folder", "front", "album", "albumart")
 COVER_EXTS = (".jpg", ".jpeg", ".png")
-APP_VERSION = "1.5"   # raise it with every release; the release tag is "v" + this (see MANUAL)
+APP_VERSION = "1.5.1"   # raise it with every release; the release tag is "v" + this (see MANUAL)
 CONFIG_FILE = Path.home() / ".simple_music_player.json"
 CRASH_FILE = Path.home() / ".simple_music_player_crash.log"
 CACHE_FILE =Path.home() / ".simple_music_player_cache.json"
@@ -433,6 +433,8 @@ def write_json_atomic(path, data, **kw):
     tmp = path.with_name(path.name + ".tmp")
     try:
         tmp.write_text(json.dumps(data, **kw), encoding="utf-8")
+        with open(tmp, "rb+") as f:   # on disk before the swap, or a power cut can leave an empty file
+            os.fsync(f.fileno())
         os.replace(tmp, path)
     except Exception:
         try:
@@ -443,6 +445,33 @@ def write_json_atomic(path, data, **kw):
 
 
 LOAD_PROBLEMS = []   # files that couldn't be read at start-up (a copy was kept aside), shown to the user
+SAVE_FAILED = set()  # files whose save failed and the user was told; a save that works again clears it
+
+
+def save_quietly(path, data, **kw):
+    """For the saves called from dozens of places that don't expect an error: never raise,
+    but say so in the status bar once while saving that file keeps failing (full or locked disk)."""
+    try:
+        write_json_atomic(path, data, **kw)
+        SAVE_FAILED.discard(path.name)
+        return
+    except Exception as e:
+        error = e
+    if path.name in SAVE_FAILED:
+        return
+    try:
+        app = QApplication.instance()
+        if app is None or QThread.currentThread() is not app.thread():   # widgets only from the GUI thread
+            return
+        wins = [w for w in app.topLevelWidgets()
+                if isinstance(w, Player) and not getattr(w, "session_closed", False)]
+        for w in wins:
+            w.statusBar().showMessage(
+                _t("Couldn't save {0} ({1}). Your latest changes aren't saved yet.").format(path.name, error), 15000)
+        if wins:
+            SAVE_FAILED.add(path.name)
+    except Exception:
+        pass
 
 
 def read_json(path, kind, quarantine=True):
@@ -530,10 +559,7 @@ def load_config():
 
 
 def save_config(cfg):
-    try:
-        write_json_atomic(CONFIG_FILE, cfg, indent=2)
-    except Exception:
-        pass
+    save_quietly(CONFIG_FILE, cfg, indent=2)
 
 
 PLAYLIST_FILE = Path.home() / ".simple_music_player_playlists.json"
@@ -546,10 +572,7 @@ def load_playlists():
 
 
 def save_playlists(playlists):
-    try:
-        write_json_atomic(PLAYLIST_FILE, playlists, indent=1)
-    except Exception:
-        pass
+    save_quietly(PLAYLIST_FILE, playlists, indent=1)
 
 
 # ---------------------------------------------------------------- tags
@@ -3140,6 +3163,15 @@ class PreferencesDialog(QDialog):
         sf = QFormLayout(sl)
         self.url = QLineEdit(cfg["slskd_url"])
         self.key = QLineEdit(cfg["slskd_key"])
+        self.key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.key.setAccessibleName("slskd API key")     # its label can't name it: the row is a layout
+        self.show_key = QCheckBox("Show")
+        self.show_key.setAccessibleName("Show the slskd API key")
+        self.show_key.toggled.connect(lambda on: self.key.setEchoMode(
+            QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password))
+        krow = QHBoxLayout()
+        krow.addWidget(self.key, 1)
+        krow.addWidget(self.show_key)
         self.dl = QLineEdit(cfg["downloads_dir"])
         browse = QPushButton("Browse...")
         browse.clicked.connect(self.pick)
@@ -3161,7 +3193,7 @@ class PreferencesDialog(QDialog):
         trow.addWidget(test)
         trow.addWidget(self.test_label, 1)
         sf.addRow("slskd address", self.url)
-        sf.addRow("slskd API key", self.key)
+        sf.addRow("slskd API key", krow)
         sf.addRow("slskd downloads folder", drow)
         sf.addRow("Search results view", self.soul_view)
         sf.addRow("Default quality filter", self.soul_quality)
@@ -3349,9 +3381,9 @@ def load_stats():
 def save_stats(stats):
     try:
         stats["events"] = stats["events"][-50000:]
-        write_json_atomic(STATS_FILE, stats)
     except Exception:
-        pass
+        return
+    save_quietly(STATS_FILE, stats)
 
 
 def record_play(stats, path, seconds, now=None):
@@ -10753,7 +10785,7 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
         box = QMessageBox(self)
         box.setWindowTitle("A new version of eozMP")
         box.setText(f"eozMP {tag} is out. You have v{APP_VERSION}.")
-        box.setInformativeText("Download the new eozMP.exe and put it in place of the old one. "
+        box.setInformativeText("Download the new eozMP Setup and run it; it installs over the old version. "
                                "Your settings, playlists and stats are kept.")
         download = box.addButton("Download", QMessageBox.ButtonRole.AcceptRole)
         skip = box.addButton("Skip this version", QMessageBox.ButtonRole.DestructiveRole)
@@ -15549,4 +15581,10 @@ if __name__ == "__main__":
     win = Player()
     install_error_log(lambda: win)
     win.show()
-    sys.exit(app.exec())
+    code = app.exec()
+    # A job told to stop at quit may still be moving a file or writing tags after the 10 s wait in closeEvent:
+    # ending the process now would cut it off halfway, so it gets to finish with the window already gone.
+    deadline = time.time() + 120      # shortcut: jobs stuck longer than 2 minutes in all are still cut off
+    for w in list(win.workers):
+        w.wait(max(0, int((deadline - time.time()) * 1000)))
+    sys.exit(code)

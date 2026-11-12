@@ -225,6 +225,25 @@ class ScreenReaderNameTest(WindowTest):                                   # C8
         self.assertEqual(self.unnamed(p.fs), [])
         p.exit_fullscreen()
 
+    def test_slskd_key_is_hidden_and_can_be_shown_with_the_keyboard(self):
+        p = self.player
+        p.cfg["slskd_key"] = "secret-key"
+        dlg = mp.PreferencesDialog(p.cfg, p, tab="Soulseek")
+        self.addCleanup(dlg.deleteLater)
+        dlg.show()
+        self.assertEqual(dlg.key.echoMode(), mp.QLineEdit.EchoMode.Password)
+        self.assertTrue(dlg.key.accessibleName())
+        self.assertEqual(self.unnamed(dlg), [])
+        self.assertTrue(dlg.show_key.focusPolicy() & Qt.FocusPolicy.TabFocus)
+        dlg.activateWindow()
+        wait_for(lambda: dlg.isActiveWindow(), 2)
+        self.key(dlg.show_key, Qt.Key.Key_Space)
+        self.assertEqual(dlg.key.echoMode(), mp.QLineEdit.EchoMode.Normal)
+        self.assertEqual(dlg.key.text(), "secret-key")
+        self.key(dlg.show_key, Qt.Key.Key_Space)
+        self.assertEqual(dlg.key.echoMode(), mp.QLineEdit.EchoMode.Password)
+        self.assertEqual(self.toggles, [])
+
     def test_names_follow_what_the_button_does_now(self):
         p = self.player
         self.assertEqual(p.play_btn.accessibleName(), "Play")

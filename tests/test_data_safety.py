@@ -198,6 +198,73 @@ class SettingsFilesTest(TempDirTest):
         self.assertIs(cfg["resume"], False)
 
 
+class SaveReachesTheDiskTest(TempDirTest):
+    def test_saved_data_is_forced_to_disk_before_the_swap(self):
+        path = self.tmp / "s.json"
+        calls = []
+        real_fsync, real_replace = os.fsync, os.replace
+        with mock.patch.object(mp.os, "fsync", side_effect=lambda fd: (calls.append("fsync"), real_fsync(fd))), \
+                mock.patch.object(mp.os, "replace", side_effect=lambda a, b: (calls.append("replace"),
+                                                                              real_replace(a, b))):
+            mp.write_json_atomic(path, {"volume": 12})
+        self.assertEqual(calls, ["fsync", "replace"])   # else a power cut can leave an empty file
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"volume": 12})
+
+
+class SaveFailureTest(PlayerHarness):
+    """A full or locked disk: the user is told once, and saving never raises to its many callers."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(mp, "SAVE_FAILED", set())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def failing(self):
+        return mock.patch.object(mp, "write_json_atomic", side_effect=OSError("No space left on device"))
+
+    def test_failed_save_is_shown_once_until_a_save_works_again(self):
+        self.make_player(["One"])
+        shown = []
+        bar = self.player.statusBar()
+        with mock.patch.object(bar, "showMessage", side_effect=lambda text, ms=0: shown.append(text)):
+            with self.failing():
+                for _ in range(3):
+                    mp.save_config(self.player.cfg)
+                    mp.save_stats(self.player.stats)
+            self.assertEqual(len(shown), 2, shown)
+            self.assertTrue(any(mp.CONFIG_FILE.name in s and "No space left" in s for s in shown), shown)
+            self.assertTrue(any(mp.STATS_FILE.name in s for s in shown), shown)
+            mp.save_config(self.player.cfg)          # works again
+            with self.failing():
+                mp.save_config(self.player.cfg)
+                mp.save_playlists({})
+                mp.save_playlists({})
+        self.assertEqual(len(shown), 4, shown)
+        self.assertIn(mp.PLAYLIST_FILE.name, shown[-1])
+
+    def test_no_window_or_another_thread_never_raises(self):
+        import threading
+        errors = []
+
+        def save():
+            try:
+                mp.save_playlists({})
+            except Exception as e:
+                errors.append(e)
+        with self.failing():
+            save()                                   # no window
+        self.make_player(["One"])
+        shown = []
+        with self.failing(), mock.patch.object(self.player.statusBar(), "showMessage",
+                                               side_effect=lambda text, ms=0: shown.append(text)):
+            t = threading.Thread(target=save)        # widgets may only be touched from the GUI thread
+            t.start()
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(shown, [])
+
+
 SECRETS = {"slskd_key": "sk", "lastfm_secret": "ls", "lastfm_session": "mine", "acoustid_key": "ak",
            "remote_token": "rt"}
 

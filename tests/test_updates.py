@@ -119,6 +119,7 @@ class OfferWindowTest(PlayerHarness):
                 QTimer.singleShot(20, click)
                 return
             self.shown_text = box.text()
+            self.shown_info = box.informativeText()
             next(b for b in box.buttons() if b.text() == label).click()
         QTimer.singleShot(20, click)
         self.player.offer_update(rel)
@@ -128,6 +129,13 @@ class OfferWindowTest(PlayerHarness):
         self.press("Skip this version")
         self.assertIn("v9.9", self.shown_text)
         self.assertEqual(json.loads(mp.CONFIG_FILE.read_text(encoding="utf-8"))["update_skip"], "v9.9")
+
+    def test_tells_to_run_the_new_setup(self):
+        self.make_player(["One"])
+        self.press("Later")
+        self.assertIn("Setup", self.shown_info)          # eozMP ships as eozMP-Setup-<version>.exe now
+        self.assertNotIn("eozMP.exe", self.shown_info)
+        self.assertIn("kept", self.shown_info)
 
     def test_download_opens_only_the_github_page(self):
         self.make_player(["One"])

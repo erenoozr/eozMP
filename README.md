@@ -18,6 +18,23 @@ music through Soulseek. It speaks 12 languages, runs fully on your own PC and ne
 
 <img width="1075" height="889" alt="Home page" src="https://github.com/user-attachments/assets/0d0d5050-0438-4dd2-9207-d529d66931b9" />
 
+## New in 1.5.1
+
+A release of fixes; nothing new to learn.
+
+- **Music in any alphabet:** missing songs, new releases, the wishlist and tag fixing work for names in Cyrillic,
+  Japanese, Arabic and other scripts (they were all treated as the same name before)
+- **Search** ignores case and accents: `istanbul` finds İstanbul, `beyonce` finds Beyoncé
+- **Better copies:** only the same song of the same album is moved aside, and playlists, favorites and stats
+  follow the copy that stays
+- **Backups** no longer hold your keys and passwords (Soulseek, Last.fm, AcoustID, phone remote); after restoring
+  on a new PC you log in again
+- **Restoring** checks the backup first and changes nothing if a file in it is broken; the files you had are kept
+  next to the new ones
+- **Lyric translations** that came back incomplete are asked for again instead of staying incomplete
+- eozMP tells you when it can't save (full or locked disk), the Soulseek key is hidden in Preferences, and a job
+  still running when you quit gets to finish
+
 ## New in 1.5
 
 - **Search in lyrics:** type a few words you remember and find every song that has them
@@ -129,7 +146,7 @@ music through Soulseek. It speaks 12 languages, runs fully on your own PC and ne
 
 ## Download
 
-Get **`eozMP-Setup-1.5.exe`** from the [latest release](../../releases/latest) and double-click it. Setup asks
+Get **`eozMP-Setup-1.5.1.exe`** from the [latest release](../../releases/latest) and double-click it. Setup asks
 step by step what to install (eozMP, Soulseek support, VLC for the equalizer, a desktop shortcut) and, if you want
 Soulseek, your Soulseek name and password, then sets everything up. No Python needed.
 Windows may show a blue *"Windows protected your PC"* box because the app is new and unsigned:

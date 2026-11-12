@@ -256,6 +256,56 @@ class RemoteServerTest(TempDirTest):
         self.assertEqual(self.request(port, url)[0], 200)
 
 
+# Runs musicplayer.py as the app itself, with a job that outlives the 10 s quit wait (a tag fix or a
+# network wait that hasn't looked at STOP_BG yet). The user folder is a temp one (USERPROFILE).
+QUIT_SCRIPT = r'''
+import runpy, sys, time
+from pathlib import Path
+script, home = sys.argv[1], Path(sys.argv[2])
+assert Path.home() == home, Path.home()          # never the real user folder
+from PyQt6.QtCore import QTimer
+from PyQt6.QtWidgets import QApplication
+real_exec = QApplication.exec
+
+def exec_(*_):
+    app = QApplication.instance()
+    mp = sys.modules["__main__"]
+    win = next(w for w in app.topLevelWidgets() if isinstance(w, mp.Player))
+
+    def slow_job():
+        time.sleep(12)
+        (home / "job-finished").write_text("yes")
+    win.keep(mp.Worker(slow_job))
+    win.quitting = True
+    QTimer.singleShot(100, win.close)
+    return real_exec()
+
+QApplication.exec = exec_
+sys.argv = [script]
+runpy.run_path(script, run_name="__main__")
+'''
+
+
+class QuitWithJobRunningTest(TempDirTest):
+    def test_a_job_still_running_at_quit_is_not_cut_off(self):
+        import os
+        import subprocess
+        root = Path(__file__).resolve().parent.parent
+        (self.tmp / mp.CONFIG_FILE.name).write_text(json.dumps(
+            {"folders": [], "audio_engine": "Qt (built-in)", "volume": 0, "media_keys": False,
+             "lyrics_online": False, "covers_auto": False, "resume": False, "close_to_tray": False,
+             "update_check": False}), encoding="utf-8")
+        env = dict(os.environ, QT_QPA_PLATFORM="offscreen", USERPROFILE=str(self.tmp), HOME=str(self.tmp))
+        out = subprocess.run([sys.executable, "-c", QUIT_SCRIPT, str(root / "musicplayer.py"), str(self.tmp)],
+                             cwd=root, env=env, capture_output=True, text=True, timeout=120)
+        # The return code isn't checked: offscreen, the app sometimes ends with an access violation at
+        # exit even with no job running (a separate problem).
+        crash = self.tmp / mp.CRASH_FILE.name     # the app logs its own errors here, not to stderr
+        why = out.stderr[-2000:] + (crash.read_text() if crash.exists() else "")
+        self.assertNotIn("Destroyed while thread", out.stderr)
+        self.assertTrue((self.tmp / "job-finished").exists(), "the job was cut off when the app ended\n" + why)
+
+
 class MemoryAndSpeedTest(unittest.TestCase):
     def test_the_cover_cache_keeps_only_the_latest_covers(self):                 # P1
         cache = mp.CoverCache()

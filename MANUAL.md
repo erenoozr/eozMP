@@ -8,7 +8,7 @@ step by step.
 [Finding your way around](#finding-your-way-around) · [Playing music](#playing-music) ·
 [Lyrics, mini player and fullscreen](#lyrics-mini-player-and-fullscreen) ·
 [Playlists, Browse, Search, Home and Stats](#playlists-browse-search-home-and-stats) ·
-[New in 1.5](#new-in-15) · [New in 1.4](#new-in-14) · [New in 1.3](#new-in-13) ·
+[New in 1.5.1](#new-in-151) · [New in 1.5](#new-in-15) · [New in 1.4](#new-in-14) · [New in 1.3](#new-in-13) ·
 [Soulseek](#soulseek-logging-in-and-downloading) · [Preferences](#making-it-yours-preferences) ·
 [Optional extras](#optional-extras-mpv-vlc-equalizer-and-visualizer) · [Backups and updates](#backups-updates-and-your-data) ·
 [Troubleshooting](#troubleshooting) · [Shortcuts](#keyboard-and-mouse-shortcuts)
@@ -18,7 +18,7 @@ step by step.
 | Item | Needed? | Where it comes from |
 | --- | --- | --- |
 | A Windows 10 or 11 PC | Yes | |
-| `eozMP-Setup-1.5.exe` | Yes | The [latest release](../../releases/latest) of this repository |
+| `eozMP-Setup-1.5.1.exe` | Yes | The [latest release](../../releases/latest) of this repository |
 | Your music files (mp3, flac, m4a, wav, ogg and more) | Yes | Your own folders |
 | An internet connection | For lyrics and covers | |
 | Python 3 | Only to build eozMP yourself | [python.org/downloads](https://www.python.org/downloads/) |
@@ -32,7 +32,7 @@ A Soulseek account is free. slskd creates it for you the first time it connects 
 
 ### The easy way: the installer
 
-1. Open the [latest release](../../releases/latest) and download **eozMP-Setup-1.5.exe** under *Assets*.
+1. Open the [latest release](../../releases/latest) and download **eozMP-Setup-1.5.1.exe** under *Assets*.
 2. Double-click it. If Windows shows a blue **Windows protected your PC** box, click **More info**, then
    **Run anyway**. This happens because the app is new and unsigned.
 3. Pick a language (English or Türkçe). Setup then asks, step by step, what to install:
@@ -268,6 +268,25 @@ web:
 
 Soulseek is a file-sharing network. Only download music you're allowed to have.
 
+## New in 1.5.1
+
+Fixes only.
+
+- **Names in any alphabet:** *Find missing songs*, new releases, the wishlist and *Fix tags* now tell names in
+  Cyrillic, Japanese, Arabic and other scripts apart.
+- **Search** ignores case and accents (`istanbul` finds İstanbul, `beyonce` finds Beyoncé), in the search box and
+  in the library list.
+- **Find a better copy on Soulseek:** when the better copy arrives, only the same song of the same album (any
+  edition, such as *Remastered*) is offered to be moved aside, and playlists, favorites and stats follow the new copy.
+- **Repair moved songs** no longer picks a new place by the file name alone; the album or artist folder has to
+  agree too. Other matches are still listed for you to choose.
+- **Back up and restore:** keys and passwords are left out of the backup; a restore checks every file first and
+  keeps the files you had as `….before-restore-<time>` copies.
+- **Lyric translation:** a translation with missing lines is no longer kept; it is asked for again next time.
+- **Saving:** if settings, playlists or stats can't be saved, the status bar says so.
+- **Preferences → Soulseek:** the slskd API key is hidden; tick **Show** to see it.
+- **Quitting** while eozMP is still moving files or writing tags lets that job finish first.
+
 ## New in 1.5
 
 ### Lyrics you can read, search and share
@@ -440,8 +459,8 @@ These are optional; eozMP works fully without them.
 - **Updating:** eozMP asks GitHub once a day whether a new version is out and, if so, offers to open the
   download page (**Help → Check for updates...** asks right away; turn it off in **Preferences → General**).
   Only the public releases page is read; nothing about you or your music is sent. Download the newest
-  `eozMP.exe` from the [releases](../../releases) and replace the old one (or download the new source and run
-  `build_exe.bat` again). Your settings, playlists and stats are kept.
+  `eozMP-Setup-<version>.exe` from the [releases](../../releases) and run it: it installs over the old version
+  (or download the new source and run `build_exe.bat` again). Your settings, playlists and stats are kept.
 - **Your music files** are never changed, except when you allow it: organizing Soulseek downloads, saving lyrics
   next to songs, or saving found covers into album folders.
 
