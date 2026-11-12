@@ -6040,7 +6040,7 @@ def lyric_line_extras(lines, lang, roman):
     def one(text):
         want_r = bool(roman) and foreign_script(text)
         if not lang and not want_r:
-            return text, None, True
+            return text, None, True, True
         tr = rm = ""
         ok = True
         try:
@@ -6053,19 +6053,22 @@ def lyric_line_extras(lines, lang, roman):
                     ok = True
                 except Exception:
                     pass
+        done = ok                         # the service answered; only then may the result be kept for good
         if want_r and (not rm or foreign_script(rm)):
             rm = local_romanize(text) or ""
         if want_r and ok is False and rm:
             ok = True                     # the reading alone is still worth showing
         entry = {"t": tr if lang and tr and _fold(tr) != _fold(text) else "",
                  "r": rm if want_r and rm and _fold(rm) != _fold(text) else ""}
-        return text, entry if (entry["t"] or entry["r"]) else None, ok
+        return text, entry if (entry["t"] or entry["r"]) else None, ok, done
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         res = list(pool.map(one, uniq))
-    out = {k: v for k, v, _ok in res if v}
-    if uniq and sum(1 for *_x, ok in res if ok) < len(uniq) / 2:
+    out = {k: v for k, v, _ok, _done in res if v}
+    if uniq and sum(1 for _k, _v, ok, _done in res if ok) < len(uniq) / 2:
         raise RuntimeError("translation service not reachable")
+    if not all(done for *_x, done in res):
+        return out                        # show what came, but ask again next time instead of keeping the gaps
     try:
         TRANSLATE_DIR.mkdir(exist_ok=True)
         write_json_atomic(cpath, out)

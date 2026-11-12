@@ -42,6 +42,26 @@ class ReadingTest(TempDirTest):
             out = mp.lyric_line_extras(["Я тебя люблю", "plain english"], "", True)
         self.assertEqual(out, {"Я тебя люблю": {"t": "", "r": "Ya tebya lyublyu"}})
 
+    def test_a_partly_failed_translation_is_shown_but_not_kept(self):
+        lines = ["uno", "dos", "tres", "OK"]
+        down = {"tres"}           # Google and MyMemory both fail for this line (e.g. 429)
+
+        def gtx(text, lang, extra=""):
+            if text in down:
+                raise OSError("429")
+            return ("OK" if text == "OK" else "en " + text), "", None     # "OK" -> "OK": nothing to show, not a failure
+        with mock.patch.object(mp, "TRANSLATE_DIR", self.tmp / "tr"), \
+                mock.patch.object(mp, "gtx_translate", side_effect=gtx) as fake, \
+                mock.patch.object(mp, "translate_one", side_effect=OSError("429")):
+            first = mp.lyric_line_extras(lines, "en", False)
+            self.assertEqual(first, {"uno": {"t": "en uno", "r": ""}, "dos": {"t": "en dos", "r": ""}})
+            down.clear()
+            second = mp.lyric_line_extras(lines, "en", False)       # asked again, not served the gappy result
+            self.assertEqual(second["tres"], {"t": "en tres", "r": ""})
+            calls = fake.call_count
+            self.assertEqual(mp.lyric_line_extras(lines, "en", False), second)    # complete -> from the cache
+            self.assertEqual(fake.call_count, calls)
+
     def test_words_of_a_line(self):
         self.assertEqual(mp.lyric_words("夜に駆ける 君の名は"), ["夜に", "駆ける", "君の", "名は"])
         self.assertEqual(mp.lyric_words("I don't wanna-go, l'amour!"), ["I", "don't", "wanna-go", "l'amour"])
