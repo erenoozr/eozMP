@@ -434,7 +434,9 @@ These are optional; eozMP works fully without them.
 ## Backups, updates and your data
 
 - **Back up:** **Library → Back up eozMP...** saves your settings, playlists, favorites, listening stats and saved
-  lyrics into one `.zip` file. **Library → Restore from backup...** loads them back, for example on a new PC.
+  lyrics into one `.zip` file. Passwords and keys (Soulseek, Last.fm, AcoustID, phone remote) are left out of it.
+  **Library → Restore from backup...** loads them back, for example on a new PC. It checks every file first and
+  changes nothing if one is broken; your current files are kept next to them as `….before-restore-<time>` copies.
 - **Updating:** eozMP asks GitHub once a day whether a new version is out and, if so, offers to open the
   download page (**Help → Check for updates...** asks right away; turn it off in **Preferences → General**).
   Only the public releases page is read; nothing about you or your music is sent. Download the newest

@@ -5038,10 +5038,12 @@ class MiniPlayer(QWidget):
 # ---------------------------------------------------------------- library list, drag & drop, dialogs
 EOZ_MIME = "application/x-eozmp-songs"
 BACKUP_FILES = {"settings.json": CONFIG_FILE, "playlists.json": PLAYLIST_FILE, "stats.json": STATS_FILE}
-# A backup may come from someone else: these decide what code gets loaded and who can reach the player,
-# so a restore keeps this PC's own values.
+# A backup may come from someone else: these decide what code gets loaded, who can reach the player and
+# whose accounts get used, so a restore keeps this PC's own values and a backup leaves them (and the keys) out.
+# lastfm_key goes with them: the session only works with the key and secret it was made with.
 LOCAL_ONLY_SETTINGS = ("mpv_dir", "remote_on", "remote_port", "remote_token", "slskd_url", "slskd_key",
-                       "downloads_dir", "organize_root")
+                       "downloads_dir", "organize_root", "lastfm_key", "lastfm_secret", "lastfm_session",
+                       "lastfm_user", "lastfm_queue", "acoustid_key")
 
 
 def safe_backup_name(name):
@@ -13492,7 +13494,9 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
         try:
             with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
                 for name, src in BACKUP_FILES.items():
-                    if src.exists():
+                    if src == CONFIG_FILE and src.exists():
+                        z.writestr(name, keep_local_settings(src.read_bytes(), {}))   # no keys in the zip
+                    elif src.exists():
                         z.write(src, name)
                 if LYRICS_DIR.exists():
                     for f in LYRICS_DIR.glob("*.json"):
@@ -13517,16 +13521,41 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
                 names = z.namelist()
                 if not any(n in names for n in BACKUP_FILES):
                     raise ValueError("This doesn't look like an eozMP backup.")
+                # Read and check everything first: one broken file must not replace the data you have now.
+                new = {}
                 for name, dst in BACKUP_FILES.items():
                     if name in names:
                         data = z.read(name)
                         if dst == CONFIG_FILE:
                             data = keep_local_settings(data, mine)
-                        dst.write_bytes(data)
-                LYRICS_DIR.mkdir(exist_ok=True)
+                        try:
+                            data = json.loads(data.decode("utf-8-sig"))
+                            problem = (None if isinstance(data, dict)
+                                       else f"expected a {dict.__name__}, found a {type(data).__name__}")
+                        except ValueError as e:
+                            problem = str(e)
+                        if problem:
+                            raise ValueError(f"{name}: {problem}")
+                        new[dst] = data
+                lyrics = {}
                 for n in names:
                     if n.startswith("lyrics/") and n.endswith(".json") and safe_backup_name(n[len("lyrics/"):]):
-                        (LYRICS_DIR / n[len("lyrics/"):]).write_bytes(z.read(n))
+                        data = z.read(n)
+                        try:
+                            json.loads(data.decode("utf-8-sig"))
+                        except ValueError:
+                            continue
+                        lyrics[LYRICS_DIR / n[len("lyrics/"):]] = data
+            # The wrong backup can be undone from these copies.
+            stamp = time.strftime('%Y%m%d-%H%M%S')
+            for dst in new:
+                if dst.exists():
+                    shutil.copy2(dst, dst.with_name(f"{dst.name}.before-restore-{stamp}"))
+            for dst, data in new.items():
+                write_json_atomic(dst, data)
+            LYRICS_DIR.mkdir(exist_ok=True)
+            for dst, data in lyrics.items():
+                dst.write_bytes(data)
         except Exception as e:
             QMessageBox.warning(self, "Restore", f"Couldn't restore:\n{e}")
             return

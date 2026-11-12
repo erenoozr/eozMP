@@ -7,10 +7,12 @@ import json
 import os
 import subprocess
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
 from test_core import TempDirTest, mp, tagged_mp3
+from test_player import PlayerHarness
 
 
 def make_junction(link, target):
@@ -194,6 +196,86 @@ class SettingsFilesTest(TempDirTest):
         self.assertEqual(cfg["ui_font_size"], mp.DEFAULT_CFG["ui_font_size"])
         self.assertEqual(cfg["volume"], 40)
         self.assertIs(cfg["resume"], False)
+
+
+SECRETS = {"slskd_key": "sk", "lastfm_secret": "ls", "lastfm_session": "mine", "acoustid_key": "ak",
+           "remote_token": "rt"}
+
+
+class BackupRestoreTest(PlayerHarness):
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(mp, "LOAD_PROBLEMS", [])   # a broken file must not pop up a dialog later
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.make_player(["One"], lastfm_user="me", lastfm_key="mykey", **SECRETS)
+        # BACKUP_FILES was built from the real paths at import: point it at the temp ones too
+        patcher = mock.patch.dict(mp.BACKUP_FILES, {"settings.json": mp.CONFIG_FILE,
+                                                    "playlists.json": mp.PLAYLIST_FILE, "stats.json": mp.STATS_FILE})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.player.playlists = {"Mine": ["a.mp3"]}
+        mp.save_config(self.player.cfg)
+        mp.save_playlists(self.player.playlists)
+        mp.save_stats(self.player.stats)
+        self.zip = self.tmp / "backup.zip"
+
+    def files(self):
+        return [f.read_bytes() for f in mp.BACKUP_FILES.values()]
+
+    def restore(self, members):
+        with zipfile.ZipFile(self.zip, "w") as z:
+            for name, text in members.items():
+                z.writestr(name, text)
+        with mock.patch.object(mp.QFileDialog, "getOpenFileName", return_value=(str(self.zip), "")), \
+                mock.patch.object(mp.QMessageBox, "question", return_value=mp.QMessageBox.StandardButton.Yes), \
+                mock.patch.object(mp.QMessageBox, "warning") as warning:
+            self.player.restore_data()
+        return warning
+
+    def test_backup_leaves_the_keys_out_and_my_settings_alone(self):
+        before = mp.CONFIG_FILE.read_bytes()
+        with mock.patch.object(mp.QFileDialog, "getSaveFileName", return_value=(str(self.zip), "")):
+            self.player.backup_data()
+        with zipfile.ZipFile(self.zip) as z:
+            saved = json.loads(z.read("settings.json"))
+        for key in SECRETS:
+            self.assertFalse(saved.get(key), key)
+        self.assertEqual(mp.CONFIG_FILE.read_bytes(), before)
+
+    def test_someone_elses_backup_keeps_my_lastfm_account(self):
+        theirs = {"volume": 33, "lastfm_session": "theirs", "lastfm_user": "them", "lastfm_secret": "x",
+                  "lastfm_key": "theirkey", "lastfm_queue": [{"artist": "A"}], "acoustid_key": "theirs"}
+        warning = self.restore({"settings.json": json.dumps(theirs)})
+        warning.assert_not_called()
+        cfg = mp.load_config()
+        self.assertEqual(cfg["volume"], 33)
+        self.assertEqual((cfg["lastfm_session"], cfg["lastfm_user"], cfg["lastfm_secret"], cfg["lastfm_key"]),
+                         ("mine", "me", "ls", "mykey"))
+        self.assertEqual(cfg["lastfm_queue"], [])
+        self.assertEqual(cfg["acoustid_key"], "ak")
+
+    def test_backup_with_a_broken_file_changes_nothing(self):
+        for broken in ({"playlists.json": "{not json"}, {"stats.json": "[1, 2]"}):
+            with self.subTest(broken=broken):
+                before = self.files()
+                warning = self.restore({"settings.json": json.dumps({"volume": 33}),
+                                        "playlists.json": json.dumps({"Theirs": []}),
+                                        "stats.json": json.dumps({"favorites": []}), **broken})
+                warning.assert_called_once()
+                self.assertEqual(self.files(), before)
+                self.assertEqual(list(self.tmp.glob("home/*.before-restore*")), [])
+
+    def test_restore_keeps_a_copy_of_what_was_there(self):
+        before = self.files()
+        warning = self.restore({"settings.json": json.dumps({"volume": 33}),
+                                "playlists.json": json.dumps({"Theirs": []}),
+                                "stats.json": json.dumps({"favorites": ["b.mp3"]})})
+        warning.assert_not_called()
+        self.assertEqual(mp.load_playlists(), {"Theirs": []})
+        copies = [list(self.tmp.glob(f"home/{f.name}.before-restore*")) for f in mp.BACKUP_FILES.values()]
+        self.assertEqual([len(c) for c in copies], [1, 1, 1])
+        self.assertEqual([c[0].read_bytes() for c in copies], before)
 
 
 if __name__ == "__main__":
