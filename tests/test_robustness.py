@@ -298,11 +298,11 @@ class QuitWithJobRunningTest(TempDirTest):
         env = dict(os.environ, QT_QPA_PLATFORM="offscreen", USERPROFILE=str(self.tmp), HOME=str(self.tmp))
         out = subprocess.run([sys.executable, "-c", QUIT_SCRIPT, str(root / "musicplayer.py"), str(self.tmp)],
                              cwd=root, env=env, capture_output=True, text=True, timeout=120)
-        # The return code isn't checked: offscreen, the app sometimes ends with an access violation at
-        # exit even with no job running (a separate problem).
         crash = self.tmp / mp.CRASH_FILE.name     # the app logs its own errors here, not to stderr
         why = out.stderr[-2000:] + (crash.read_text() if crash.exists() else "")
         self.assertNotIn("Destroyed while thread", out.stderr)
+        # an app-wide Python event filter left installed made ~40% of exits an access violation
+        self.assertEqual(out.returncode, 0, "the app crashed at exit\n" + why)
         self.assertTrue((self.tmp / "job-finished").exists(), "the job was cut off when the app ended\n" + why)
 
 

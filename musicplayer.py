@@ -5184,7 +5184,10 @@ def make_labels_plain():
     global PLAIN_LABELS
     if PLAIN_LABELS is None:
         PLAIN_LABELS = PlainLabels()
-        QApplication.instance().installEventFilter(PLAIN_LABELS)
+        app = QApplication.instance()
+        app.installEventFilter(PLAIN_LABELS)
+        # left installed, Qt keeps calling this Python filter while the interpreter shuts down: a crash at exit
+        app.aboutToQuit.connect(lambda: app.removeEventFilter(PLAIN_LABELS))
 
 
 SPACE_WIDGETS = ("QAbstractButton", "QComboBox", "QAbstractSpinBox", "QLineEdit", "QTextEdit", "QPlainTextEdit")
