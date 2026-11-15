@@ -275,13 +275,13 @@ Fixes only.
 - **VLC:** one damaged song at the start no longer moves eozMP to the built-in engine (and off the equalizer)
   for the rest of the session; that song is skipped instead. VLC also frees what it used for each song, and all
   of itself when you switch engines.
-- **Switching engines** while mpv plays gaplessly no longer skips a song.
-- **Quitting:** jobs that end while eozMP closes no longer start new ones, cover jobs get to finish, and the media
-  keys and Windows media controls are let go cleanly.
+- **Switching engines** right as mpv moved on to the next song without a gap could skip a song; it can't any more.
+- **Quitting:** jobs that end while eozMP closes no longer start new ones, cover jobs still running are waited
+  for, and the media keys and Windows media controls are let go cleanly.
 - An error in a background job is written to the error log without touching the window, which could crash it.
 - **Translations:** words that were machine-translated in the wrong sense are fixed in all languages: *Play*
   ("play a game"), *Plays* ("theatre plays"), *Song*, *Rock* ("stone"), *Light* and *Dark* themes, the length
-  column and more. Language names in Preferences show in their own language.
+  column and more.
 
 ## New in 1.6
 

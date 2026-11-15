@@ -21,9 +21,9 @@ music through Soulseek. It speaks 12 languages, runs fully on your own PC and ne
 ## New in 1.6.1
 
 - **VLC** keeps working when the first song is damaged (that song is skipped), and frees what it uses
-- **Switching engines** during gapless playback no longer skips a song; quitting lets go of everything cleanly
+- **Switching engines** right at a gapless song change can't skip a song any more; quitting lets go of everything cleanly
 - **Translations:** wrongly machine-translated words (*Play*, *Plays*, *Song*, *Rock*, *Light*/*Dark*...) are fixed
-  in all languages, and language names show in their own language
+  in all languages
 
 ## New in 1.6
 
