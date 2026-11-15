@@ -324,5 +324,69 @@ class YearTest(TempDirTest):
                 self.assertEqual(self.year_of(date), year)
 
 
+class WriteTagsTest(TempDirTest):
+    """Fix tags and cover: what's written is what's read back, in every format, or the file is left alone."""
+    NEW = {"title": "Song", "artist": "Singer", "albumartist": "Band", "album": "Album", "tracknumber": "3/12",
+           "discnumber": "2/2", "date": "2019-05-03", "genre": "Rock"}
+
+    def written(self, path, cover=None, **tags):
+        covered = mp.write_tags(str(path), {**self.NEW, **tags}, cover)
+        self.assertEqual([p.name for p in self.tmp.iterdir() if "eozmp-tmp" in p.name], [])
+        return covered
+
+    def check(self, path):
+        t = mp.read_track(str(path))
+        self.assertEqual((t["title"], t["artist"], t["album"], t["num"], t["disc"], t["year"], t["genre"]),
+                         ("Song", "Band", "Album", 3, 2, 2019, "Rock"))
+
+    def test_every_format_reads_back_what_was_written(self):
+        makers = {"mp3": lambda p: tagged_mp3(p, title="Old") or p, "wav": s.wav, "aiff": s.aiff, "flac": s.flac,
+                  "opus": s.opus, "ogg": s.vorbis, "wv": s.wavpack, "ape": s.monkeys,
+                  "wma": lambda p: s.ffmpeg_make(p, "wmav2"),
+                  "m4a": lambda p: s.ffmpeg_make(p, "aac", ("-strict", "-2"))}
+        for ext, make in makers.items():
+            with self.subTest(ext):
+                p = make(self.tmp / f"a.{ext}")
+                if p is None:
+                    continue              # no ffmpeg here
+                self.written(p)
+                self.check(p)
+
+    def test_one_disc_clears_an_old_disc_number_but_other_blanks_keep_theirs(self):
+        p = self.tmp / "a.mp3"
+        tagged_mp3(p, title="Old", discnumber="2/2", genre="Jazz")
+        self.written(p, discnumber="", genre="")
+        t = mp.read_track(str(p))
+        self.assertEqual((t["title"], t["disc"], t["genre"]), ("Song", 1, "Jazz"))
+
+    def test_cover_goes_in_where_the_format_holds_one(self):
+        p = self.tmp / "a.mp3"
+        tagged_mp3(p, title="Old")
+        self.assertTrue(self.written(p, s.JPEG))
+        self.assertEqual(mp.embedded_cover(str(p)), s.JPEG)
+        self.assertFalse(self.written(s.opus(self.tmp / "b.opus"), s.JPEG))
+
+    def test_a_failed_write_leaves_the_file_as_it_was(self):
+        p = self.tmp / "a.mp3"
+        tagged_mp3(p, title="Old")
+        before = p.read_bytes()
+        with mock.patch.object(mp, "embed_cover", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.written(p, s.JPEG)
+        self.assertEqual(p.read_bytes(), before)
+
+    def test_a_broken_picture_does_not_hide_the_good_cover(self):
+        import base64
+        from mutagen.flac import Picture
+        p = s.vorbis(self.tmp / "a.ogg")
+        pic = Picture()
+        pic.type, pic.mime, pic.data = 3, "image/jpeg", s.JPEG
+        a = File(str(p))
+        a["metadata_block_picture"] = [base64.b64encode(pic.write()).decode()]
+        a["coverart"] = ["not base64!"]
+        a.save()
+        self.assertEqual(mp.embedded_cover(str(p)), s.JPEG)
+
+
 if __name__ == "__main__":
     unittest.main()

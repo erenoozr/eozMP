@@ -1121,14 +1121,22 @@ def file_pictures(audio):
                 pics.append((p.type, p.data))
             except Exception:
                 pass
-        pics += [(0, base64.b64decode(b64)) for b64 in tags.get("coverart", [])]   # the older way
+        for b64 in tags.get("coverart", []):     # the older way
+            try:
+                pics.append((0, base64.b64decode(b64)))
+            except Exception:
+                pass                             # one broken picture mustn't hide the good ones
     elif kind == "ape":
         for key, front in (("Cover Art (Front)", True), ("Cover Art (Other)", False), ("Cover Art (Back)", False)):
             value = tags.get(key)
             if value is not None and b"\0" in bytes(value.value):
                 pics.append((3 if front else 0, bytes(value.value).split(b"\0", 1)[1]))
     elif kind == "asf":
-        pics += [_asf_picture(bytes(v.value)) for v in tags.get("WM/Picture", [])]
+        for v in tags.get("WM/Picture", []):
+            try:
+                pics.append(_asf_picture(bytes(v.value)))
+            except Exception:
+                pass
     return pics
 
 
@@ -7832,23 +7840,56 @@ def find_release(artist, album, n):
 
 
 def write_tags(path, tags, cover=None):
+    """Write the tags (and cover) to a copy and swap it in, so a failure halfway leaves the file as it was.
+    -> whether the cover went in (False when there was none or this format can't hold one here)."""
+    root, ext = os.path.splitext(path)
+    tmp = root + ".eozmp-tmp" + ext       # same extension: mutagen and embed_cover go by it
+    shutil.copy2(path, tmp)
+    try:
+        _write_tag_values(tmp, tags)
+        covered = bool(cover) and embed_cover(tmp, cover)
+        os.replace(tmp, path)             # fails while another program holds the file open
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    return covered
+
+
+def _write_tag_values(path, tags):
     audio = MutagenFile(path, easy=True)
     if audio is None:
         raise RuntimeError("unsupported file")
     if audio.tags is None:
         audio.add_tags()
+    kind = tag_kind(audio.tags)           # None for mp3/m4a: their easy wrappers take the common names
     for k, v in tags.items():
-        if v:
-            try:
-                audio[k] = [str(v)]
-            except Exception:
-                pass          # this format has no such tag
+        if not v and k != "discnumber":   # nothing found: keep what the file has
+            continue                      # (an empty disc number means one disc, so an old "2/2" goes)
+        v = str(v)
+        if kind == "id3":                 # WAV/AIFF: ID3 without the easy wrapper
+            from mutagen.id3 import Frames
+            fid = TAG_KEYS["id3"][k][0]
+            audio.tags.delall(fid)
+            if v:
+                audio.tags.add(Frames[fid](encoding=3, text=[v]))
+        elif kind in ("asf", "ape"):      # their own names, or the player reads the old tag back
+            key = TAG_KEYS[kind][k][0]
+            if key in audio.tags:         # ASFTags is a list underneath: no pop(key, default)
+                del audio.tags[key]
+            if v:
+                audio.tags[key] = [v] if kind == "asf" else v
+        else:
+            audio.pop(k, None)
+            if v:
+                audio[k] = [v]
     audio.save()
-    if cover:
-        embed_cover(path, cover)
 
 
 def embed_cover(path, data):
+    """-> True when the cover was written; only mp3, flac and mp4 files get one."""
     mime = "image/png" if data[:8] == b"\x89PNG\r\n\x1a\n" else "image/jpeg"
     ext = os.path.splitext(path)[1].lower()
     if ext == ".mp3":
@@ -7873,6 +7914,9 @@ def embed_cover(path, data):
         f = MP4(path)
         f["covr"] = [MP4Cover(data, imageformat=MP4Cover.FORMAT_PNG if mime == "image/png" else MP4Cover.FORMAT_JPEG)]
         f.save()
+    else:
+        return False
+    return True
 
 
 def move_aside(paths, root):
@@ -8191,7 +8235,11 @@ class TagFixDialog(QDialog):
             self.table.setItem(r, 0, first)
             self.table.setItem(r, 1, QTableWidgetItem(f"{t['artist_raw'] or t['artist']} - {t['title']}"))
             self.table.setItem(r, 2, QTableWidgetItem(f"{new['artist']} - {new['title']}"))
-            self.table.setItem(r, 3, QTableWidgetItem(f"{new['album']}  #{new['tracknumber']}  {new['date'][:4]}"))
+            extra = "".join(f"  {label} {new[k]}" for label, k in (("disc", "discnumber"), ("·", "genre")) if new.get(k))
+            item = QTableWidgetItem(f"{new['album']}  #{new['tracknumber']}  {new['date'][:4]}{extra}")
+            item.setToolTip("<qt>" + "<br>".join(html.escape(f"{k}: {v}") for k, v in new.items() if v)
+                            + "</qt>")   # everything that gets written, as text (tags are never HTML)
+            self.table.setItem(r, 3, item)
         v.addWidget(self.table, 1)
         self.cover = QCheckBox("Also put the album cover inside the files")
         self.cover.setChecked(True)
@@ -8220,24 +8268,42 @@ class TagFixDialog(QDialog):
                                 "This writes to the files themselves and can't be undone."))                 != QMessageBox.StandardButton.Yes:
             return
         want_cover = self.cover.isChecked()
+        playing = self.main.current_path()
+        main = self.main
 
         def job():
-            covers, done, failed = {}, 0, 0
+            covers, done, failed, uncovered = {}, 0, [], 0
             for path, rid, tags in jobs:
+                if path == playing:       # the engine has it open: writing could break playback or the file
+                    failed.append((path, _t("it's playing now")))
+                    continue
                 if want_cover and rid not in covers:
                     covers[rid] = cover_art(rid)
                 try:
-                    write_tags(path, tags, covers.get(rid) if want_cover else None)
+                    covered = write_tags(path, tags, covers.get(rid) if want_cover else None)
                     done += 1
-                except Exception:
-                    failed += 1
-            return done, failed
+                    uncovered += want_cover and not covered
+                except Exception as e:
+                    failed.append((path, str(e) or type(e).__name__))
+            return done, failed, uncovered
+
+        def finished(res):
+            done, failed, uncovered = res
+            msg = _t(f"Fixed the tags of {done} song(s)")
+            if uncovered:
+                msg += _t(f", {uncovered} without the cover")
+            main.statusBar().showMessage(msg, 10000)
+            if failed:
+                lines = [f"{os.path.basename(p)}: {why}" for p, why in failed[:15]]
+                if len(failed) > 15:
+                    lines.append(_t(f"...and {len(failed) - 15} more"))
+                QMessageBox.warning(main, "Fix tags and cover",
+                                    _t(f"{len(failed)} file(s) were left as they were:") + "\n\n" + "\n".join(lines))
+            main.rescan()
 
         w = Worker(job)
-        w.ok.connect(lambda res: (self.main.statusBar().showMessage(
-            _t(f"Fixed the tags of {res[0]} song(s)") + (_t(f", {res[1]} failed") if res[1] else ""), 10000),
-            self.main.rescan()))
-        w.fail.connect(lambda m: self.main.statusBar().showMessage(_t(f"Couldn't write tags ({m})"), 10000))
+        w.ok.connect(finished)
+        w.fail.connect(lambda m: main.statusBar().showMessage(_t(f"Couldn't write tags ({m})"), 10000))
         self.main.keep(w)
         self.main.statusBar().showMessage(_t("Writing tags..."))
         self.accept()
