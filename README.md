@@ -18,6 +18,19 @@ music through Soulseek. It speaks 12 languages, runs fully on your own PC and ne
 
 <img width="1075" height="889" alt="Home page" src="https://github.com/user-attachments/assets/0d0d5050-0438-4dd2-9207-d529d66931b9" />
 
+## New in 1.6
+
+Fixes and safety; nothing new to learn.
+
+- **No more crash when quitting** (it happened now and then)
+- **Fix tags** really writes WAV, WMA and APE, works on a copy so a failed write can't harm the file, skips the
+  song that's playing and lists what it couldn't change
+- **Covers:** a `cover.jpg` added later shows after a rescan, one broken picture no longer hides the others, and
+  the next song's cover is ready before it starts
+- **Turkish tags** from old taggers (þ, ð, ý instead of ş, ğ, ı) are read right on a Turkish Windows
+- **Preferences:** a broken or unknown setting can't stop eozMP from opening or get changed behind your back
+- **Setup** checks what it downloads, makes the Soulseek keys securely and tells you when a step fails
+
 ## New in 1.5.1
 
 A release of fixes; nothing new to learn.
@@ -146,7 +159,7 @@ A release of fixes; nothing new to learn.
 
 ## Download
 
-Get **`eozMP-Setup-1.5.1.exe`** from the [latest release](../../releases/latest) and double-click it. Setup asks
+Get **`eozMP-Setup-1.6.exe`** from the [latest release](../../releases/latest) and double-click it. Setup asks
 step by step what to install (eozMP, Soulseek support, VLC for the equalizer, a desktop shortcut) and, if you want
 Soulseek, your Soulseek name and password, then sets everything up. No Python needed.
 Windows may show a blue *"Windows protected your PC"* box because the app is new and unsigned:

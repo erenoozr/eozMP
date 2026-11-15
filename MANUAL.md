@@ -8,7 +8,7 @@ step by step.
 [Finding your way around](#finding-your-way-around) · [Playing music](#playing-music) ·
 [Lyrics, mini player and fullscreen](#lyrics-mini-player-and-fullscreen) ·
 [Playlists, Browse, Search, Home and Stats](#playlists-browse-search-home-and-stats) ·
-[New in 1.5.1](#new-in-151) · [New in 1.5](#new-in-15) · [New in 1.4](#new-in-14) · [New in 1.3](#new-in-13) ·
+[New in 1.6](#new-in-16) · [New in 1.5.1](#new-in-151) · [New in 1.5](#new-in-15) · [New in 1.4](#new-in-14) · [New in 1.3](#new-in-13) ·
 [Soulseek](#soulseek-logging-in-and-downloading) · [Preferences](#making-it-yours-preferences) ·
 [Optional extras](#optional-extras-mpv-vlc-equalizer-and-visualizer) · [Backups and updates](#backups-updates-and-your-data) ·
 [Troubleshooting](#troubleshooting) · [Shortcuts](#keyboard-and-mouse-shortcuts)
@@ -18,7 +18,7 @@ step by step.
 | Item | Needed? | Where it comes from |
 | --- | --- | --- |
 | A Windows 10 or 11 PC | Yes | |
-| `eozMP-Setup-1.5.1.exe` | Yes | The [latest release](../../releases/latest) of this repository |
+| `eozMP-Setup-1.6.exe` | Yes | The [latest release](../../releases/latest) of this repository |
 | Your music files (mp3, flac, m4a, wav, ogg and more) | Yes | Your own folders |
 | An internet connection | For lyrics and covers | |
 | Python 3 | Only to build eozMP yourself | [python.org/downloads](https://www.python.org/downloads/) |
@@ -32,7 +32,7 @@ A Soulseek account is free. slskd creates it for you the first time it connects 
 
 ### The easy way: the installer
 
-1. Open the [latest release](../../releases/latest) and download **eozMP-Setup-1.5.1.exe** under *Assets*.
+1. Open the [latest release](../../releases/latest) and download **eozMP-Setup-1.6.exe** under *Assets*.
 2. Double-click it. If Windows shows a blue **Windows protected your PC** box, click **More info**, then
    **Run anyway**. This happens because the app is new and unsigned.
 3. Pick a language (English or Türkçe). Setup then asks, step by step, what to install:
@@ -267,6 +267,23 @@ web:
   anything except folders it left empty.
 
 Soulseek is a file-sharing network. Only download music you're allowed to have.
+
+## New in 1.6
+
+Fixes and safety; nothing new to learn.
+
+- **Quitting** no longer crashes now and then.
+- **Fix tags** really writes WAV, WMA and APE files (before, WAV and WMA were reported as fixed while nothing was
+  written). Each file is written to a copy first, so a failed write leaves the song as it was. The song that's
+  playing is skipped, and files that couldn't be changed are listed with the reason.
+- **Covers:** one broken picture in a file no longer hides the others, a `cover.jpg` you add to a folder later
+  shows after a rescan, and the next song's cover is read ahead so it appears at once.
+- **Turkish tags** written by old taggers as Latin-1 (þ, ð, ý instead of ş, ğ, ı) are read right on a Turkish
+  Windows. The library rereads its tags once after the update.
+- **Preferences:** a broken setting no longer stops eozMP from opening, and a setting it doesn't know is no longer
+  quietly changed when you click OK.
+- **Setup** checks the Soulseek account in a silent install, makes the slskd keys with Windows' secure random
+  source, and says so when a step fails. Downloaded slskd and fpcalc files are checked before use.
 
 ## New in 1.5.1
 
