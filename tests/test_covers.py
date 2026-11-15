@@ -338,6 +338,33 @@ class PlayerCoverTest(PlayerHarness):
         p.thumb_pixmap(key, 28, 6)                                    # what painting the library row does
         self.assertTrue(wait_for(lambda: p.thumb_cache.get(key) is not None))
 
+    def test_the_next_songs_cover_is_read_ahead_off_the_gui_thread(self):
+        import threading
+        from PyQt6.QtGui import QImage
+        self.make_player(["a"])
+        p = self.player
+        other = self.tmp / "music" / "Other" / "B"
+        other.mkdir(parents=True)
+        tagged_mp3(other / "01 - b.mp3", title="b", artist="Other", album="B")
+        img = QImage(32, 32, QImage.Format.Format_RGB32)
+        img.fill(0x3366CC)
+        self.assertTrue(img.save(str(other / "cover.jpg")))
+        p.rescan()
+        self.assertTrue(wait_for(lambda: len(p.all_tracks) == 2 and not p.scanning))
+        nxt = str(other / "01 - b.mp3")
+        key = p.queue[p.qindex[nxt]][1]
+        self.assertNotIn(key, p.cover_cache)
+        threads = []
+        real = mp.folder_cover
+        with mock.patch.object(p, "plan_next", return_value={"kind": "ctx", "path": nxt}), \
+                mock.patch.object(mp, "folder_cover", side_effect=lambda path: (threads.append(
+                    threading.current_thread() is threading.main_thread()), real(path))[1]):
+            p.warm_next_cover()
+            self.assertTrue(wait_for(lambda: key in p.cover_cache))
+        self.assertIsNotNone(p.cover_cache[key])
+        self.assertTrue(threads)
+        self.assertNotIn(True, threads)                               # read in workers, never on the GUI thread
+
 
 if __name__ == "__main__":
     unittest.main()

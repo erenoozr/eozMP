@@ -10709,6 +10709,7 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
         self.index = -1
         self.current_album = None
         self.cover_cache = CoverCache()
+        self.cover_warming = set()      # albums whose cover is being read ahead (warm_next_cover)
         self.search_worker = None
         self.last_done = None
         self.poll_busy = False
@@ -12262,6 +12263,7 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
         self.update_fullscreen()
         self.update_tray()
         self.line_up_next()
+        self.warm_next_cover()
         self.on_track_started(track, key)
 
     def toggle_play(self):
@@ -12376,6 +12378,40 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
             if plan["kind"] in ("fwd", "queue", "ctx"):
                 path = plan["path"]
         p.setNext(QUrl.fromLocalFile(path) if path else None)
+
+    def warm_next_cover(self):
+        """Read the next song's cover now, off the GUI thread, so the change of song doesn't stall on the
+        file reads (big embedded art, a network drive) that cover_for would do there."""
+        if (not self.queue or getattr(self, "_planning_off", False) or not self.cfg["autoplay_next"]
+                or self.cfg["repeat_mode"] == "one"):     # only when line_up_next would plan too
+            return
+        path = self.plan_next(auto=True).get("path")
+        key = self.queue[self.qindex[path]][1] if path in self.qindex else None
+        if key not in self.albums or key in self.cover_cache or key in self.cover_warming:
+            return
+        alb = self.albums[key]
+        paths, artist, album = [t["path"] for t in alb["tracks"][:3]], alb["artist"], alb["album"]
+
+        def read():                     # the same order as cover_for; QImage is safe off the GUI thread
+            sources = [*(lambda p=p: embedded_cover(p) for p in paths), lambda: folder_cover(paths[0]),
+                       lambda: read_cached_cover(artist, album)]
+            for source in sources:
+                data, img = source(), QImage()
+                if data and img.loadFromData(data):
+                    return key, img
+            return key, None
+
+        self.cover_warming.add(key)
+        w = Worker(read)
+        w.ok.connect(self.on_cover_warmed)
+        w.fail.connect(lambda _m: self.cover_warming.discard(key))
+        self.keep(w)
+
+    def on_cover_warmed(self, res):
+        key, img = res
+        self.cover_warming.discard(key)
+        if key not in self.cover_cache:  # cover_for may have got there first
+            self.cover_cache[key] = QPixmap.fromImage(img) if img is not None else None
 
     def on_engine_advanced(self):
         """The engine moved on to the song we lined up; catch the rest of the app up with it."""
