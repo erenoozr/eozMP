@@ -9768,6 +9768,15 @@ class TimelineView(QWidget):
         self.setFixedWidth(max(600, 40 + len(items) * (self.TILE + self.GAP)))
         self.setAccessibleName("Albums on a timeline")
 
+    def set_art(self, i, pix):
+        """Shrunk to the tile once here: painting (on every hover) then only draws it."""
+        if pix is None or pix.isNull():
+            return
+        side = int(self.TILE * screen_dpr())
+        self.art[i] = pix.scaled(side, side, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                 Qt.TransformationMode.SmoothTransformation)
+        self.update()
+
     def x_of(self, i):
         return 20 + i * (self.TILE + self.GAP)
 
@@ -9830,11 +9839,9 @@ class TimelineView(QWidget):
             if not owned:
                 p.setOpacity(0.42 if i != self.hover else 0.75)
             p.setClipPath(path)
-            if pix is not None and not pix.isNull():
-                scaled = pix.scaled(rect.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                                    Qt.TransformationMode.SmoothTransformation)
-                p.drawPixmap(rect, scaled, QRect((scaled.width() - rect.width()) // 2,
-                                                 (scaled.height() - rect.height()) // 2, rect.width(), rect.height()))
+            if pix is not None:
+                s = min(pix.width(), pix.height())        # the middle square of the tile-sized cover
+                p.drawPixmap(rect, pix, QRect((pix.width() - s) // 2, (pix.height() - s) // 2, s, s))
             else:
                 p.fillRect(rect, QColor(sc["raised"]))
                 p.setPen(QColor(sc["sub"]))
@@ -9914,9 +9921,7 @@ class TimelineDialog(QDialog):
         self.view.clicked.connect(self.on_click)
         for i, it in enumerate(items):
             if it["key"] is not None and it["key"] in self.main.albums:
-                pix = self.main.cover_for(it["key"])
-                if pix is not None:
-                    self.view.art[i] = pix
+                self.view.set_art(i, self.main.cover_for(it["key"]))
         self.scroll.setWidget(self.view)
         self.view.setFixedHeight(max(self.view.minimumHeight(), self.scroll.viewport().height() - 4))
 
@@ -9957,8 +9962,7 @@ class TimelineDialog(QDialog):
     def on_art(self, i, img):
         try:
             if 0 <= i < len(self.items):
-                self.view.art[i] = QPixmap.fromImage(img)
-                self.view.update()
+                self.view.set_art(i, QPixmap.fromImage(img))
         except RuntimeError:
             pass      # the window was closed while covers were still coming
 
@@ -11906,6 +11910,11 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
         self.scanning = False
         if tracks and same_tracks(tracks, self.built_tracks):
             self.cover_cache = CoverCache()    # cover files may have been added; songs are as they were
+            for key in self.thumb_cache.bare:  # albums seen without a cover (or unreadable then) get looked at again
+                self.tree_px.pop(key, None)
+            self.thumb_cache.bare.clear()
+            self.backdrop_cache.clear()
+            self.tree.viewport().update()
             self.statusBar().showMessage(f"{len(tracks)} tracks - {len(self.artists)} artists - {len(self.albums)} albums")
         else:
             self.build_library(tracks)

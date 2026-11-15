@@ -242,6 +242,18 @@ class WindowFeaturesTest(PlayerHarness):
         self.assertEqual([(i["title"], i["key"] is None) for i in dlg.items], [(owned, False), ("Later", True)])
         self.assertEqual(dlg.items[0]["year"], 1999)         # the year comes from MusicBrainz when the tags have none
 
+    def test_timeline_keeps_covers_at_tile_size(self):
+        from PyQt6.QtGui import QPixmap
+        items = [{"title": "A", "year": 1999, "key": None, "mbid": None, "type": "Album"}]
+        view = mp.TimelineView(self.player, items)
+        self.addCleanup(view.deleteLater)
+        big = QPixmap(2000, 1200)
+        big.fill()
+        view.set_art(0, big)
+        side = int(view.TILE * mp.screen_dpr())
+        self.assertEqual(min(view.art[0].width(), view.art[0].height()), side)   # not 2000 x 1200 on every hover
+        self.assertFalse(view.grab().isNull())
+
     def test_heatmap_on_the_stats_page(self):
         p = self.player
         mp.record_play(p.stats, str(self.songs[0]), 120)

@@ -322,6 +322,22 @@ class PlayerCoverTest(PlayerHarness):
         self.assertEqual(mp.read_cached_cover("Band", "One"), s.JPEG)
         self.assertFalse((mixed / "cover.jpg").exists())             # it would be album Two's cover too
 
+    def test_a_cover_file_added_later_shows_after_a_rescan(self):
+        from PyQt6.QtGui import QImage
+        self.make_player(["a"])
+        p = self.player
+        key = next(iter(p.albums))
+        p.ask_thumb(key)
+        self.assertTrue(wait_for(lambda: key in p.thumb_cache))
+        self.assertIsNone(p.thumb_cache[key])                         # no cover yet
+        img = QImage(64, 64, QImage.Format.Format_RGB32)
+        img.fill(0x3366CC)
+        self.assertTrue(img.save(str(self.songs[0].parent / "cover.jpg")))
+        p.rescan()                                                    # same songs, a new cover file
+        self.assertTrue(wait_for(lambda: not p.scanning))
+        p.thumb_pixmap(key, 28, 6)                                    # what painting the library row does
+        self.assertTrue(wait_for(lambda: p.thumb_cache.get(key) is not None))
+
 
 if __name__ == "__main__":
     unittest.main()
