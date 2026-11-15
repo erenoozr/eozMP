@@ -18,6 +18,13 @@ music through Soulseek. It speaks 12 languages, runs fully on your own PC and ne
 
 <img width="1075" height="889" alt="Home page" src="https://github.com/user-attachments/assets/0d0d5050-0438-4dd2-9207-d529d66931b9" />
 
+## New in 1.6.1
+
+- **VLC** keeps working when the first song is damaged (that song is skipped), and frees what it uses
+- **Switching engines** during gapless playback no longer skips a song; quitting lets go of everything cleanly
+- **Translations:** wrongly machine-translated words (*Play*, *Plays*, *Song*, *Rock*, *Light*/*Dark*...) are fixed
+  in all languages, and language names show in their own language
+
 ## New in 1.6
 
 Fixes and safety; nothing new to learn.
@@ -159,7 +166,7 @@ A release of fixes; nothing new to learn.
 
 ## Download
 
-Get **`eozMP-Setup-1.6.exe`** from the [latest release](../../releases/latest) and double-click it. Setup asks
+Get **`eozMP-Setup-1.6.1.exe`** from the [latest release](../../releases/latest) and double-click it. Setup asks
 step by step what to install (eozMP, Soulseek support, VLC for the equalizer, a desktop shortcut) and, if you want
 Soulseek, your Soulseek name and password, then sets everything up. No Python needed.
 Windows may show a blue *"Windows protected your PC"* box because the app is new and unsigned:
