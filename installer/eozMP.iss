@@ -55,6 +55,9 @@ english.OldDesc=Your existing slskd settings were found.
 english.OldMsg=An slskd settings file already exists on this PC (%LOCALAPPDATA%\slskd\slskd.yml), so setup leaves it exactly as it is.%n%nTo connect eozMP to it, follow section 7 of the Soulseek Guide. You can open it at the end of setup.
 english.VlcFail=VLC couldn't be downloaded (%1). eozMP works without it; only the equalizer needs VLC. You can install it later from videolan.org.
 english.VlcRun=Installing VLC (Windows will ask for permission)...
+english.VlcRunFail=VLC's setup didn't finish (%1). eozMP works without it; you can install VLC later from videolan.org.
+english.AccNotSaved=The Soulseek account wasn't saved: %1 The Soulseek Guide (Start menu > eozMP) shows how to finish it.
+english.SaveFail=Setup couldn't write %1. Check that the folder can be written to, then run setup again.
 english.RunGuide=Open the Soulseek Guide
 english.IconGuide=Soulseek Guide
 english.IconManual=eozMP User Manual
@@ -79,6 +82,9 @@ turkish.OldDesc=Mevcut slskd ayarların bulundu.
 turkish.OldMsg=Bu bilgisayarda zaten bir slskd ayar dosyası var (%LOCALAPPDATA%\slskd\slskd.yml), kurulum ona hiç dokunmayacak.%n%neozMP'yi ona bağlamak için Soulseek Rehberi'nin 7. bölümünü izle. Kurulumun sonunda açabilirsin.
 turkish.VlcFail=VLC indirilemedi (%1). eozMP onsuz da çalışır; sadece ekolayzır VLC ister. Sonra videolan.org'dan kurabilirsin.
 turkish.VlcRun=VLC kuruluyor (Windows izin isteyecek)...
+turkish.VlcRunFail=VLC kurulumu tamamlanmadı (%1). eozMP onsuz da çalışır; VLC'yi sonra videolan.org'dan kurabilirsin.
+turkish.AccNotSaved=Soulseek hesabı kaydedilmedi: %1 Soulseek Rehberi (Başlat menüsü > eozMP) nasıl tamamlanacağını anlatıyor.
+turkish.SaveFail=Kurulum %1 dosyasını yazamadı. Klasöre yazılabildiğini kontrol et, sonra kurulumu yeniden çalıştır.
 turkish.RunGuide=Soulseek Rehberi'ni aç
 turkish.IconGuide=Soulseek Rehberi
 turkish.IconManual=eozMP Kullanım Kılavuzu
@@ -141,6 +147,39 @@ begin
       Result := False;
 end;
 
+{ '' when the account can be used, else why not (the same rules for the wizard page and /SOULUSER= /SOULPASS=) }
+function AccountProblem(User, Pass: String): String;
+begin
+  Result := '';
+  if (Length(User) < 3) or (Length(User) > 30) or
+     not OnlyChars(User, 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-') then
+    Result := CustomMessage('AccBadUser')
+  else if (Length(Pass) < 4) or
+     not OnlyChars(Pass, 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') then
+    Result := CustomMessage('AccBadPass');
+end;
+
+function CoCreateGuid(var Guid: TGUID): Integer; external 'CoCreateGuid@ole32.dll stdcall';
+
+{ 32 hex digits from Windows' own random source (a version 4 GUID); Random() alone is guessable }
+function RandomHex: String;
+var
+  G: TGUID;
+  I: Integer;
+begin
+  if CoCreateGuid(G) <> 0 then
+    RaiseException('CoCreateGuid failed');
+  Result := Format('%.8x%.4x%.4x', [G.D1, G.D2, G.D3]);
+  for I := 0 to 7 do
+    Result := Result + Format('%.2x', [G.D4[I]]);
+end;
+
+procedure SaveOrSay(Path: String; Lines: TArrayOfString);
+begin
+  if not SaveStringsToUTF8File(Path, Lines, False) then
+    SuppressibleMsgBox(FmtMessage(CustomMessage('SaveFail'), [Path]), mbError, MB_OK, IDOK);
+end;
+
 procedure InitializeWizard;
 begin
   HasYml := FileExists(YmlPath);
@@ -182,16 +221,9 @@ begin
     Pass := AccountPage.Values[1];
     if User = '' then
       MsgBox(CustomMessage('AccSkipped'), mbInformation, MB_OK)
-    else if (Length(User) < 3) or (Length(User) > 30) or
-       not OnlyChars(User, 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-') then
+    else if AccountProblem(User, Pass) <> '' then
     begin
-      MsgBox(CustomMessage('AccBadUser'), mbError, MB_OK);
-      Result := False;
-    end
-    else if (Length(Pass) < 4) or
-       not OnlyChars(Pass, 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') then
-    begin
-      MsgBox(CustomMessage('AccBadPass'), mbError, MB_OK);
+      MsgBox(AccountProblem(User, Pass), mbError, MB_OK);
       Result := False;
     end;
   end
@@ -222,12 +254,18 @@ begin
   User := Trim(AccountPage.Values[0]);
   Pass := AccountPage.Values[1];
   Dir := DirPage.Values[0];
+  { a silent install skips the page that checks these; a bad one would break slskd.yml }
+  if AccountProblem(User, Pass) <> '' then
+  begin
+    SuppressibleMsgBox(FmtMessage(CustomMessage('AccNotSaved'), [AccountProblem(User, Pass)]), mbError, MB_OK, IDOK);
+    Exit;
+  end;
   { a fresh random key that only eozMP and slskd know }
-  Key := GetSHA1OfString(GetDateTimeString('yyyymmddhhnnsszzz', #0, #0) + User + IntToStr(Random(2147483647))
-    + ExpandConstant('{computername}{%PROCESSOR_IDENTIFIER}') + IntToStr(Random(2147483647)));
+  Key := RandomHex + RandomHex;
   { slskd's web page listens on the whole network, so it gets its own random password too }
-  WebPass := Copy(GetSHA1OfString(Key + IntToStr(Random(2147483647)) + GetDateTimeString('zzz', #0, #0)), 1, 24);
-  ForceDirectories(Dir);
+  WebPass := Copy(RandomHex, 1, 24);
+  if not ForceDirectories(Dir) then
+    SuppressibleMsgBox(FmtMessage(CustomMessage('SaveFail'), [Dir]), mbError, MB_OK, IDOK);
   ForceDirectories(ExtractFileDir(YmlPath));
   YDir := Dir;
   StringChangeEx(YDir, '''', '''''', True);   { YAML single-quoted string }
@@ -251,13 +289,13 @@ begin
   Lines[16] := '        cidr: 127.0.0.1/32,::1/128';
   Lines[17] := '';
   Lines[18] := '# To share music with others, see section 6 of the Soulseek Guide.';
-  SaveStringsToUTF8File(YmlPath, Lines, False);
+  SaveOrSay(YmlPath, Lines);
 
   JDir := Dir;
   StringChangeEx(JDir, '\', '\\', True);
   SetArrayLength(Lines, 1);
   Lines[0] := '{"slskd_url": "http://localhost:5030", "slskd_key": "' + Key + '", "downloads_dir": "' + JDir + '"}';
-  SaveStringsToUTF8File(ExpandConstant('{app}\slskd_setup.json'), Lines, False);
+  SaveOrSay(ExpandConstant('{app}\slskd_setup.json'), Lines);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -271,7 +309,10 @@ begin
   if WizardIsComponentSelected('vlc') and VlcReady then
   begin
     WizardForm.StatusLabel.Caption := CustomMessage('VlcRun');
-    ShellExec('runas', ExpandConstant('{tmp}\vlc-setup.exe'), '/L=1033 /S', '', SW_SHOW,
-      ewWaitUntilTerminated, Code);
+    if not ShellExec('runas', ExpandConstant('{tmp}\vlc-setup.exe'), '/L=1033 /S', '', SW_SHOW,
+                     ewWaitUntilTerminated, Code) then
+      SuppressibleMsgBox(FmtMessage(CustomMessage('VlcRunFail'), [SysErrorMessage(Code)]), mbInformation, MB_OK, IDOK)
+    else if Code <> 0 then
+      SuppressibleMsgBox(FmtMessage(CustomMessage('VlcRunFail'), [IntToStr(Code)]), mbInformation, MB_OK, IDOK);
   end;
 end;

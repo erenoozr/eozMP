@@ -28,7 +28,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pyinstaller
+          python -m pip install -r requirements.txt pyinstaller==6.22.3
 
       - name: Read the version
         id: ver
@@ -74,8 +74,10 @@ jobs:
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force installer\vendor\fpcalc | Out-Null
           Invoke-WebRequest 'https://github.com/slskd/slskd/releases/download/0.26.1/slskd-0.26.1-win-x64.zip' -OutFile slskd.zip
+          if ((Get-FileHash slskd.zip).Hash -ne '14928215e6931f291dbc489cbeeccffba6d1aa0d5b94d4262705a596407d50d3') { throw 'slskd.zip does not match its checksum' }
           Expand-Archive slskd.zip installer\vendor\slskd
           Invoke-WebRequest 'https://github.com/acoustid/chromaprint/releases/download/v1.6.1/chromaprint-fpcalc-1.6.1-windows-x86_64.zip' -OutFile fp.zip
+          if ((Get-FileHash fp.zip).Hash -ne '735d6182b38e9f364b84ce6f4ccd682c75e2851de89735711d6b762d12b92a4e') { throw 'fpcalc zip does not match its checksum' }
           Expand-Archive fp.zip fp
           Get-ChildItem -Recurse fp -Filter fpcalc.exe | Copy-Item -Destination installer\vendor\fpcalc
 

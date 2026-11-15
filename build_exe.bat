@@ -30,6 +30,11 @@ rem --- 2. Install / update everything eozMP uses
 echo  [1/3] Installing what eozMP needs (this can take a few minutes the first time)...
 %PY% -m pip install --upgrade pip
 %PY% -m pip install --upgrade PyQt6 mutagen numpy pyinstaller segno
+if errorlevel 1 (
+    echo  Something went wrong while installing. Check your internet connection and try again.
+    pause
+    exit /b 1
+)
 rem Optional: Windows media controls (lock screen, volume flyout, headset buttons)
 %PY% -m pip install --upgrade winrt-runtime winrt-Windows.Foundation winrt-Windows.Foundation.Collections winrt-Windows.Media winrt-Windows.Media.Playback winrt-Windows.Storage winrt-Windows.Storage.Streams
 rem Optional engines. mpv: gapless playback, ReplayGain, equalizer (needs libmpv-2.dll next to
@@ -45,18 +50,16 @@ rem --- 3. Build the exe
 echo.
 echo  [2/3] Building eozMP.exe ...
 if exist build rmdir /s /q build
+rem an old exe left in dist must not pass for a new one when this build fails
+if exist "dist\eozMP.exe" del /f /q "dist\eozMP.exe"
 if exist "eozMP.ico" (
     %PY% -m PyInstaller --noconfirm --onefile --windowed --name eozMP --icon eozMP.ico --hidden-import mpv --hidden-import vlc --collect-all winrt musicplayer.py
 ) else (
-    echo  (eozMP.ico not found - building without the icon)
+    echo  (eozMP.ico not found - building without the icon^)
     %PY% -m PyInstaller --noconfirm --onefile --windowed --name eozMP --hidden-import mpv --hidden-import vlc musicplayer.py
 )
-if not exist "dist\eozMP.exe" (
-    echo.
-    echo  The build failed. Scroll up to see the error and send it to whoever helps you with eozMP.
-    pause
-    exit /b 1
-)
+if errorlevel 1 goto build_failed
+if not exist "dist\eozMP.exe" goto build_failed
 
 rem --- 4. Put a copy on the Desktop
 echo.
@@ -64,9 +67,16 @@ echo  [3/3] Copying eozMP.exe to your Desktop...
 for /f "usebackq delims=" %%D in (`powershell -NoProfile -Command "[Environment]::GetFolderPath('Desktop')"`) do set "DESKTOP=%%D"
 if defined DESKTOP (
     copy /y "dist\eozMP.exe" "%DESKTOP%\eozMP.exe" >nul
-    echo  Done! eozMP.exe is on your Desktop (and in the "dist" folder here).
+    echo  Done! eozMP.exe is on your Desktop (and in the "dist" folder here^).
 ) else (
     echo  Done! eozMP.exe is in the "dist" folder here.
 )
 echo.
 pause
+exit /b 0
+
+:build_failed
+echo.
+echo  The build failed. Scroll up to see the error and send it to whoever helps you with eozMP.
+pause
+exit /b 1
