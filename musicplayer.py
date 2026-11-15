@@ -285,6 +285,11 @@ class QComboBox(QComboBox):
         else:
             super().setCurrentText(text)
 
+    def set_choice(self, text, fallback):
+        """A saved value this list no longer has (from another version) shows the default, not the first item,
+        so pressing OK doesn't quietly change it."""
+        self.setCurrentText(text if self.findData(text) >= 0 else fallback)
+
 
 class QTableWidget(QTableWidget):
     def __init__(self, *a, **k):
@@ -550,10 +555,26 @@ def same_kind(default, value):
     return isinstance(value, type(default))
 
 
+# What the items of a list setting must be: a hand-edited or foreign settings file mustn't stop eozMP opening
+LIST_ITEMS = {"folders": str, "keep_together": str, "ctx_paths": str, "eq_bands": (int, float),
+              "win_size": int, "mini_pos": int, "desktop_lyrics_pos": int}
+PAIRS = ("win_size", "mini_pos", "desktop_lyrics_pos")      # [x, y] / [width, height]; the positions may be []
+
+
+def setting_ok(key, value):
+    default = DEFAULT_CFG[key]
+    if not same_kind(default, value):
+        return False
+    kind = LIST_ITEMS.get(key)
+    if kind and not all(isinstance(x, kind) and not isinstance(x, bool) for x in value):
+        return False
+    return key not in PAIRS or len(value) == 2 or value == default == []
+
+
 def load_config():
     cfg = copy.deepcopy(DEFAULT_CFG)
     for key, value in (read_json(CONFIG_FILE, dict) or {}).items():
-        if key not in DEFAULT_CFG or same_kind(DEFAULT_CFG[key], value):
+        if key not in DEFAULT_CFG or setting_ok(key, value):
             cfg[key] = value
     return cfg
 
@@ -2947,7 +2968,7 @@ class PreferencesDialog(QDialog):
         af = QFormLayout(ap)
         self.theme = QComboBox()
         self.theme.addItems(["System", "Dark", "Light"])
-        self.theme.setCurrentText(cfg["theme"])
+        self.theme.set_choice(cfg["theme"], DEFAULT_CFG["theme"])
         self.accent = QComboBox()
         for name, hexcol in ACCENTS.items():
             swatch = QPixmap(14, 14)
@@ -2957,16 +2978,16 @@ class PreferencesDialog(QDialog):
         custom_swatch = QPixmap(14, 14)
         custom_swatch.fill(QColor(cfg["accent_custom"]) if QColor(cfg["accent_custom"]).isValid() else QColor("#888888"))
         self.accent.addItem(QIcon(custom_swatch), CUSTOM_ACCENT)
-        self.accent.setCurrentText(cfg["accent"])
+        self.accent.set_choice(cfg["accent"], DEFAULT_CFG["accent"])
         self.corners = QComboBox()
         self.corners.addItems(list(CORNER_FACTORS))
-        self.corners.setCurrentText(cfg["corner_style"])
+        self.corners.set_choice(cfg["corner_style"], DEFAULT_CFG["corner_style"])
         self.density = QComboBox()
         self.density.addItems(list(DENSITY))
-        self.density.setCurrentText(cfg["density"])
+        self.density.set_choice(cfg["density"], DEFAULT_CFG["density"])
         self.cover_size = QComboBox()
         self.cover_size.addItems(list(COVER_SIZES))
-        self.cover_size.setCurrentText(cfg["cover_size"])
+        self.cover_size.set_choice(cfg["cover_size"], DEFAULT_CFG["cover_size"])
         self.ui_font_mode, self.ui_font = self.font_picker(cfg["ui_font"], "Times New Roman")
         self.ui_size = QSpinBox()
         self.ui_size.setRange(8, 16)
@@ -2996,7 +3017,7 @@ class PreferencesDialog(QDialog):
         af.addRow("Album cover size", self.cover_size)
         self.list_style = QComboBox()
         self.list_style.addItems(["Covers and numbers", "Numbers", "Covers", "Plain"])
-        self.list_style.setCurrentText(cfg["album_list_style"])
+        self.list_style.set_choice(cfg["album_list_style"], DEFAULT_CFG["album_list_style"])
         af.addRow("Albums in the left list", self.list_style)
         self.page_fade = QCheckBox("Fade between pages")
         self.page_fade.setChecked(bool(cfg["page_fade"]))
@@ -3048,14 +3069,14 @@ class PreferencesDialog(QDialog):
         yf = QFormLayout(ly)
         self.ly_style = QComboBox()
         self.ly_style.addItems(["Album art", "Classic"])
-        self.ly_style.setCurrentText(cfg["lyrics_style"])
+        self.ly_style.set_choice(cfg["lyrics_style"], DEFAULT_CFG["lyrics_style"])
         self.ly_align = QComboBox()
         self.ly_align.addItems(["Left", "Center"])
-        self.ly_align.setCurrentText(cfg["lyrics_align"])
+        self.ly_align.set_choice(cfg["lyrics_align"], DEFAULT_CFG["lyrics_align"])
         self.ly_font_mode, self.ly_font = self.font_picker(cfg["lyrics_font"], "Same as app font")
         self.ly_weight = QComboBox()
         self.ly_weight.addItems(list(LYRIC_WEIGHTS))
-        self.ly_weight.setCurrentText(cfg["lyrics_weight"])
+        self.ly_weight.set_choice(cfg["lyrics_weight"], DEFAULT_CFG["lyrics_weight"])
         self.ly_size = QSpinBox()
         self.ly_size.setRange(10, 60)
         self.ly_size.setSuffix(" pt")
@@ -3147,7 +3168,7 @@ class PreferencesDialog(QDialog):
             uf.addRow(mpv_note)
         self.viz_style = QComboBox()
         self.viz_style.addItems(["Off", "Bars", "Wave"])
-        self.viz_style.setCurrentText(cfg["visualizer"])
+        self.viz_style.set_choice(cfg["visualizer"], DEFAULT_CFG["visualizer"])
         uf.addRow("Visualizer (lyrics page and fullscreen)", self.viz_style)
         viz_note = QLabel(
             _t(f"Visualizer: {_t(VIZ_STATUS)}. It works with the built-in engine")
@@ -3188,10 +3209,10 @@ class PreferencesDialog(QDialog):
         drow.addWidget(browse)
         self.soul_view = QComboBox()
         self.soul_view.addItems(["Albums", "Files"])
-        self.soul_view.setCurrentText(cfg["soul_view"])
+        self.soul_view.set_choice(cfg["soul_view"], DEFAULT_CFG["soul_view"])
         self.soul_quality = QComboBox()
         self.soul_quality.addItems(FORMAT_OPTIONS)
-        self.soul_quality.setCurrentText(cfg["soul_quality"])
+        self.soul_quality.set_choice(cfg["soul_quality"], DEFAULT_CFG["soul_quality"])
         self.soul_free = QCheckBox("Only show users with a free upload slot")
         self.soul_free.setChecked(bool(cfg["soul_free_only"]))
         test = QPushButton("Test connection")

@@ -197,6 +197,18 @@ class SettingsFilesTest(TempDirTest):
         self.assertEqual(cfg["volume"], 40)
         self.assertIs(cfg["resume"], False)
 
+    def test_a_list_setting_with_wrong_items_falls_back_to_default(self):
+        f = self.patch_files()
+        f["CONFIG_FILE"].write_text(json.dumps({"win_size": [1100], "folders": [1, "D:/Music"],
+                                                "mini_pos": ["a", "b"], "eq_bands": [1, 2.5],
+                                                "desktop_lyrics_pos": [10, 20]}))
+        cfg = mp.load_config()
+        self.assertEqual(cfg["win_size"], mp.DEFAULT_CFG["win_size"])     # resize(*[1100]) would stop the app
+        self.assertEqual(cfg["folders"], [])                               # Settings couldn't open with an int
+        self.assertEqual(cfg["mini_pos"], [])
+        self.assertEqual(cfg["eq_bands"], [1, 2.5])
+        self.assertEqual(cfg["desktop_lyrics_pos"], [10, 20])
+
 
 class SaveReachesTheDiskTest(TempDirTest):
     def test_saved_data_is_forced_to_disk_before_the_swap(self):

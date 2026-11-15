@@ -289,6 +289,13 @@ class PlayerTest(PlayerHarness):
         self.assertTrue(wait_for(settled, 20))
         self.assertLessEqual(len(self.played), 3)
 
+    def test_settings_window_keeps_an_unknown_old_choice_at_its_default(self):
+        self.make_player(["One"])
+        self.player.cfg["cover_size"] = "Huge"                     # not in this version's list
+        dlg = mp.PreferencesDialog(self.player.cfg, self.player)
+        self.assertEqual(dlg.values()["cover_size"], mp.DEFAULT_CFG["cover_size"])   # not the first item, "Small"
+        dlg.deleteLater()
+
 
 @unittest.skipUnless(mp.load_mpv(os.environ.get("EOZMP_LIBMPV", "")), "libmpv-2.dll not found")
 class MpvPlayerTest(PlayerTest):
