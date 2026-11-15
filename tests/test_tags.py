@@ -59,6 +59,22 @@ class FormatTagsTest(TempDirTest):
         t = mp.read_track(str(p))
         self.assertEqual((t["title"], t["artist"]), ("Gül Döktüm Yollarına", "Barış Manço"))
 
+    def test_id3_latin1_written_by_a_turkish_tagger(self):
+        """Old Turkish taggers put Windows-1254 bytes into ID3 text marked Latin-1."""
+        def title_of(text, turkish_windows, cp1254=True):
+            p = s.wav(self.tmp / "a.wav")
+            # cp1254: the bytes a Turkish tagger wrote, as mutagen reads them back; else real Latin-1 text
+            raw = text.encode("cp1254").decode("latin-1") if cp1254 else text
+            s.id3_frames(p, [TIT2(encoding=0, text=raw), TPE1(encoding=3, text="Barış Manço")])
+            with mock.patch.object(mp, "LEGACY_TURKISH", turkish_windows):
+                return mp.read_track(str(p))["title"], mp.read_track(str(p))["artist"]
+        self.assertEqual(title_of("Gönül Dağı", True), ("Gönül Dağı", "Barış Manço"))
+        self.assertEqual(title_of("Işıklı Şiir", True)[0], "Işıklı Şiir")
+        self.assertEqual(title_of("Gönül Dağı", False)[0], "Gönül Daðý")                # not a Turkish Windows
+        self.assertEqual(title_of("Dağlar Dağlar", True)[0], "Daðlar Daðlar")           # ğ alone: could be Icelandic
+        self.assertEqual(title_of("Ágætis byrjun", True, False)[0], "Ágætis byrjun")    # real Latin-1 stays
+        self.assertEqual(title_of("Lýðveldið með", True, False)[0], "Lýðveldið með")    # Icelandic, with é
+
     def test_broken_riff_info_is_just_untagged(self):
         import struct
         p = s.wav(self.tmp / "a.wav")

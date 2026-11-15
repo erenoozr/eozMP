@@ -741,8 +741,41 @@ def tag_kind(tags):
     return None
 
 
+def _windows_is_turkish():
+    try:
+        import ctypes
+        return ctypes.windll.kernel32.GetACP() == 1254
+    except Exception:
+        return False
+
+
+# Old Turkish taggers wrote Windows-1254 into ID3 text marked Latin-1 (and ID3v1 is Latin-1 by rule),
+# so ş ğ ı Ş Ğ İ come out as þ ð ý Þ Ð Ý. Only on a Turkish Windows, where such files come from.
+LEGACY_TURKISH = _windows_is_turkish()
+MISREAD_TURKISH = set("þðýÞÐÝ")
+REAL_LATIN1 = set("áéíóúàèìòùæåøñÁÉÍÓÚÀÈÌÒÙÆÅØÑ")   # Icelandic, Czech... use þ ð ý next to these
+ONLY_TURKISH = set("çÇüÜ")                           # Turkish has them, Icelandic doesn't
+
+
+def latin1_as_turkish(text):
+    """Read a Latin-1 ID3 text again as Turkish Windows when it shows the misread letters and nothing
+    of a language that really has them. ð is everywhere in Icelandic ("Lýðveldið með"), so with ð it also
+    takes a ç or ü. shortcut: a Turkish text whose only clue is ğ ("Dağlar") stays misread rather than
+    risk an Icelandic one; upgrade by looking at the album's other songs."""
+    chars = set(text)
+    if not (LEGACY_TURKISH and chars & MISREAD_TURKISH) or chars & REAL_LATIN1:
+        return text
+    if chars & set("ðÐ") and not chars & ONLY_TURKISH:
+        return text
+    try:
+        return text.encode("latin-1").decode("cp1254")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+
+
 def tag_text(value):
     """The first text in a tag value, whatever the format wraps it in."""
+    latin1 = getattr(value, "encoding", None) == 0    # an ID3 frame that says Latin-1
     if hasattr(value, "genres"):         # ID3 genre: '(17)' -> 'Rock'
         value = value.genres
     elif hasattr(value, "text"):         # other ID3 frames
@@ -751,7 +784,8 @@ def tag_text(value):
         value = value[0] if value else ""
         if isinstance(value, tuple):     # MP4 track and disc numbers: (3, 12)
             value = value[0] if value else ""
-    return str(value).split("\0")[0].strip() if value is not None else ""
+    text = str(value).split("\0")[0].strip() if value is not None else ""
+    return latin1_as_turkish(text) if latin1 else text
 
 
 def riff_info(path):
@@ -1000,7 +1034,7 @@ def read_track(path):
     }
 
 
-TAGS_VERSION = 3   # raise it when read_track learns more: songs cached before are then read again
+TAGS_VERSION = 4   # raise it when read_track learns more: songs cached before are then read again
 
 
 def load_cache():
@@ -2270,11 +2304,11 @@ class Visualizer(QWidget):
         self.update()
 
     def paintEvent(self, e):
+        w, h, n = self.width(), self.height(), len(self.levels)
+        if n < 2 or w <= 0 or h <= 0:     # before the painter opens; the wave needs two points (n - 1 below)
+            return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h, n = self.width(), self.height(), len(self.levels)
-        if n == 0 or w <= 0 or h <= 0:
-            return
         if self.style == "Wave":
             path = QPainterPath()
             path.moveTo(0, h)
@@ -3844,6 +3878,8 @@ def badge_icon(kind, color, count, accent, on_accent):
 def make_icon(kind, color):
     key = (kind, str(color))
     if key not in _ICON_CACHE:
+        if len(_ICON_CACHE) > 512:      # "Album art" accent: a new colour per album, so it must not grow forever
+            _ICON_CACHE.clear()
         _ICON_CACHE[key] = QIcon(icon_pixmap(kind, color))
     return _ICON_CACHE[key]
 
@@ -13003,6 +13039,8 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
     def placeholder(self, size, radius):
         ck = (size, radius, self.scheme["accent"])
         if ck not in self.ph_cache:
+            if len(self.ph_cache) > 64:     # the accent can change with every album (see make_icon)
+                self.ph_cache.clear()
             self.ph_cache[ck] = placeholder_cover(size, radius, self.scheme["accent"])
         return self.ph_cache[ck]
 
