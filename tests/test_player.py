@@ -386,5 +386,92 @@ class VlcPlayerTest(PlayerTest):
     engine = "VLC"
 
 
+class OldEngine(mp.QObject):
+    """Just enough of an engine for switch_engine() to swap it out."""
+    positionChanged = mp.pyqtSignal(int)
+    durationChanged = mp.pyqtSignal(int)
+    mediaStatusChanged = mp.pyqtSignal(object)
+    playbackStateChanged = mp.pyqtSignal(object)
+    errorOccurred = mp.pyqtSignal(object, str)
+    failed = mp.pyqtSignal(str)
+    advanced = mp.pyqtSignal()
+
+    def source(self):
+        return mp.QUrl()
+
+    def position(self):
+        return 0
+
+    def playbackState(self):
+        return QMediaPlayer.PlaybackState.StoppedState
+
+    def shutdown(self):
+        pass
+
+
+class EngineLifeTest(PlayerHarness):
+    """Switching engines, a broken first file, errors in threads and work started while quitting."""
+
+    def test_a_broken_file_is_not_audio(self):
+        good, bad = self.tmp / "good.wav", self.tmp / "bad.mp3"
+        tone(good, 0.5)
+        bad.write_bytes(b"not a song" * 100)
+        self.assertTrue(mp.readable_audio(str(good)))
+        self.assertFalse(mp.readable_audio(str(bad)))
+
+    @unittest.skipUnless(mp.vlc is not None, "python-vlc / VLC not installed")
+    def test_vlc_blames_the_file_not_itself_for_a_broken_first_song(self):
+        bad = self.tmp / "bad.mp3"
+        bad.write_bytes(b"not a song" * 100)
+        eng = mp.VlcEngine()
+        self.addCleanup(eng.shutdown)
+        seen = []
+        eng.failed.connect(lambda why: seen.append("failed"))
+        eng.errorOccurred.connect(lambda _e, why: seen.append("error"))
+        eng.setSource(mp.QUrl.fromLocalFile(str(bad)))
+        eng.play()
+        self.assertTrue(wait_for(lambda: seen, 10))
+        self.assertEqual(seen, ["error"])     # "failed" would put the whole session on the built-in engine
+
+    @unittest.skipUnless(mp.vlc is not None, "python-vlc / VLC not installed")
+    def test_vlc_after_shutdown_is_harmless(self):
+        eng = mp.VlcEngine()
+        eng.shutdown()
+        eng.stop()
+        eng.setPosition(1000)
+        self.assertEqual(eng.position(), 1000)
+
+    def test_switching_engines_cuts_off_the_old_engines_gapless_signal(self):
+        self.make_player(["One"])
+        self.player.player.stop()
+        old = OldEngine()
+        jumps = []
+        old.advanced.connect(lambda: jumps.append(1))
+        self.player.player = old
+        self.player.switch_engine("Qt (built-in)")
+        old.advanced.emit()
+        self.assertEqual(jumps, [])
+
+    def test_an_error_in_a_thread_is_logged_without_touching_the_window(self):
+        crash = self.tmp / "crash.log"
+        window = mock.Mock()
+        with mock.patch.object(mp, "CRASH_FILE", crash):
+            t = mp.threading.Thread(target=lambda: mp.log_uncaught(ValueError, ValueError("x"), None, window))
+            t.start()
+            t.join()
+            window.statusBar.assert_not_called()
+            self.assertIn("ValueError", crash.read_text(encoding="utf-8"))
+            mp.log_uncaught(ValueError, ValueError("y"), None, window)
+            window.statusBar.assert_called()
+
+    def test_no_new_job_starts_once_the_window_closed(self):
+        self.make_player(["One"])
+        self.player.session_closed = True
+        job = mock.Mock()
+        self.player.keep(job)
+        job.start.assert_not_called()
+        self.assertNotIn(job, self.player.workers)
+
+
 if __name__ == "__main__":
     unittest.main()

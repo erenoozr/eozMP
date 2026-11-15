@@ -303,7 +303,7 @@ AUDIO_EXTS = {
 }
 COVER_NAMES = ("cover", "folder", "front", "album", "albumart")
 COVER_EXTS = (".jpg", ".jpeg", ".png")
-APP_VERSION = "1.6"   # raise it with every release; the release tag is "v" + this (see MANUAL)
+APP_VERSION = "1.6.1"   # raise it with every release; the release tag is "v" + this (see MANUAL)
 CONFIG_FILE = Path.home() / ".simple_music_player.json"
 CRASH_FILE = Path.home() / ".simple_music_player_crash.log"
 CACHE_FILE =Path.home() / ".simple_music_player_cache.json"
@@ -3925,6 +3925,14 @@ class VlcAudio:
         self.engine.mp.audio_set_mute(self._muted)
 
 
+def readable_audio(path):
+    """True when mutagen finds sound with a length in the file: a damaged or fake file is False."""
+    try:
+        return (getattr(getattr(MutagenFile(path), "info", None), "length", 0) or 0) > 0
+    except Exception:
+        return False
+
+
 class VlcEngine(QObject):
     """Wraps VLC so it behaves like QMediaPlayer for the rest of eozMP."""
     positionChanged = pyqtSignal(int)
@@ -3944,7 +3952,6 @@ class VlcEngine(QObject):
             raise RuntimeError("VLC could not create a player")
         self.audio = VlcAudio(self)
         self._source = QUrl()
-        self._media = None
         self._state = QMediaPlayer.PlaybackState.StoppedState
         self._duration = 0
         self._pending = None
@@ -3973,8 +3980,9 @@ class VlcEngine(QObject):
         except Exception:
             pass
         path = os.path.normpath(self._source.toLocalFile())
-        self._media = self.instance.media_new_path(path)
-        self.mp.set_media(self._media)
+        media = self.instance.media_new_path(path)
+        self.mp.set_media(media)
+        media.release()     # the player holds its own reference; python-vlc never frees ours, one leaked per song
         self._duration, self._pending, self._ended, self._play_at = 0, None, False, None
         self._media_played = False
         self._set_state(QMediaPlayer.PlaybackState.StoppedState)
@@ -4009,8 +4017,11 @@ class VlcEngine(QObject):
         self.timer.stop()
         try:
             self.mp.stop()
+            self.mp.release()
+            self.instance.release()     # an engine switch used to leave a whole VLC (threads, audio output) behind
         except Exception:
             pass
+        self.mp = self.instance = _ClosedMpv()   # later calls are harmless instead of touching freed memory
 
     def position(self):
         if self._pending is not None:
@@ -4049,8 +4060,9 @@ class VlcEngine(QObject):
         self._play_at = None
         self._ended = True
         self._set_state(QMediaPlayer.PlaybackState.StoppedState)
-        if not self._ever_played and os.path.exists(self._source.toLocalFile()):
-            self.failed.emit(why)              # VLC itself doesn't work here
+        path = self._source.toLocalFile()
+        if not self._ever_played and os.path.exists(path) and readable_audio(path):
+            self.failed.emit(why)              # a sound file mutagen can read, so VLC itself doesn't work here
         else:
             self.errorOccurred.emit(None, why)  # just this one file
 
@@ -7748,6 +7760,15 @@ class MediaControls(QObject):
         from winrt.windows.media import MediaPlaybackStatus
         self.smtc.playback_status = MediaPlaybackStatus.PLAYING if playing else MediaPlaybackStatus.PAUSED
 
+    def close(self):
+        """Windows calls _on_button on its own thread; left registered it can still fire while Python shuts down."""
+        try:
+            self.smtc.remove_button_pressed(self._token)
+            self.smtc.is_enabled = False
+            self.mp.close()
+        except Exception:
+            pass
+
 
 # ----- Last.fm
 def lastfm_call(method, params, key, secret=None, session=None, post=False):
@@ -8423,6 +8444,9 @@ class Extras2Mixin:
         self.stop_cast()
         if self.remote is not None:
             self.remote.stop()
+        if self.smtc is not None:
+            self.smtc.close()
+            self.smtc = None
 
     def build_connect_menu(self):
         menu = self.menuBar().addMenu("&Connect")
@@ -10938,6 +10962,8 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
         LOAD_PROBLEMS.clear()
 
     def keep(self, worker):
+        if getattr(self, "session_closed", False):
+            return      # a scan or job that ends during quitting must not start new work nobody waits for
         self.workers.add(worker)
         worker.finished.connect(lambda: self.workers.discard(worker))
         worker.start()
@@ -13064,6 +13090,12 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
                 self.tray.hide()
         except Exception:
             pass
+        # Python filters left on the app are still called while the interpreter shuts down: a crash at exit
+        app = QApplication.instance()
+        app.removeEventFilter(self)
+        if self.media_filter is not None:
+            app.removeNativeEventFilter(self.media_filter)
+            self.media_filter = None
         super().closeEvent(event)
         QTimer.singleShot(0, QApplication.instance().quit)
 
@@ -14316,16 +14348,14 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
         pos = old.position() if not src.isEmpty() else 0
         playing = old.playbackState() == QMediaPlayer.PlaybackState.PlayingState
         muted = self.audio.isMuted()
-        for sig in (old.positionChanged, old.durationChanged, old.mediaStatusChanged,
-                    old.playbackStateChanged, old.errorOccurred):
+        for name in ("positionChanged", "durationChanged", "mediaStatusChanged", "playbackStateChanged",
+                     "errorOccurred", "failed", "advanced"):
             try:
-                sig.disconnect()
+                getattr(old, name).disconnect()   # a queued "advanced" from the old mpv would skip a song
             except Exception:
                 pass
         try:
             if hasattr(old, "shutdown"):
-                if hasattr(old, "failed"):
-                    old.failed.disconnect()
                 old.shutdown()
             else:
                 old.stop()
@@ -15712,7 +15742,9 @@ def log_uncaught(exc_type, exc, tb, window=None):
     except OSError:
         pass
     try:
-        if window is not None:
+        # widgets may only be touched from the GUI thread; doing it from a worker thread can crash Qt
+        # shortcut: an error in a worker thread is only logged, not shown; add a queued signal if users miss it
+        if window is not None and threading.current_thread() is threading.main_thread():
             window.statusBar().showMessage(
                 _t("Something went wrong: {0}. Details are in {1}").format(exc, CRASH_FILE.name), 15000)
     except Exception:
@@ -15758,6 +15790,7 @@ if __name__ == "__main__":
     # A job told to stop at quit may still be moving a file or writing tags after the 10 s wait in closeEvent:
     # ending the process now would cut it off halfway, so it gets to finish with the window already gone.
     deadline = time.time() + 120      # shortcut: jobs stuck longer than 2 minutes in all are still cut off
-    for w in list(win.workers):
-        w.wait(max(0, int((deadline - time.time()) * 1000)))
+    for w in [*win.workers, win.thumbs, win.cover_batch]:   # a QThread still running at exit aborts the process
+        if w is not None:
+            w.wait(max(0, int((deadline - time.time()) * 1000)))
     sys.exit(code)
