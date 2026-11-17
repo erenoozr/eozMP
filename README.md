@@ -18,6 +18,11 @@ music through Soulseek. It speaks 12 languages, runs fully on your own PC and ne
 
 <img width="1075" height="889" alt="Home page" src="https://github.com/user-attachments/assets/0d0d5050-0438-4dd2-9207-d529d66931b9" />
 
+## New in 1.6.2
+
+- **Smoother games and apps:** the full-screen player no longer redraws its moving background while another app
+  runs full screen in front of it (on a second monitor it made games stutter); music and lyrics carry on
+
 ## New in 1.6.1
 
 - **VLC** keeps working when the first song is damaged (that song is skipped), and frees what it uses
@@ -166,7 +171,7 @@ A release of fixes; nothing new to learn.
 
 ## Download
 
-Get **`eozMP-Setup-1.6.1.exe`** from the [latest release](../../releases/latest) and double-click it. Setup asks
+Get **`eozMP-Setup-1.6.2.exe`** from the [latest release](../../releases/latest) and double-click it. Setup asks
 step by step what to install (eozMP, Soulseek support, VLC for the equalizer, a desktop shortcut) and, if you want
 Soulseek, your Soulseek name and password, then sets everything up. No Python needed.
 Windows may show a blue *"Windows protected your PC"* box because the app is new and unsigned:
