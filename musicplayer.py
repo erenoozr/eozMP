@@ -381,6 +381,9 @@ DEFAULT_CFG = {
     "library_sort": "A-Z",
     "organize_downloads": True,
     "organize_root": "",
+    "share_enabled": True,        # share the library on Soulseek (written into slskd.yml)
+    "share_extra": [],            # more folders to share
+    "share_notice_shown": False,  # sharing starts only after the one-time notice was shown
     "accent_custom": "#4C8DFF",
     "close_to_tray": True,
     "tray_hint_shown": False,
@@ -1494,6 +1497,149 @@ def check_slskd(client):
                        "under soulseek: in slskd.yml (the name may be taken), then restart slskd.")
     return False, ("slskd works, but it isn't connected to Soulseek yet. Wait a moment and test again; "
                    "if it stays like this, check slskd's black window for the reason.")
+
+
+# ---------------------------------------------------------------- sharing on Soulseek
+SLSKD_YML = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "slskd" / "slskd.yml"
+SHARE_BEGIN = "# >>> eozMP sharing: eozMP rewrites this part, change it in eozMP > Preferences > Sharing"
+SHARE_END = "# <<< eozMP sharing"
+SHARE_LEGAL = ("Sharing means uploading. In some countries that carries more legal risk than downloading, "
+               "so only share music you have the right to share.")
+
+
+def slskd_is_local(url):
+    return "localhost" in (url or "") or "127.0.0.1" in (url or "")
+
+
+def shared_folders(cfg):
+    """What eozMP shares: the library, the downloads folder and the extra folders. Folders that don't
+    exist and folders inside another shared one are left out (slskd would list their files twice)."""
+    found = [os.path.abspath(f) for f in [*cfg.get("folders", []), cfg.get("downloads_dir", ""),
+                                          *cfg.get("share_extra", [])]
+             if f and os.path.isabs(f) and os.path.isdir(f)]
+
+    def inside(a, b):
+        a, b = os.path.normcase(a), os.path.normcase(b)
+        return a == b or a.startswith(b.rstrip("\\/") + os.sep)
+    # a folder goes if another one holds it; of two equal ones the first stays
+    return [f for i, f in enumerate(found)
+            if not any(j != i and inside(f, g) and (j < i or not inside(g, f)) for j, g in enumerate(found))]
+
+
+def share_block(folders):
+    """eozMP's part of slskd.yml. slskd wants a unique "[alias]" in front of each folder (no \\ or /)."""
+    lines, taken = [SHARE_BEGIN, "shares:", "  directories:"], set()
+    for f in folders:
+        base = (re.sub(r"[\\/\[\]]", " ", Path(f).name).strip()
+                or ("Drive " + re.sub(r"\W+", " ", Path(f).drive)).strip())      # D:\ -> "Drive D"
+        alias, n = base, 1
+        while alias.casefold() in taken:
+            n += 1
+            alias = f"{base} {n}"
+        taken.add(alias.casefold())
+        lines.append("    - '" + f"[{alias}]{f}".replace("'", "''") + "'")     # YAML single-quoted string
+    return lines + [SHARE_END]
+
+
+def with_share_block(text, folders):
+    """slskd.yml's text with eozMP's part set to share `folders` ([] takes the part out), everything else and
+    the line endings kept. None when the file has a shares: part of the user's own: then it's left alone."""
+    nl = "\r\n" if "\r\n" in text else "\n"
+    lines = re.split(r"\r?\n", text)
+    had_end = lines[-1] == ""
+    if had_end:
+        lines.pop()
+    start = next((i for i, line in enumerate(lines) if line.startswith(SHARE_BEGIN[:19])), None)
+    if start is not None:
+        end = next((i for i in range(start, len(lines)) if lines[i].strip() == SHARE_END), None)
+        if end is None:
+            return None        # its end mark was deleted by hand: which part is eozMP's isn't clear any more
+        if start and not lines[start - 1].strip():
+            start -= 1         # the empty line eozMP put before it
+        del lines[start:end + 1]
+    if any(re.match(r"shares\s*:", line) for line in lines):
+        return None
+    if folders:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines += share_block(folders)
+    return nl.join(lines) + (nl if lines and (had_end or folders) else "")
+
+
+def write_share_settings(folders, path=None):
+    """Put `folders` into slskd.yml ([] = share nothing). Returns "written", "same", or "user" (the file has
+    sharing of the user's own and is left alone). Raises OSError / ValueError when it can't be read or saved."""
+    path = path or SLSKD_YML
+    raw = path.read_bytes()
+    bom = b"\xef\xbb\xbf" if raw.startswith(b"\xef\xbb\xbf") else b""
+    text = raw[len(bom):].decode("utf-8")
+    new = with_share_block(text, folders)
+    if new is None:
+        return "user"
+    if new == text:
+        return "same"
+    tmp = path.with_name(path.name + ".eozmp.tmp")
+    try:
+        with open(tmp, "wb") as f:
+            f.write(bom + new.encode("utf-8"))
+            f.flush()
+            os.fsync(f.fileno())     # on disk before the swap: slskd.yml also holds the Soulseek login
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    return "written"
+
+
+def share_problem(cfg, path=None):
+    """Why eozMP doesn't share right now (English, to be translated), or "" when it does."""
+    path = path or SLSKD_YML
+    if not cfg.get("share_enabled"):
+        return "Sharing is off."
+    if not cfg.get("slskd_key"):
+        return "Set up Soulseek first (Preferences > Soulseek)."
+    if not slskd_is_local(cfg.get("slskd_url")):
+        return "slskd runs on another computer, so eozMP can't change what it shares."
+    try:
+        text = path.read_bytes().decode("utf-8-sig")
+    except (OSError, ValueError):
+        return f"slskd's settings file wasn't found: {path}"
+    if with_share_block(text, []) is None:
+        return "slskd.yml has a shares: part of its own, so eozMP leaves sharing to you."
+    return ""
+
+
+def rescan_shares(client, wait=3.0, tries=24, pause=5.0):
+    """slskd reloads slskd.yml by itself, but a new list of folders only marks a scan as pending: start it.
+    Tries again while a scan already runs (HTTP 409) or slskd is still starting. False if eozMP quits first."""
+    if STOP_BG.wait(wait):
+        return False
+    for i in range(tries):
+        try:
+            client.call("PUT", "/shares")
+            return True
+        except RuntimeError:
+            if i == tries - 1:
+                raise
+        if STOP_BG.wait(pause):
+            return False
+    return False
+
+
+def share_status_text(shares):
+    """The Sharing tab's line for slskd's share state (GET /application -> "shares")."""
+    def count(v):
+        return len(v) if isinstance(v, (list, dict)) else int(v or 0)
+    if shares.get("scanning"):
+        return f"slskd is scanning the shared folders... {int(float(shares.get('scanProgress') or 0) * 100)}%"
+    if shares.get("faulted"):
+        return "slskd couldn't scan the shared folders. Its log says why."
+    if shares.get("scanPending"):
+        return "slskd will scan the shared folders in a moment."
+    return f"slskd shares {count(shares.get('files'))} files in {count(shares.get('directories'))} folders."
 
 
 def flatten_responses(responses):
@@ -3291,6 +3437,47 @@ class PreferencesDialog(QDialog):
         sf.addRow(trow)
         self.tabs.addTab(sl, "Soulseek")
 
+        # --- Sharing (written into slskd.yml by Player.apply_sharing)
+        sh = QWidget()
+        sv = QVBoxLayout(sh)
+        self.share_on = QCheckBox("Share my music with other Soulseek users")
+        self.share_on.setChecked(bool(cfg["share_enabled"]))
+        sv.addWidget(self.share_on)
+        legal = QLabel(SHARE_LEGAL)
+        legal.setWordWrap(True)
+        sv.addWidget(legal)
+        sv.addWidget(QLabel("Shared: your music folders and the slskd downloads folder"))
+        self.share_auto = QListWidget()
+        self.share_auto.setAccessibleName("Shared: your music folders and the slskd downloads folder")
+        self.share_auto.addItems(shared_folders(dict(cfg, share_extra=[])))
+        self.share_auto.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        sv.addWidget(self.share_auto)
+        sv.addWidget(QLabel("Also share these folders:"))
+        self.share_extra = QListWidget()
+        self.share_extra.setAccessibleName("Also share these folders:")
+        self.share_extra.addItems(cfg["share_extra"])
+        sv.addWidget(self.share_extra)
+        xrow = QHBoxLayout()
+        xadd = QPushButton("Add folder...")
+        xadd.clicked.connect(self.add_share_folder)
+        xrem = QPushButton("Remove selected")
+        xrem.clicked.connect(lambda: [self.share_extra.takeItem(self.share_extra.row(i))
+                                      for i in self.share_extra.selectedItems()])
+        xrow.addWidget(xadd)
+        xrow.addWidget(xrem)
+        xrow.addStretch(1)
+        sv.addLayout(xrow)
+        self.share_status = QLabel("")
+        self.share_status.setWordWrap(True)
+        sv.addWidget(self.share_status)
+        self.share_page = sh
+        self._share_asking = False
+        self.tabs.addTab(sh, "Sharing")
+        self.share_timer = QTimer(self)        # while the tab is open, the count and scan progress stay current
+        self.share_timer.timeout.connect(self.refresh_share_status)
+        self.share_timer.start(3000)
+        self.refresh_share_status(force=True)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Apply
@@ -3299,7 +3486,7 @@ class PreferencesDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(
-            lambda: self.player.apply_prefs(self.values()))
+            lambda: (self.player.apply_prefs(self.values()), self.refresh_share_status(force=True)))
         layout.addWidget(buttons)
 
         if tab:
@@ -3322,6 +3509,36 @@ class PreferencesDialog(QDialog):
         folder = QFileDialog.getExistingDirectory(self, "slskd downloads folder")
         if folder:
             self.dl.setText(folder)
+
+    def add_share_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Choose a folder to share")
+        if folder and folder not in [self.share_extra.item(i).text() for i in range(self.share_extra.count())]:
+            self.share_extra.addItem(folder)
+
+    def set_share_status(self, text):
+        self._share_asking = False
+        try:
+            self.share_status.setText(text)
+        except RuntimeError:
+            pass        # the dialog was closed while slskd answered
+
+    def refresh_share_status(self, force=False):
+        """The saved settings' reason not to share, or else what slskd says it shares."""
+        if self._share_asking or not (force or self.tabs.currentWidget() is self.share_page):
+            return
+        cfg = self.player.cfg
+        problem = share_problem(cfg)
+        if problem:
+            self.set_share_status(problem)
+            return
+        if force:
+            self.share_status.setText("Checking with slskd...")
+        self._share_asking = True
+        client = self.player.client()
+        w = Worker(lambda: share_status_text((client.call("GET", "/application", timeout=8) or {}).get("shares") or {}))
+        w.ok.connect(self.set_share_status)
+        w.fail.connect(self.set_share_status)
+        self.player.keep(w)
 
     def set_test_text(self, text):
         try:
@@ -3379,6 +3596,8 @@ class PreferencesDialog(QDialog):
             "soul_free_only": self.soul_free.isChecked(),
             "organize_downloads": self.organize.isChecked(),
             "organize_root": self.organize_root.text().strip(),
+            "share_enabled": self.share_on.isChecked(),
+            "share_extra": [self.share_extra.item(i).text() for i in range(self.share_extra.count())],
             "covers_auto": self.covers_auto.isChecked(),
             "covers_to_folder": self.covers_folder.isChecked(),
             "audio_engine": self.engine.currentText(),
@@ -5168,7 +5387,7 @@ BACKUP_FILES = {"settings.json": CONFIG_FILE, "playlists.json": PLAYLIST_FILE, "
 # lastfm_key goes with them: the session only works with the key and secret it was made with.
 LOCAL_ONLY_SETTINGS = ("mpv_dir", "remote_on", "remote_port", "remote_token", "slskd_url", "slskd_key",
                        "downloads_dir", "organize_root", "lastfm_key", "lastfm_secret", "lastfm_session",
-                       "lastfm_user", "lastfm_queue", "acoustid_key")
+                       "lastfm_user", "lastfm_queue", "acoustid_key", "share_extra", "share_notice_shown")
 
 
 def safe_backup_name(name):
@@ -6952,6 +7171,7 @@ class ExtrasMixin:
     quality_db = {}
     mood_tracks = {}
     slskd_proc = None
+    _share_busy = _share_again = False    # the first library scan comes before init_extras()
 
     def init_extras(self):
         self.wish_dlg = None
@@ -6964,6 +7184,7 @@ class ExtrasMixin:
         self.extras_timer.start(20 * 60 * 1000)
         QTimer.singleShot(90_000, self.extras_tick)     # first pass once the library has loaded
         self.init_bundled_slskd()
+        QTimer.singleShot(4000, self.share_notice)     # once the window is up
         self.init_extras2()
 
     def init_bundled_slskd(self):
@@ -6986,6 +7207,77 @@ class ExtrasMixin:
             return
         w = Worker(lambda: slskd_running(url))
         w.ok.connect(lambda up: None if up else self.start_slskd(exe))
+        self.keep(w)
+
+    def share_notice(self):
+        """Said once, also to people updating, before eozMP shares anything: what is shared and the risk."""
+        if self.cfg["share_notice_shown"] or share_problem(dict(self.cfg, share_enabled=True)):
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Sharing your music")
+        box.setText("eozMP shares your music library with other Soulseek users: your music folders and the "
+                    "slskd downloads folder. Soulseek works because people share.")
+        box.setInformativeText(_raw(_t(SHARE_LEGAL) + "\n\n"
+                                    + _t("You can turn sharing off any time in Preferences > Sharing.")))
+        ok = box.addButton("OK", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Turn sharing off", QMessageBox.ButtonRole.RejectRole)   # also what Esc / closing does
+        box.setDefaultButton(ok)
+        run_dialog(box)
+        self.cfg["share_notice_shown"] = True
+        self.cfg["share_enabled"] = box.clickedButton() is ok
+        save_config(self.cfg)
+        self.apply_sharing()
+
+    def apply_sharing(self):
+        """Make slskd.yml share what Preferences > Sharing says, then have slskd scan it. Off the GUI thread;
+        nothing happens before the notice was shown, or when slskd isn't on this PC."""
+        if not (self.cfg["share_notice_shown"] and self.slskd_ready() and slskd_is_local(self.cfg["slskd_url"])):
+            return
+        if self._share_busy:
+            self._share_again = True
+            return
+        path = SLSKD_YML
+        if not path.exists():
+            return
+        folders = shared_folders(self.cfg) if self.cfg["share_enabled"] else []
+        client = self.client()
+
+        def job():
+            if write_share_settings(folders, path) != "same":
+                return "written"
+            for _ in range(12):     # unchanged; slskd may still have a scan pending (it was off when it changed)
+                try:
+                    shares = (client.call("GET", "/application", timeout=8) or {}).get("shares") or {}
+                except RuntimeError:
+                    if STOP_BG.wait(5):
+                        return "same"
+                    continue
+                if shares.get("scanPending") and not shares.get("scanning"):
+                    try:
+                        rescan_shares(client, wait=0)
+                    except RuntimeError:
+                        pass        # it scans when it starts again
+                return "same"
+            return "same"
+
+        def rescan(result):
+            if result == "written":     # its own job: the slskd.yml part is done, the scan may take a while
+                w2 = Worker(lambda: rescan_shares(client))
+                w2.fail.connect(lambda _m: None)    # slskd is off: it scans when it starts
+                self.keep(w2)
+
+        def done():
+            self._share_busy = False
+            if self._share_again:
+                self._share_again = False
+                self.apply_sharing()
+
+        self._share_busy = True
+        self._share_again = False
+        w = Worker(job)
+        w.ok.connect(rescan)
+        w.fail.connect(lambda m: self.statusBar().showMessage(f"Couldn't update slskd.yml: {m}", 15000))
+        w.finished.connect(done)
         self.keep(w)
 
     def start_slskd(self, exe):
@@ -11971,6 +12263,7 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
         self.rescan()
 
     def rescan(self):
+        self.apply_sharing()   # the library folders may have changed; at start-up this is the one-time check
         if self.scanning:
             self.rescan_pending = True
             return
@@ -12788,8 +13081,10 @@ class Player(ExtrasMixin, Extras2Mixin, Extras3Mixin, QMainWindow):
             self.last_done = None
             self.poll_fails = 0
             self.poll_timer.setInterval(POLL_MS)
+        if any(old[k] != self.cfg[k] for k in ("share_enabled", "share_extra", "slskd_url", "slskd_key")):
+            self.apply_sharing()
         if old["folders"] != self.cfg["folders"] or old["downloads_dir"] != self.cfg["downloads_dir"]:
-            self.rescan()
+            self.rescan()      # it also brings the shared folders up to date
         elif (old["group_featured"] != self.cfg["group_featured"]
               or old["ignore_the"] != self.cfg["ignore_the"]
               or old["album_list_style"] != self.cfg["album_list_style"]

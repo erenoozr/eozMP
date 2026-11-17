@@ -266,6 +266,13 @@ web:
   Files that came with an album (`.cue`, `.log`, scans) move along with it. Organizing never deletes
   anything except folders it left empty.
 
+- **Sharing:** Soulseek works because people share, so eozMP shares your music library (your music folders and
+  the slskd downloads folder) with other Soulseek users. It tells you once before it starts. Sharing means
+  uploading; in some countries that carries more legal risk than downloading, so only share music you have the
+  right to share. **Preferences → Sharing** turns it off, adds more folders and shows how many files slskd shares.
+  eozMP keeps this in its own marked part of `slskd.yml`; if you set up `shares:` there yourself, eozMP leaves
+  sharing to you.
+
 Soulseek is a file-sharing network. Only download music you're allowed to have.
 
 ## New in 1.6.2

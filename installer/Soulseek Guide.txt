@@ -84,18 +84,24 @@ Can't find something? On the Soulseek results page click "Add to wishlist"
 wishlist every 20 minutes and shows a notification when it turns up.
 
 
-6. SHARING (OPTIONAL, BUT POLITE)
----------------------------------
+6. SHARING (ON BY DEFAULT)
+--------------------------
 
 Soulseek works because people share. Some users only upload to people who
-share something back. To share a folder, open slskd.yml (see section 8) and
-add, at the very end:
+share something back. So eozMP shares your music library: your music folders
+and the slskd downloads folder. It tells you once before it starts.
 
-    shares:
-      directories:
-        - C:\Users\YOURNAME\Music
+Sharing means uploading. In some countries that carries more legal risk than
+downloading, so only share music you have the right to share.
 
-Save the file and restart eozMP. Only share music you're allowed to share.
+To turn it off or share more folders: eozMP > Preferences > Sharing. That tab
+also shows how many files slskd shares.
+
+eozMP writes this into slskd.yml (see section 8) between the lines
+"# >>> eozMP sharing" and "# <<< eozMP sharing", and rewrites that part when
+your folders change; don't edit inside it. If you'd rather set up sharing
+yourself, turn it off in eozMP and add your own shares: part to slskd.yml.
+eozMP then leaves sharing alone.
 
 
 7. CONNECTING eozMP BY HAND

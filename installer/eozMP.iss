@@ -288,7 +288,7 @@ begin
   Lines[15] := '        role: readwrite';
   Lines[16] := '        cidr: 127.0.0.1/32,::1/128';
   Lines[17] := '';
-  Lines[18] := '# To share music with others, see section 6 of the Soulseek Guide.';
+  Lines[18] := '# eozMP shares your music library: change it in eozMP > Preferences > Sharing.';
   SaveOrSay(YmlPath, Lines);
 
   JDir := Dir;

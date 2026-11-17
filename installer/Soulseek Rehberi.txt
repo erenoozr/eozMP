@@ -87,19 +87,27 @@ Bir şeyi bulamadın mı? Soulseek sonuç sayfasında "Add to wishlist"e tıkla
 dakikada bir arar ve bulunca bildirim gösterir.
 
 
-6. PAYLAŞMA (İSTEĞE BAĞLI AMA KİBAR)
+6. PAYLAŞMA (VARSAYILAN OLARAK AÇIK)
 ------------------------------------
 
 Soulseek, insanlar paylaştığı için çalışır. Bazı kullanıcılar sadece bir
-şey paylaşanlara dosya gönderir. Bir klasörü paylaşmak için slskd.yml'yi aç
-(8. bölüm) ve en sona şunu ekle:
+şey paylaşanlara dosya gönderir. Bu yüzden eozMP müzik kitaplığını paylaşır:
+müzik klasörlerin ve slskd indirme klasörü. Başlamadan önce bir kez haber
+verir.
 
-    shares:
-      directories:
-        - C:\Users\KULLANICIADIN\Music
+Paylaşmak, yükleme yapmak demektir. Bazı ülkelerde bu, indirmekten daha
+fazla hukuki risk taşır; bu yüzden yalnızca paylaşma hakkın olan müzikleri
+paylaş.
 
-Dosyayı kaydet ve eozMP'yi yeniden başlat. Sadece paylaşmaya hakkın olan
-müziği paylaş.
+Kapatmak ya da başka klasörler eklemek için: eozMP > Preferences > Sharing
+(Türkçe arayüzde Ayarlar > Paylaşım). Bu sekme slskd'nin kaç dosya
+paylaştığını da gösterir.
+
+eozMP bunu slskd.yml'de (8. bölüm) "# >>> eozMP sharing" ile
+"# <<< eozMP sharing" satırlarının arasına yazar ve klasörlerin değişince o
+kısmı yeniden yazar; içini elle değiştirme. Paylaşımı kendin ayarlamak
+istersen eozMP'de kapat ve slskd.yml'ye kendi shares: bölümünü ekle. eozMP
+o zaman paylaşıma karışmaz.
 
 
 7. eozMP'Yİ ELLE BAĞLAMAK

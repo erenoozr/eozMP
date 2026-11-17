@@ -141,6 +141,7 @@ A release of fixes; nothing new to learn.
 - **Downloads page** with progress, and **finished downloads organized** into Artist / Album folders with their covers, lyrics and extras
 - **Wishlist** searched every 20 minutes while eozMP runs; **trusted users** come first
 - **One-click installer** that sets up slskd and your Soulseek login for you
+- **Shares your library** on Soulseek by default (it tells you once first); turn it off or add folders in Preferences → Sharing
 
 ### Phone, TV and Windows
 
