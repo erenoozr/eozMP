@@ -749,6 +749,22 @@ def _windows_is_turkish():
         return False
 
 
+def game_in_front():
+    """True while another app (a game, a presentation) runs full screen in front of us."""
+    try:
+        import ctypes
+        state = ctypes.c_int(0)
+        if ctypes.windll.shell32.SHQueryUserNotificationState(ctypes.byref(state)) != 0:
+            return False
+        if state.value not in (2, 3, 4):   # QUNS_BUSY, QUNS_RUNNING_D3D_FULL_SCREEN, QUNS_PRESENTATION_MODE
+            return False
+        pid = ctypes.c_ulong(0)
+        ctypes.windll.user32.GetWindowThreadProcessId(ctypes.windll.user32.GetForegroundWindow(), ctypes.byref(pid))
+        return pid.value != os.getpid()   # our own full-screen player counts as "busy" too
+    except Exception:
+        return False
+
+
 # Old Turkish taggers wrote Windows-1254 into ID3 text marked Latin-1 (and ID3v1 is Latin-1 by rule),
 # so ş ğ ı Ş Ğ İ come out as þ ð ý Þ Ð Ý. Only on a Turkish Windows, where such files come from.
 LEGACY_TURKISH = _windows_is_turkish()
@@ -5911,6 +5927,8 @@ class FullPlayer(QWidget):
         self.motion_timer.timeout.connect(self._motion_tick)
         self.motion_clock = time.monotonic()   # only runs while the background moves
         self._motion_last = None
+        self._game_checked = 0.0
+        self._game = False
         self.viz = Visualizer(self, bars=64)
         self.viz.hide()
 
@@ -6021,6 +6039,12 @@ class FullPlayer(QWidget):
 
     def _motion_tick(self):
         now = time.monotonic()
+        if now - self._game_checked > 1.0:
+            self._game_checked = now
+            self._game = game_in_front()
+        if self._game:   # a full-screen game is in front: stand still, redrawing a whole screen 10x/s made it stutter
+            self._motion_last = now
+            return
         self.motion_clock += min(now - self._motion_last, 0.5)   # paused time doesn't count
         self._motion_last = now
         self.update()
