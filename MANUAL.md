@@ -8,7 +8,7 @@ step by step.
 [Finding your way around](#finding-your-way-around) · [Playing music](#playing-music) ·
 [Lyrics, mini player and fullscreen](#lyrics-mini-player-and-fullscreen) ·
 [Playlists, Browse, Search, Home and Stats](#playlists-browse-search-home-and-stats) ·
-[New in 1.6.2](#new-in-162) · [New in 1.6.1](#new-in-161) · [New in 1.6](#new-in-16) · [New in 1.5.1](#new-in-151) · [New in 1.5](#new-in-15) · [New in 1.4](#new-in-14) · [New in 1.3](#new-in-13) ·
+[New in 1.7](#new-in-17) · [New in 1.6.2](#new-in-162) · [New in 1.6.1](#new-in-161) · [New in 1.6](#new-in-16) · [New in 1.5.1](#new-in-151) · [New in 1.5](#new-in-15) · [New in 1.4](#new-in-14) · [New in 1.3](#new-in-13) ·
 [Soulseek](#soulseek-logging-in-and-downloading) · [Preferences](#making-it-yours-preferences) ·
 [Optional extras](#optional-extras-mpv-vlc-equalizer-and-visualizer) · [Backups and updates](#backups-updates-and-your-data) ·
 [Troubleshooting](#troubleshooting) · [Shortcuts](#keyboard-and-mouse-shortcuts)
@@ -18,7 +18,7 @@ step by step.
 | Item | Needed? | Where it comes from |
 | --- | --- | --- |
 | A Windows 10 or 11 PC | Yes | |
-| `eozMP-Setup-1.6.2.exe` | Yes | The [latest release](../../releases/latest) of this repository |
+| `eozMP-Setup-1.7.exe` | Yes | The [latest release](../../releases/latest) of this repository |
 | Your music files (mp3, flac, m4a, wav, ogg and more) | Yes | Your own folders |
 | An internet connection | For lyrics and covers | |
 | Python 3 | Only to build eozMP yourself | [python.org/downloads](https://www.python.org/downloads/) |
@@ -32,7 +32,7 @@ A Soulseek account is free. slskd creates it for you the first time it connects 
 
 ### The easy way: the installer
 
-1. Open the [latest release](../../releases/latest) and download **eozMP-Setup-1.6.2.exe** under *Assets*.
+1. Open the [latest release](../../releases/latest) and download **eozMP-Setup-1.7.exe** under *Assets*.
 2. Double-click it. If Windows shows a blue **Windows protected your PC** box, click **More info**, then
    **Run anyway**. This happens because the app is new and unsigned.
 3. Pick a language (English or Türkçe). Setup then asks, step by step, what to install:
@@ -274,6 +274,20 @@ web:
   sharing to you.
 
 Soulseek is a file-sharing network. Only download music you're allowed to have.
+
+## New in 1.7
+
+Sharing on Soulseek.
+
+- **eozMP shares your music library** with other Soulseek users: your music folders, the slskd downloads folder
+  and any extra folders you add. Soulseek works because people share, and some users only send files to people
+  who share something. Before it shares anything, eozMP tells you once what is shared and that sharing means
+  uploading, which in some countries carries more legal risk than downloading. Pressing Esc or closing that
+  message leaves sharing off.
+- **Preferences > Sharing** turns sharing on or off, lists what is shared, lets you add or remove extra folders
+  and shows how many files slskd shares (or how far its scan is).
+- eozMP writes only its own marked part of slskd.yml and asks slskd to scan the folders again when they change.
+  If slskd.yml already has a `shares:` part of your own, eozMP leaves sharing to you.
 
 ## New in 1.6.2
 
