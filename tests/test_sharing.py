@@ -5,6 +5,7 @@ Run alone with:   python -m unittest discover tests -p "test_sharing.py"
 """
 import json
 import os
+import re
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -95,12 +96,23 @@ class ShareBlockTest(unittest.TestCase):
         broken = INSTALLER_YML + mp.SHARE_BEGIN + "\r\nshares:\r\n  directories:\r\n    - 'C:\\Music'\r\n"
         self.assertIsNone(mp.with_share_block(broken, []))
 
+    def test_only_music_files_pass_the_filters(self):
+        # slskd checks folders with the same patterns (ignoring case), so folder names must pass too
+        left_out = lambda path: any(re.search(f, path, re.I) for f in mp.SHARE_FILTERS)
+        for path in ("D:\\M\\a\\01.mp3", "D:\\M\\a\\01 Song.FLAC", "D:\\M\\a\\x.opus", "D:\\M\\R.E.M",
+                     "D:\\M\\Vol.10", "D:\\M\\Vol.II", "D:\\M\\Mr. Bungle", "D:\\M\\Album (2004) [FLAC]"):
+            self.assertFalse(left_out(path), path)
+        for path in ("D:\\M\\a\\cover.jpg", "D:\\M\\a\\x.lrc", "D:\\M\\a\\tax.PDF", "D:\\M\\a\\v.mp4",
+                     "D:\\M\\a\\x.docx", "D:\\M\\a\\b.torrent", "D:\\M\\a\\x.7z"):
+            self.assertTrue(left_out(path), path)
+        self.assertIn("  filters:", mp.share_block(["C:\\Music"]))
+
     def test_quotes_are_doubled(self):
         line = mp.share_block(["C:\\Rock 'n' Roll"])[3]
         self.assertEqual(line, "    - '[Rock ''n'' Roll]C:\\Rock ''n'' Roll'")
 
     def test_same_folder_names_get_their_own_alias(self):
-        lines = mp.share_block(["C:\\Music", "D:\\music", "E:\\Music", "F:\\", "G:\\[odd]"])[3:-1]
+        lines = mp.share_block(["C:\\Music", "D:\\music", "E:\\Music", "F:\\", "G:\\[odd]"])[3:-2 - len(mp.SHARE_FILTERS)]
         self.assertEqual(lines, ["    - '[Music]C:\\Music'", "    - '[music 2]D:\\music'", "    - '[Music 3]E:\\Music'",
                                  "    - '[Drive F]F:\\'", "    - '[odd]G:\\[odd]'"])
 
@@ -119,6 +131,14 @@ class SharedFoldersTest(TempDirTest):
         inner.mkdir(parents=True)
         cfg = {"folders": [str(inner)], "downloads_dir": "", "share_extra": [str(outer)]}
         self.assertEqual(mp.shared_folders(cfg), [str(outer)])
+
+    def test_whole_drives_and_the_home_folder_are_never_shared(self):
+        music = self.tmp / "Music"
+        music.mkdir()
+        home = mp.Path.home()
+        cfg = {"folders": ["C:\\", str(home), str(home.parent), str(music)], "downloads_dir": ""}
+        self.assertEqual(mp.shared_folders(cfg), [str(music)])
+        self.assertFalse(mp.unsafe_to_share(str(home / "Music")))
 
     def test_a_name_that_only_starts_the_same_is_not_inside(self):
         a, b = self.tmp / "Music", self.tmp / "Music2"
@@ -223,7 +243,7 @@ class SharingPlayerTest(PlayerHarness):
         p = self.start_player()
 
         def press_ok(box):
-            box.clickedButton = lambda: next(b for b in box.buttons() if b.text() == "OK")
+            box.clickedButton = lambda: next(b for b in box.buttons() if b.text() == "Share my music")
             return 0
         self.dialog.side_effect = press_ok
         p.share_notice()
@@ -255,6 +275,15 @@ class SharingPlayerTest(PlayerHarness):
         dlg.share_on.setChecked(False)
         dlg.share_extra.addItem("D:\\More")
         self.assertEqual((dlg.values()["share_enabled"], dlg.values()["share_extra"]), (False, ["D:\\More"]))
+        self.wait_idle()
+
+    def test_sharing_tab_says_a_whole_drive_is_not_shared(self):
+        p = self.start_player(share_notice_shown=True, share_enabled=True)
+        cfg = dict(p.cfg, folders=[*p.cfg["folders"], "C:\\"])
+        dlg = mp.PreferencesDialog(cfg, p, tab="Sharing")
+        self.addCleanup(dlg.deleteLater)
+        self.assertTrue(any(lab.text().startswith("Not shared, because") and "C:\\" in lab.text()
+                            for lab in dlg.share_page.findChildren(mp.QLabel)))
         self.wait_idle()
 
 

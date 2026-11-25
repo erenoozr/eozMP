@@ -4,6 +4,7 @@ Errors nobody expected must not close the player: they go to a log file and the 
 import json
 import sys
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
@@ -218,6 +219,21 @@ class CastTest(PlayerHarness):
             p.on_remote_command(do, value)
         p.on_remote_command("vol", "1e30")
         self.assertEqual(p.volume.value(), 100)
+
+    def test_an_old_short_code_is_replaced_and_a_new_code_locks_old_phones_out(self):
+        p = self.p
+        p.cfg["remote_token"] = "0123456789abcdef"          # a 1.7 code (64 bits)
+        p.set_remote(True)
+        old = p.remote.token
+        self.assertEqual(len(old), 32)
+        # the button's job without a window (one more widget here makes the known harness segfault likelier)
+        mp.RemoteDialog.make_new_code(SimpleNamespace(main=p, refresh=lambda: None))
+        self.assertNotEqual(p.remote.token, old)
+        self.assertEqual(p.remote.token, p.cfg["remote_token"])
+        status = RemoteServerTest.request(None, p.remote.port, f"/{old}/api/state")[0]
+        self.assertEqual(status, 403)
+        status = RemoteServerTest.request(None, p.remote.port, f"/{p.remote.token}/api/state")[0]
+        self.assertEqual(status, 200)
 
     def test_the_phone_page_does_not_skip_songs_itself(self):                    # B3
         self.assertNotIn("onended", mp.REMOTE_PAGE)

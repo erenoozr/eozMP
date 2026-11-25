@@ -8,7 +8,7 @@ step by step.
 [Finding your way around](#finding-your-way-around) · [Playing music](#playing-music) ·
 [Lyrics, mini player and fullscreen](#lyrics-mini-player-and-fullscreen) ·
 [Playlists, Browse, Search, Home and Stats](#playlists-browse-search-home-and-stats) ·
-[New in 1.7](#new-in-17) · [New in 1.6.2](#new-in-162) · [New in 1.6.1](#new-in-161) · [New in 1.6](#new-in-16) · [New in 1.5.1](#new-in-151) · [New in 1.5](#new-in-15) · [New in 1.4](#new-in-14) · [New in 1.3](#new-in-13) ·
+[New in 1.7.1](#new-in-171) · [New in 1.7](#new-in-17) · [New in 1.6.2](#new-in-162) · [New in 1.6.1](#new-in-161) · [New in 1.6](#new-in-16) · [New in 1.5.1](#new-in-151) · [New in 1.5](#new-in-15) · [New in 1.4](#new-in-14) · [New in 1.3](#new-in-13) ·
 [Soulseek](#soulseek-logging-in-and-downloading) · [Preferences](#making-it-yours-preferences) ·
 [Optional extras](#optional-extras-mpv-vlc-equalizer-and-visualizer) · [Backups and updates](#backups-updates-and-your-data) ·
 [Troubleshooting](#troubleshooting) · [Shortcuts](#keyboard-and-mouse-shortcuts)
@@ -18,7 +18,7 @@ step by step.
 | Item | Needed? | Where it comes from |
 | --- | --- | --- |
 | A Windows 10 or 11 PC | Yes | |
-| `eozMP-Setup-1.7.exe` | Yes | The [latest release](../../releases/latest) of this repository |
+| `eozMP-Setup-1.7.1.exe` | Yes | The [latest release](../../releases/latest) of this repository |
 | Your music files (mp3, flac, m4a, wav, ogg and more) | Yes | Your own folders |
 | An internet connection | For lyrics and covers | |
 | Python 3 | Only to build eozMP yourself | [python.org/downloads](https://www.python.org/downloads/) |
@@ -32,7 +32,7 @@ A Soulseek account is free. slskd creates it for you the first time it connects 
 
 ### The easy way: the installer
 
-1. Open the [latest release](../../releases/latest) and download **eozMP-Setup-1.7.exe** under *Assets*.
+1. Open the [latest release](../../releases/latest) and download **eozMP-Setup-1.7.1.exe** under *Assets*.
 2. Double-click it. If Windows shows a blue **Windows protected your PC** box, click **More info**, then
    **Run anyway**. This happens because the app is new and unsigned.
 3. Pick a language (English or Türkçe). Setup then asks, step by step, what to install:
@@ -266,14 +266,31 @@ web:
   Files that came with an album (`.cue`, `.log`, scans) move along with it. Organizing never deletes
   anything except folders it left empty.
 
-- **Sharing:** Soulseek works because people share, so eozMP shares your music library (your music folders and
-  the slskd downloads folder) with other Soulseek users. It tells you once before it starts. Sharing means
+- **Sharing:** Soulseek works because people share, so eozMP offers to share your music library (your music
+  folders and the slskd downloads folder) with other Soulseek users. Only music files are shared, never pictures,
+  documents or other files, and never a whole drive or your home folder. It asks you once before it starts. Sharing means
   uploading; in some countries that carries more legal risk than downloading, so only share music you have the
   right to share. **Preferences → Sharing** turns it off, adds more folders and shows how many files slskd shares.
   eozMP keeps this in its own marked part of `slskd.yml`; if you set up `shares:` there yourself, eozMP leaves
   sharing to you.
 
 Soulseek is a file-sharing network. Only download music you're allowed to have.
+
+## New in 1.7.1
+
+Safer sharing, better translations and a safer phone remote.
+
+- **Sharing is a real choice:** the one-time question now reads *Share my music* / *Don't share* (Esc or closing
+  it means don't share). Only music files are shared: pictures, `.lrc` files, documents, videos and everything
+  else in your folders stay private. A whole drive or your home folder is never shared, and Preferences →
+  Sharing says so when one of your music folders is one. If you already share, the new rule is applied by itself.
+- **DeepL for lyric translations:** **Connect → DeepL key (for lyric translation)...** takes your own free DeepL
+  API key. Without one, MyMemory translates first and Google steps in when it can't; the reading in Latin letters
+  and word lookup still come from Google.
+- **Phone remote:** the secret code is twice as long and **New code** in the phone remote window makes a fresh one
+  (phones with the old code can't use the remote any more). After updating, scan the code once again.
+- **Setup** puts eozMP's license and the third-party notices in the eozMP folder and fpcalc's license next to it.
+  Section 7 of the Soulseek Guide keeps slskd's key to this PC (`cidr: 127.0.0.1/32,::1/128`).
 
 ## New in 1.7
 
@@ -426,6 +443,12 @@ The translations were made by machine (Turkish was checked by hand), so some wor
 
 On the Lyrics page click **Translate** and pick a language. A smaller translated line appears under every lyric
 line, in the lyrics page and the fullscreen player. Each song is translated once and remembered. **Off** hides it.
+
+Translations come from MyMemory, a free service with a daily limit; when it can't (or the limit is reached),
+Google Translate steps in. For better and steadier translations, get a free DeepL API key at
+[deepl.com/pro-api](https://www.deepl.com/pro-api) (500,000 characters a month) and paste it in
+**Connect → DeepL key (for lyric translation)...**: eozMP tells you right away whether the key works. The reading
+in Latin letters and word lookup still come from Google.
 
 ### Library tools
 

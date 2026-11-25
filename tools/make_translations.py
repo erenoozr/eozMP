@@ -27,6 +27,7 @@ PH_RE = re.compile(r"\{\d+\}")
 KEEP = {"Soulseek", "&Soulseek", "Apple Music", "Arial", "Georgia", "Fusion", "Liberation Serif", "DejaVu Serif",
         "Times New Roman", "Qt", "Preamp", "MP3 320k+", "Soulseek Guide.txt", "eozMP", "MYMEMORY WARNING",
         "AcoustID", "Last.fm", "Last.fm...",
+        "DeepL", "Authorization", "DeepL-Auth-Key ", "Hello",       # DeepL's name and its request
         "eozMP - eren's definitely (not) sketchy music player.",   # the hidden tagline stays English
         # tag field names read from files (APE, WMA, MP4, Matroska); never shown
         "Album Artist", "AlbumArtist", "album artist", "Author", "Date", "Disc", "DiscNumber",

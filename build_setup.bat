@@ -25,7 +25,8 @@ if not exist "%ISCC%" (
 )
 
 echo  [1/3] Installing what eozMP needs...
-python -m pip install --upgrade PyQt6 mutagen numpy pyinstaller mpv python-vlc segno winrt-runtime winrt-Windows.Foundation winrt-Windows.Foundation.Collections winrt-Windows.Media winrt-Windows.Media.Playback winrt-Windows.Storage winrt-Windows.Storage.Streams
+rem the exact versions the tests passed with (requirements.txt), like the release build on GitHub
+python -m pip install -r requirements.txt pyinstaller==6.22.3
 if errorlevel 1 (
     echo  Installing failed. Check your internet connection and try again.
     pause

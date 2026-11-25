@@ -31,6 +31,8 @@ import threading
 import time
 import unicodedata
 import uuid
+import hmac
+import secrets
 import random
 import filecmp
 import shutil
@@ -303,7 +305,7 @@ AUDIO_EXTS = {
 }
 COVER_NAMES = ("cover", "folder", "front", "album", "albumart")
 COVER_EXTS = (".jpg", ".jpeg", ".png")
-APP_VERSION = "1.7"   # raise it with every release; the release tag is "v" + this (see MANUAL)
+APP_VERSION = "1.7.1"   # raise it with every release; the release tag is "v" + this (see MANUAL)
 CONFIG_FILE = Path.home() / ".simple_music_player.json"
 CRASH_FILE = Path.home() / ".simple_music_player_crash.log"
 CACHE_FILE =Path.home() / ".simple_music_player_cache.json"
@@ -425,6 +427,7 @@ DEFAULT_CFG = {
     "remote_token": "",
     "smtc": True,
     "acoustid_key": "",
+    "deepl_key": "",           # the user's own DeepL API key for lyric translations (optional)
     "lastfm_key": "",
     "lastfm_secret": "",
     "lastfm_session": "",
@@ -1505,18 +1508,32 @@ SHARE_BEGIN = "# >>> eozMP sharing: eozMP rewrites this part, change it in eozMP
 SHARE_END = "# <<< eozMP sharing"
 SHARE_LEGAL = ("Sharing means uploading. In some countries that carries more legal risk than downloading, "
                "so only share music you have the right to share.")
+# Only music files are shared (.mp4 can be a home video, so it stays private). slskd matches these "leave out"
+# patterns against every folder too, so they only catch names ending like a file: a dot, then 2-5 letters/digits
+# with a letter that aren't Roman numerals ("R.E.M", "Vol.10" and "Vol.II" folders stay shared).
+# shortcut: a folder named like "Dr.Dre" isn't shared and a file without an extension is; fine for music folders.
+SHARE_EXTS = sorted(e[1:] for e in AUDIO_EXTS - {".mp4"})
+SHARE_FILTERS = [r"\.(?!(?:" + "|".join(SHARE_EXTS) + r")$)(?![ivxl]+$)(?=[0-9]*[a-z])[a-z0-9]{2,5}$",
+                 r"\.(?:torrent|crdownload|sqlite3?|backup)$"]
 
 
 def slskd_is_local(url):
     return "localhost" in (url or "") or "127.0.0.1" in (url or "")
 
 
+def unsafe_to_share(folder):
+    """A whole drive, the home folder or a folder holding it (C:\\Users): too much that isn't music."""
+    p, home = Path(os.path.abspath(folder)), Path.home()      # Windows paths compare without case
+    return p.parent == p or p == home or p in home.parents
+
+
 def shared_folders(cfg):
     """What eozMP shares: the library, the downloads folder and the extra folders. Folders that don't
-    exist and folders inside another shared one are left out (slskd would list their files twice)."""
+    exist, whole drives / the home folder, and folders inside another shared one are left out (slskd would
+    list their files twice)."""
     found = [os.path.abspath(f) for f in [*cfg.get("folders", []), cfg.get("downloads_dir", ""),
                                           *cfg.get("share_extra", [])]
-             if f and os.path.isabs(f) and os.path.isdir(f)]
+             if f and os.path.isabs(f) and os.path.isdir(f) and not unsafe_to_share(f)]
 
     def inside(a, b):
         a, b = os.path.normcase(a), os.path.normcase(b)
@@ -1538,6 +1555,8 @@ def share_block(folders):
             alias = f"{base} {n}"
         taken.add(alias.casefold())
         lines.append("    - '" + f"[{alias}]{f}".replace("'", "''") + "'")     # YAML single-quoted string
+    lines.append("  filters:")
+    lines += ["    - '" + p.replace("'", "''") + "'" for p in SHARE_FILTERS]
     return lines + [SHARE_END]
 
 
@@ -3452,6 +3471,13 @@ class PreferencesDialog(QDialog):
         self.share_auto.addItems(shared_folders(dict(cfg, share_extra=[])))
         self.share_auto.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         sv.addWidget(self.share_auto)
+        skipped = [f for f in cfg["folders"] if f and unsafe_to_share(f)]
+        if skipped:
+            names = ", ".join(skipped)
+            note = QLabel(f"Not shared, because it's a whole drive or your home folder: {names}")
+            note.setWordWrap(True)
+            note.setObjectName("sub")
+            sv.addWidget(note)
         sv.addWidget(QLabel("Also share these folders:"))
         self.share_extra = QListWidget()
         self.share_extra.setAccessibleName("Also share these folders:")
@@ -3512,6 +3538,10 @@ class PreferencesDialog(QDialog):
 
     def add_share_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Choose a folder to share")
+        if folder and unsafe_to_share(folder):
+            QMessageBox.information(self, "Sharing", "A whole drive or your home folder can't be shared. "
+                                                     "Pick the folder your music is in.")
+            return
         if folder and folder not in [self.share_extra.item(i).text() for i in range(self.share_extra.count())]:
             self.share_extra.addItem(folder)
 
@@ -5387,7 +5417,8 @@ BACKUP_FILES = {"settings.json": CONFIG_FILE, "playlists.json": PLAYLIST_FILE, "
 # lastfm_key goes with them: the session only works with the key and secret it was made with.
 LOCAL_ONLY_SETTINGS = ("mpv_dir", "remote_on", "remote_port", "remote_token", "slskd_url", "slskd_key",
                        "downloads_dir", "organize_root", "lastfm_key", "lastfm_secret", "lastfm_session",
-                       "lastfm_user", "lastfm_queue", "acoustid_key", "share_extra", "share_notice_shown")
+                       "lastfm_user", "lastfm_queue", "acoustid_key", "deepl_key", "share_extra",
+                       "share_notice_shown")
 
 
 def safe_backup_name(name):
@@ -6366,48 +6397,89 @@ def gtx_translate(text, lang, extra=""):
     return (*gtx_parse(data), data)
 
 
-def translate_one(text, lang):
-    """One lyric line -> target language. Free Google endpoint first, MyMemory as the backup."""
-    try:
-        out = gtx_translate(text, lang)[0]
-    except Exception:
-        data = http_json("https://api.mymemory.translated.net/get?" + urllib.parse.urlencode(
-            {"q": text, "langpair": f"autodetect|{lang}"}))
-        out = data["responseData"]["translatedText"]
-        if "MYMEMORY WARNING" in out:
-            raise RuntimeError("translation quota used up")
+DEEPL_LANGS = {"en": "EN-US", "pt": "PT-BR", "zh-CN": "ZH-HANS"}     # the others are the code in capitals
+_MYMEMORY_OUT = [""]       # the day MyMemory's free daily amount ran out: no more asking it until tomorrow
+
+
+def deepl_translate(lines, lang, key):
+    """Lines -> {line: translation} with the user's own DeepL key (free keys end in ":fx"), 50 lines a request.
+    Raises on a wrong key, a used-up month or a language DeepL doesn't have."""
+    host = "api-free.deepl.com" if key.endswith(":fx") else "api.deepl.com"
+    out = {}
+    for i in range(0, len(lines), 50):
+        part = lines[i:i + 50]
+        body = urllib.parse.urlencode([("target_lang", DEEPL_LANGS.get(lang, lang.upper()))]
+                                      + [("text", t) for t in part]).encode("utf-8")
+        req = urllib.request.Request(f"https://{host}/v2/translate", data=body, headers={
+            "Authorization": "DeepL-Auth-Key " + key, "User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            got = json.loads(resp.read().decode("utf-8"))["translations"]
+        out.update((t, g["text"].strip()) for t, g in zip(part, got))
+    return out
+
+
+def mymemory_translate(text, lang):
+    """One line through MyMemory, a free translation service with a public API and a daily limit."""
+    today = time.strftime("%Y-%m-%d")
+    if _MYMEMORY_OUT[0] == today:
+        raise RuntimeError("translation quota used up")
+    data = http_json("https://api.mymemory.translated.net/get?" + urllib.parse.urlencode(
+        {"q": text, "langpair": f"autodetect|{lang}"}))
+    out = data["responseData"]["translatedText"]
+    if "MYMEMORY WARNING" in out or data.get("quotaFinished"):
+        _MYMEMORY_OUT[0] = today
+        raise RuntimeError("translation quota used up")
+    if str(data.get("responseStatus")) != "200":
+        raise RuntimeError(out)
     return out.strip()
 
 
-def lyric_line_extras(lines, lang, roman):
+def translate_one(text, lang):
+    """One lyric line -> target language: MyMemory first, the unofficial Google endpoint when it can't."""
+    try:
+        return mymemory_translate(text, lang)
+    except Exception:
+        return gtx_translate(text, lang)[0].strip()
+
+
+def lyric_line_extras(lines, lang, roman, deepl_key=""):
     """{line: {"t": translation, "r": reading in Latin letters}} for the distinct non-empty lines.
     lang "" = no translation; roman = also the reading, for lines in another script (Japanese, Russian...).
-    One request per line gives both; offline, Cyrillic, Greek, Korean and kana are still read locally."""
+    Translations: the user's DeepL key, else MyMemory, else the unofficial Google endpoint, which is also the
+    only one that gives the reading; offline, Cyrillic, Greek, Korean and kana are still read locally."""
     uniq = list(dict.fromkeys(l.strip() for l in lines if l and l.strip()))[:400]
-    key = hashlib.sha1((f"v2|{lang}|{int(bool(roman))}\n" + "\n".join(uniq)).encode("utf-8", "replace")).hexdigest()[:24]
+    key = hashlib.sha1((f"v2|{lang}{'|deepl' if deepl_key else ''}|{int(bool(roman))}\n" + "\n".join(uniq)).encode("utf-8", "replace")).hexdigest()[:24]
     cpath = TRANSLATE_DIR / f"{key}.json"
     try:
         return json.loads(cpath.read_text(encoding="utf-8"))
     except Exception:
         pass
     from concurrent.futures import ThreadPoolExecutor
+    pre = {}
+    if lang and deepl_key:
+        try:
+            pre = deepl_translate(uniq, lang, deepl_key)
+        except Exception:
+            pass        # wrong key, month used up or a language DeepL lacks: the free services below
 
     def one(text):
         want_r = bool(roman) and foreign_script(text)
         if not lang and not want_r:
             return text, None, True, True
-        tr = rm = ""
-        ok = True
-        try:
-            tr, rm, _data = gtx_translate(text, lang or "en")
-        except Exception:
-            ok = False
-            if lang:
-                try:
-                    tr = translate_one(text, lang)
-                    ok = True
-                except Exception:
-                    pass
+        tr, rm, ok = pre.get(text, ""), "", True
+        if lang and not tr:
+            try:
+                tr = mymemory_translate(text, lang)
+            except Exception:
+                pass
+            if _fold(tr) == _fold(text):
+                tr = ""         # MyMemory gives the line back when it has nothing: let Google try
+        if (lang and not tr) or want_r:       # one Google request gives the translation and the reading
+            try:
+                gtr, rm, _data = gtx_translate(text, lang or "en")
+                tr = tr or gtr
+            except Exception:
+                ok = bool(tr)
         done = ok                         # the service answered; only then may the result be kept for good
         if want_r and (not rm or foreign_script(rm)):
             rm = local_romanize(text) or ""
@@ -7215,12 +7287,14 @@ class ExtrasMixin:
             return
         box = QMessageBox(self)
         box.setWindowTitle("Sharing your music")
-        box.setText("eozMP shares your music library with other Soulseek users: your music folders and the "
-                    "slskd downloads folder. Soulseek works because people share.")
+        box.setText("Share your songs with other Soulseek users? Only music files from your music folders and the "
+                    "slskd downloads folder are shared, never pictures, documents or other files. Soulseek works "
+                    "because people share, and users who share nothing are often blocked.")
         box.setInformativeText(_raw(_t(SHARE_LEGAL) + "\n\n"
                                     + _t("You can turn sharing off any time in Preferences > Sharing.")))
-        ok = box.addButton("OK", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("Turn sharing off", QMessageBox.ButtonRole.RejectRole)   # also what Esc / closing does
+        # a real choice with plain names, not an "OK" to click through
+        ok = box.addButton("Share my music", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Don't share", QMessageBox.ButtonRole.RejectRole)   # also what Esc / closing does
         box.setDefaultButton(ok)
         run_dialog(box)
         self.cfg["share_notice_shown"] = True
@@ -7399,7 +7473,8 @@ class ExtrasMixin:
         if not self.lyric_lines or not (lang or (roman and any(foreign_script(l) for l in self.lyric_lines))):
             return
         lines, token = list(self.lyric_lines), self.lyrics_token
-        w = Worker(lambda: lyric_line_extras(lines, lang, roman))
+        key = self.cfg["deepl_key"]
+        w = Worker(lambda: lyric_line_extras(lines, lang, roman, key))
         w.ok.connect(lambda tr: self.on_translated(token, lines, tr))
         w.fail.connect(lambda m: self.statusBar().showMessage(f"Couldn't translate the lyrics ({m})", 8000))
         self.statusBar().showMessage("Translating lyrics..." if lang else "Getting the reading...", 4000)
@@ -7802,7 +7877,7 @@ class RemoteServer(QObject):
         try:
             path, _, query = req.path.partition("?")
             parts = path.strip("/").split("/")
-            if not parts or parts[0] != self.token:
+            if not parts or not hmac.compare_digest(parts[0].encode("utf-8", "replace"), self.token.encode()):
                 return self.reply(req, 403, b"forbidden", "text/plain", head)
             rest = [p for p in parts[1:] if p]
             q = urllib.parse.parse_qs(query)
@@ -8410,9 +8485,26 @@ class RemoteDialog(QDialog):
         self.url.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.url.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v.addWidget(self.url)
+        row = QHBoxLayout()
+        self.new_code = QPushButton("New code")
+        self.new_code.setToolTip("Phones that scanned the old code can't use the remote any more.")
+        self.new_code.clicked.connect(self.make_new_code)
+        row.addWidget(self.new_code)
+        row.addStretch(1)
         close = QPushButton("Close")
         close.clicked.connect(self.accept)
-        v.addWidget(close)
+        row.addWidget(close)
+        v.addLayout(row)
+        self.refresh()
+
+    def make_new_code(self):
+        if self.main.cast:      # the TV plays from an address with the old code in it
+            self.main.statusBar().showMessage("Stop casting first.", 6000)
+            return
+        self.main.cfg["remote_token"] = secrets.token_hex(16)
+        save_config(self.main.cfg)
+        if self.main.remote is not None:
+            self.main.remote.token = self.main.cfg["remote_token"]
         self.refresh()
 
     def toggle(self, on):
@@ -8769,7 +8861,8 @@ class Extras2Mixin:
         for text, fn in (("Phone remote...", lambda: run_dialog(RemoteDialog(self))),
                          ("Play on a TV or speaker...", lambda: run_dialog(CastDialog(self))),
                          ("Last.fm...", lambda: run_dialog(LastfmDialog(self))),
-                         ("AcoustID key (for fixing tags)...", self.ask_acoustid_key)):
+                         ("AcoustID key (for fixing tags)...", self.ask_acoustid_key),
+                         ("DeepL key (for lyric translation)...", self.ask_deepl_key)):
             act = QAction(text, self)
             act.triggered.connect(lambda checked=False, f=fn: f())
             menu.addAction(act)
@@ -8839,8 +8932,9 @@ class Extras2Mixin:
     def set_remote(self, on, persist=True):
         """persist=False: casting needs the server for a while, but it is not the user's choice to keep it."""
         if on and self.remote is None:
-            if not self.cfg["remote_token"]:
-                self.cfg["remote_token"] = uuid.uuid4().hex[:16]
+            if len(self.cfg["remote_token"]) < 32:      # codes before 1.7.1 were 64 bits: scan the new one once
+                self.cfg["remote_token"] = secrets.token_hex(16)
+                save_config(self.cfg)
             srv = RemoteServer(self.cfg["remote_token"], int(self.cfg["remote_port"]), self)
             try:
                 srv.start()
@@ -9078,6 +9172,21 @@ class Extras2Mixin:
         if ok:
             self.cfg["acoustid_key"] = text.strip()
             save_config(self.cfg)
+
+    def ask_deepl_key(self):
+        text, ok = QInputDialog.getText(
+            self, "DeepL", "Paste your DeepL API key (free at deepl.com/pro-api, 500,000 characters a month).\n"
+            "With it, lyrics are translated by DeepL. Without it, eozMP uses MyMemory and Google.",
+            QLineEdit.EchoMode.Password, self.cfg["deepl_key"])
+        if not ok:
+            return
+        key = self.cfg["deepl_key"] = text.strip()
+        save_config(self.cfg)
+        if key:      # try it once, so a wrong key is said now and not hidden behind the free services
+            w = Worker(lambda: deepl_translate(["Hello"], "de", key))
+            w.ok.connect(lambda _r: self.statusBar().showMessage("DeepL works.", 8000))
+            w.fail.connect(lambda m: self.statusBar().showMessage(_t(f"DeepL didn't accept the key: {m}"), 15000))
+            self.keep(w)
 
     def fix_tags(self, key):
         alb = self.albums.get(key)

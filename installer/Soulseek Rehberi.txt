@@ -87,13 +87,15 @@ Bir şeyi bulamadın mı? Soulseek sonuç sayfasında "Add to wishlist"e tıkla
 dakikada bir arar ve bulunca bildirim gösterir.
 
 
-6. PAYLAŞMA (VARSAYILAN OLARAK AÇIK)
-------------------------------------
+6. PAYLAŞMA
+-----------
 
 Soulseek, insanlar paylaştığı için çalışır. Bazı kullanıcılar sadece bir
-şey paylaşanlara dosya gönderir. Bu yüzden eozMP müzik kitaplığını paylaşır:
-müzik klasörlerin ve slskd indirme klasörü. Başlamadan önce bir kez haber
-verir.
+şey paylaşanlara dosya gönderir. Bu yüzden eozMP müzik kitaplığını
+paylaşmayı önerir: müzik klasörlerin ve slskd indirme klasörü. Yalnızca
+müzik dosyaları paylaşılır; resimler, belgeler ya da başka dosyalar asla,
+bütün bir sürücü ya da ev klasörün de asla. eozMP bir şey paylaşmadan önce
+bir kez sorar.
 
 Paylaşmak, yükleme yapmak demektir. Bazı ülkelerde bu, indirmekten daha
 fazla hukuki risk taşır; bu yüzden yalnızca paylaşma hakkın olan müzikleri
@@ -136,7 +138,7 @@ gerekir.
           eozmp:
             key: EN-AZ-20-KARAKTERLIK-RASTGELE-UZUN-BIR-METIN
             role: readwrite
-            cidr: 0.0.0.0/0,::/0
+            cidr: 127.0.0.1/32,::1/128
 
    Kurallar: Tab tuşunu asla kullanma, sadece boşluk kullan ve girintileri
    tam gösterildiği gibi bırak. Şifrede sadece harf ve rakam kullan.

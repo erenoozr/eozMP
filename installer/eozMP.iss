@@ -3,7 +3,7 @@
 
 ; CI passes the version from musicplayer.py: ISCC /DAppVersion=x.y
 #ifndef AppVersion
-  #define AppVersion "1.7"
+  #define AppVersion "1.7.1"
 #endif
 #define VlcUrl "https://get.videolan.org/vlc/3.0.24/win64/vlc-3.0.24-win64.exe"
 #define VlcSha256 "d711e1e1fe52052748c39080c7dce63f6b7e4c315efedf1774a3f1957b782ff3"
@@ -41,7 +41,7 @@ english.CompVlc=VLC media player - needed only for the equalizer (downloaded dur
 english.TaskDesktop=Create a desktop shortcut
 english.AccTitle=Your Soulseek account
 english.AccDesc=eozMP downloads music through Soulseek. Pick a name and a password.
-english.AccSub=The account is created automatically the first time eozMP connects - there is no separate sign-up. Pick an unusual name (add some numbers) so nobody else has it. Use only letters and numbers in the password.%n%nLeave the name empty to skip this; the Soulseek Guide explains how to do it later.
+english.AccSub=The account is created automatically the first time eozMP connects - there is no separate sign-up. Pick an unusual name (add some numbers) so nobody else has it. Use only letters and numbers in the password.%n%nLeave the name empty to skip this; the Soulseek Guide explains how to do it later.%n%nSharing: users who share nothing are often blocked on Soulseek, so eozMP will ask once whether to share your songs (only music files, never other files). Only share music you have the right to share.
 english.AccUser=Soulseek user name:
 english.AccPass=Password:
 english.AccBadUser=Use only letters, numbers, _ and - in the user name (3 to 30 characters).
@@ -68,7 +68,7 @@ turkish.CompVlc=VLC media player - sadece ekolayzır için gerekli (kurulum sır
 turkish.TaskDesktop=Masaüstüne kısayol oluştur
 turkish.AccTitle=Soulseek hesabın
 turkish.AccDesc=eozMP müzikleri Soulseek üzerinden indirir. Bir ad ve şifre seç.
-turkish.AccSub=Hesap, eozMP ilk kez bağlandığında otomatik oluşturulur - ayrıca kayıt olman gerekmez. Başkasında olmayan sıra dışı bir ad seç (birkaç rakam ekle). Şifrede sadece harf ve rakam kullan.%n%nBunu atlamak için adı boş bırak; Soulseek Rehberi sonra nasıl yapılacağını anlatıyor.
+turkish.AccSub=Hesap, eozMP ilk kez bağlandığında otomatik oluşturulur - ayrıca kayıt olman gerekmez. Başkasında olmayan sıra dışı bir ad seç (birkaç rakam ekle). Şifrede sadece harf ve rakam kullan.%n%nBunu atlamak için adı boş bırak; Soulseek Rehberi sonra nasıl yapılacağını anlatıyor.%n%nPaylaşım: Soulseek'te hiçbir şey paylaşmayanlar sık sık engellenir, bu yüzden eozMP şarkılarını paylaşıp paylaşmayacağını bir kez sorar (yalnızca müzik dosyaları, başka hiçbir dosya değil). Yalnızca paylaşma hakkın olan müzikleri paylaş.
 turkish.AccUser=Soulseek kullanıcı adı:
 turkish.AccPass=Şifre:
 turkish.AccBadUser=Kullanıcı adında sadece harf, rakam, _ ve - kullan (3 ile 30 karakter arası).
@@ -107,7 +107,10 @@ Source: "..\eozMP.ico"; DestDir: "{app}"; Components: main
 Source: "..\MANUAL.md"; DestDir: "{app}"; DestName: "eozMP User Manual.md"; Components: main
 Source: "Soulseek Guide.txt"; DestDir: "{app}"; Components: main
 Source: "Soulseek Rehberi.txt"; DestDir: "{app}"; Components: main
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Components: main
+Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Components: main
 Source: "vendor\fpcalc\fpcalc.exe"; DestDir: "{app}\fpcalc"; Flags: ignoreversion; Components: main
+Source: "licenses\fpcalc-LICENSE.txt"; DestDir: "{app}\fpcalc"; DestName: "LICENSE.txt"; Components: main
 Source: "vendor\slskd\*"; DestDir: "{app}\slskd"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: slskd
 
 [Icons]
@@ -288,7 +291,7 @@ begin
   Lines[15] := '        role: readwrite';
   Lines[16] := '        cidr: 127.0.0.1/32,::1/128';
   Lines[17] := '';
-  Lines[18] := '# eozMP shares your music library: change it in eozMP > Preferences > Sharing.';
+  Lines[18] := '# eozMP asks before it shares your music files: change it in eozMP > Preferences > Sharing.';
   SaveOrSay(YmlPath, Lines);
 
   JDir := Dir;

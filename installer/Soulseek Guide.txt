@@ -84,12 +84,14 @@ Can't find something? On the Soulseek results page click "Add to wishlist"
 wishlist every 20 minutes and shows a notification when it turns up.
 
 
-6. SHARING (ON BY DEFAULT)
---------------------------
+6. SHARING
+----------
 
 Soulseek works because people share. Some users only upload to people who
-share something back. So eozMP shares your music library: your music folders
-and the slskd downloads folder. It tells you once before it starts.
+share something back. So eozMP offers to share your music library: your music folders
+and the slskd downloads folder. Only music files are shared, never
+pictures, documents or other files, and never a whole drive or your
+home folder. eozMP asks you once before it shares anything.
 
 Sharing means uploading. In some countries that carries more legal risk than
 downloading, so only share music you have the right to share.
@@ -129,7 +131,7 @@ Only needed if you set up slskd yourself, or skipped the account step.
           eozmp:
             key: ANY-LONG-RANDOM-TEXT-20-CHARACTERS-OR-MORE
             role: readwrite
-            cidr: 0.0.0.0/0,::/0
+            cidr: 127.0.0.1/32,::1/128
 
    Rules: use spaces, never the Tab key, and keep the spacing exactly as
    shown. Use only letters and numbers in the password.

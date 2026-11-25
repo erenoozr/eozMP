@@ -29,17 +29,9 @@ if not exist "musicplayer.py" (
 rem --- 2. Install / update everything eozMP uses
 echo  [1/3] Installing what eozMP needs (this can take a few minutes the first time)...
 %PY% -m pip install --upgrade pip
-%PY% -m pip install --upgrade PyQt6 mutagen numpy pyinstaller segno
-if errorlevel 1 (
-    echo  Something went wrong while installing. Check your internet connection and try again.
-    pause
-    exit /b 1
-)
-rem Optional: Windows media controls (lock screen, volume flyout, headset buttons)
-%PY% -m pip install --upgrade winrt-runtime winrt-Windows.Foundation winrt-Windows.Foundation.Collections winrt-Windows.Media winrt-Windows.Media.Playback winrt-Windows.Storage winrt-Windows.Storage.Streams
-rem Optional engines. mpv: gapless playback, ReplayGain, equalizer (needs libmpv-2.dll next to
-rem eozMP.exe or picked in Settings). VLC: needs VLC installed. Both are harmless if missing.
-%PY% -m pip install --upgrade mpv python-vlc
+rem The exact versions the tests passed with (requirements.txt). mpv needs libmpv-2.dll next to eozMP.exe
+rem or picked in Settings, VLC needs VLC installed; both are harmless if missing.
+%PY% -m pip install -r requirements.txt pyinstaller==6.22.3
 if errorlevel 1 (
     echo  Something went wrong while installing. Check your internet connection and try again.
     pause

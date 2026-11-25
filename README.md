@@ -13,10 +13,20 @@
 </p>
 
 eozMP is a free desktop music player for Windows. It turns a folder of music files into a tidy Artist → Album
-library with covers, plays it with synced lyrics you can translate, read, search and share, and finds and downloads
-music through Soulseek. It speaks 12 languages, runs fully on your own PC and never deletes your music.
+library with covers and plays it with synced lyrics you can translate, read, search and share. It speaks 12
+languages, runs fully on your own PC and never deletes your music.
 
 <img width="1075" height="889" alt="Home page" src="https://github.com/user-attachments/assets/0d0d5050-0438-4dd2-9207-d529d66931b9" />
+
+## New in 1.7.1
+
+- **Sharing asks first:** eozMP asks whether to share your songs on Soulseek (*Share my music* / *Don't share*),
+  shares only music files (never pictures, documents or other files) and never a whole drive or your home folder
+- **Better lyric translations:** paste your own free DeepL key in *Connect → DeepL key*; without one, MyMemory
+  translates first and Google steps in when it can't
+- **Phone remote:** a longer secret code and a *New code* button that locks out phones that had the old one
+  (scan the code again once after updating)
+- Setup installs the licenses of eozMP and fpcalc next to them; the Soulseek Guide keeps slskd's key to this PC
 
 ## New in 1.7
 
@@ -140,14 +150,14 @@ A release of fixes; nothing new to learn.
 - **Fix tags and cover** from MusicBrainz, recognising songs by their sound with AcoustID; shows old and new side by side and asks before writing
 - **Repair moved songs:** finds where moved or renamed songs went and points playlists, favorites and stats at them
 
-### Soulseek
+### Soulseek (optional, you choose it during setup)
 
 - **Search and download** through slskd: single songs, whole albums or an artist's **whole discography**
 - **Results grouped by folder** (one folder = one album) with quality, free slots and speed; filters for lossless, MP3 320k+ and free slots
 - **Downloads page** with progress, and **finished downloads organized** into Artist / Album folders with their covers, lyrics and extras
 - **Wishlist** searched every 20 minutes while eozMP runs; **trusted users** come first
 - **One-click installer** that sets up slskd and your Soulseek login for you
-- **Shares your library** on Soulseek by default (it tells you once first); turn it off or add folders in Preferences → Sharing
+- **Shares your songs** on Soulseek if you say yes when it asks (only music files, never other files); turn it off or add folders in Preferences → Sharing
 
 ### Phone, TV and Windows
 
@@ -178,7 +188,7 @@ A release of fixes; nothing new to learn.
 
 ## Download
 
-Get **`eozMP-Setup-1.7.exe`** from the [latest release](../../releases/latest) and double-click it. Setup asks
+Get **`eozMP-Setup-1.7.1.exe`** from the [latest release](../../releases/latest) and double-click it. Setup asks
 step by step what to install (eozMP, Soulseek support, VLC for the equalizer, a desktop shortcut) and, if you want
 Soulseek, your Soulseek name and password, then sets everything up. No Python needed.
 Windows may show a blue *"Windows protected your PC"* box because the app is new and unsigned:
@@ -241,8 +251,10 @@ and only for the feature named next to each one:
   and the artist timeline.
 - **AcoustID**: only when you use *Fix tags* to recognise a song by its sound.
 - **Last.fm**: only after you log in to Last.fm in the settings (scrobbling, similar artists).
-- **Google Translate / MyMemory**: only after you pick a language under *Translate* in the lyrics, turn on the
-  reading in Latin letters, or look up a word (choose *Off* to stop).
+- **DeepL**: only if you paste your own DeepL key in *Connect → DeepL key*; then it translates the lyrics.
+- **MyMemory**, then **Google Translate**: only after you pick a language under *Translate* in the lyrics, turn on
+  the reading in Latin letters, or look up a word (choose *Off* to stop). Without a DeepL key MyMemory translates
+  first and Google steps in when it can't; the reading and word lookup always come from Google.
 - **Soulseek** (through slskd on your own PC): only when you install Soulseek support and search or download.
 
 The phone remote and TV casting work only inside your home network. Settings, playlists and your library stay on
@@ -256,5 +268,5 @@ source code available. It uses other open-source projects, listed in [THIRD_PART
 
 ## Disclaimer
 
-eozMP is not affiliated with Soulseek, slskd, VLC, Apple, MusicBrainz, AcoustID, Last.fm, Google or lrclib. Soulseek is a file-sharing
+eozMP is not affiliated with Soulseek, slskd, VLC, Apple, MusicBrainz, AcoustID, Last.fm, Google, DeepL, MyMemory or lrclib. Soulseek is a file-sharing
 network: only download music you have the right to download. The software comes with no warranty.

@@ -52,7 +52,7 @@ class ReadingTest(TempDirTest):
             return ("OK" if text == "OK" else "en " + text), "", None     # "OK" -> "OK": nothing to show, not a failure
         with mock.patch.object(mp, "TRANSLATE_DIR", self.tmp / "tr"), \
                 mock.patch.object(mp, "gtx_translate", side_effect=gtx) as fake, \
-                mock.patch.object(mp, "translate_one", side_effect=OSError("429")):
+                mock.patch.object(mp, "mymemory_translate", side_effect=OSError("429")):
             first = mp.lyric_line_extras(lines, "en", False)
             self.assertEqual(first, {"uno": {"t": "en uno", "r": ""}, "dos": {"t": "en dos", "r": ""}})
             down.clear()
@@ -61,6 +61,35 @@ class ReadingTest(TempDirTest):
             calls = fake.call_count
             self.assertEqual(mp.lyric_line_extras(lines, "en", False), second)    # complete -> from the cache
             self.assertEqual(fake.call_count, calls)
+
+    def test_a_deepl_key_translates_and_google_only_reads(self):
+        lines = ["Я тебя люблю", "hello"]
+        with mock.patch.object(mp, "TRANSLATE_DIR", self.tmp / "tr"), \
+                mock.patch.object(mp, "deepl_translate", return_value={"Я тебя люблю": "Seni seviyorum",
+                                                                       "hello": "merhaba"}) as deepl, \
+                mock.patch.object(mp, "mymemory_translate") as mymemory, \
+                mock.patch.object(mp, "gtx_translate", return_value=("google", "Ya tebya lyublyu", None)) as gtx:
+            out = mp.lyric_line_extras(lines, "tr", True, "abc:fx")
+        deepl.assert_called_once()
+        mymemory.assert_not_called()
+        self.assertEqual(gtx.call_count, 1)      # only the Cyrillic line, for its reading
+        self.assertEqual(out, {"Я тебя люблю": {"t": "Seni seviyorum", "r": "Ya tebya lyublyu"},
+                               "hello": {"t": "merhaba", "r": ""}})
+
+    def test_mymemory_first_then_google_and_a_used_up_day_is_not_asked_again(self):
+        answers = {"responseData": {"translatedText": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS"},
+                   "responseStatus": 429}
+        with mock.patch.object(mp, "_MYMEMORY_OUT", [""]), \
+                mock.patch.object(mp, "http_json", return_value=answers) as web, \
+                mock.patch.object(mp, "gtx_translate", return_value=("hola", "", None)):
+            self.assertEqual(mp.translate_one("hello", "es"), "hola")
+            self.assertEqual(mp.translate_one("bye", "es"), "hola")
+            self.assertEqual(web.call_count, 1)
+        ok = {"responseData": {"translatedText": "hola "}, "responseStatus": 200}
+        with mock.patch.object(mp, "_MYMEMORY_OUT", [""]), mock.patch.object(mp, "http_json", return_value=ok), \
+                mock.patch.object(mp, "gtx_translate") as gtx:
+            self.assertEqual(mp.translate_one("hello", "es"), "hola")
+            gtx.assert_not_called()
 
     def test_words_of_a_line(self):
         self.assertEqual(mp.lyric_words("夜に駆ける 君の名は"), ["夜に", "駆ける", "君の", "名は"])
@@ -162,7 +191,8 @@ class WindowFeaturesTest(PlayerHarness):
     def test_translation_and_reading_appear_under_the_lines(self):
         self.with_lyrics()
         p = self.player
-        with mock.patch.object(mp, "gtx_translate", lambda text, lang, extra="": ("TR " + text, "", [])):
+        with mock.patch.object(mp, "gtx_translate", lambda text, lang, extra="": ("TR " + text, "", [])), \
+                mock.patch.object(mp, "mymemory_translate", side_effect=OSError("offline")):
             p.set_translate_lang("Türkçe")
             self.assertTrue(wait_for(lambda: p.lyrics_list.item(p.ly_off).data(mp.TRANS_ROLE), 5))
         self.assertEqual(p.lyrics_list.item(p.ly_off).data(mp.TRANS_ROLE), "TR Hello darkness my old friend")

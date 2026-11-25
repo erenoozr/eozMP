@@ -10,6 +10,8 @@ eozMP (GPL-3.0) is built on these open-source projects. Each keeps its own licen
 | [NumPy](https://numpy.org/) | Visualizer spectrum (optional) | BSD-3-Clause |
 | [python-vlc](https://github.com/oaubert/python-vlc) | Talking to VLC for the equalizer (optional) | LGPL-2.1-or-later |
 | [VLC / libVLC](https://www.videolan.org/) | Optional audio engine (installed separately) | LGPL-2.1-or-later |
+| [python-mpv](https://github.com/jaseg/python-mpv) | Talking to mpv, the recommended audio engine (optional) | GPL-2.0-or-later or LGPL-2.1-or-later |
+| [mpv / libmpv](https://mpv.io/) | Optional audio engine (`libmpv-2.dll`, added separately) | LGPL-2.1-or-later / GPL-2.0-or-later |
 | [PyInstaller](https://pyinstaller.org/) | Building `eozMP.exe` | GPL-2.0 with bootloader exception |
 | [segno](https://github.com/heuer/segno) | The phone remote's QR code | BSD-3-Clause |
 | [PyWinRT](https://github.com/pywinrt/pywinrt) | Windows media controls (lock screen, volume flyout) | MIT |
@@ -17,7 +19,8 @@ eozMP (GPL-3.0) is built on these open-source projects. Each keeps its own licen
 ## Included in the installer
 
 The installer (`eozMP-Setup-x.y.exe`, built with [Inno Setup](https://jrsoftware.org/isinfo.php)) also carries
-these separate programs, unchanged. Their licenses are installed next to them.
+these separate programs, unchanged. Their licenses are installed next to them (`slskd\LICENSE`,
+`fpcalc\LICENSE.txt`); eozMP's own license is `LICENSE.txt` in the eozMP folder.
 
 | Program | What for | License |
 | --- | --- | --- |
@@ -35,5 +38,6 @@ eozMP does not include these; it talks to them while running.
   Album artwork belongs to its respective rights holders.
 - **AcoustID** (optional, your own key): recognising songs by their sound.
 - **Last.fm** (optional, your own key): scrobbling and similar artists.
-- **Google Translate** (unofficial free endpoint) and **MyMemory**: translating lyrics.
+- **DeepL** (optional, your own key), **MyMemory** and **Google Translate** (unofficial free endpoint, used when
+  the others can't, and for readings and word lookups): translating lyrics.
 - **GitHub**: checking for a newer eozMP.
